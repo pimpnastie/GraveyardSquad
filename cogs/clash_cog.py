@@ -249,7 +249,7 @@ class ClashRoyale(commands.Cog):
             if cached is not None:
                 return cached
 
-        delay = RETRY_BACKOFF
+       delay = RETRY_BACKOFF
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 async with self.bot.http_session.get(url, headers=self.bot._cr_headers()) as resp:
@@ -260,10 +260,10 @@ class ClashRoyale(commands.Cog):
                         if isinstance(data, dict):
                             if "cards" in data:
                                 for c in data["cards"]:
-                                    c["level"] = 14 - c.get("maxLevel", 14) + c.get("level", 1)
+                                    c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
                             if "currentDeck" in data:
                                 for c in data["currentDeck"]:
-                                    c["level"] = 14 - c.get("maxLevel", 14) + c.get("level", 1)
+                                    c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
 
                         if cache_key:
                             await self._cache_set(cache_key, data, ttl)
