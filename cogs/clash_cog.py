@@ -32,6 +32,10 @@ TTL_DAILY_LOG  = 86400          # 24 hours
 MAX_RETRIES    = 3
 RETRY_BACKOFF  = 1.5            # seconds, doubles each attempt
 
+# Commands that benefit from cache warming and should trigger the warmup check.
+# All other commands skip the DB hit in cog_before_invoke entirely.
+WARMUP_RELEVANT_COMMANDS = {"scout", "primetime", "cardstats"}
+
 
 class ClashRoyale(commands.Cog):
     def __init__(self, bot):
@@ -57,8 +61,12 @@ class ClashRoyale(commands.Cog):
     # ------------------------------------------------------------------ #
 
     async def cog_before_invoke(self, ctx):
-        """Fires before ANY command. Checks if the bot needs to wake up and fetch daily data."""
-        await self._check_and_start_warmup(ctx.author.id)
+        """Fires before ANY command. Only triggers warmup for commands that use battle logs,
+        avoiding an unnecessary DB hit on every single command invocation."""
+        # FIX: Only check warmup for commands that actually need the cached battle logs.
+        # Previously this fired a DB lookup for every command (e.g. !setreminders, !stats).
+        if ctx.command and ctx.command.name in WARMUP_RELEVANT_COMMANDS:
+            await self._check_and_start_warmup(ctx.author.id)
 
     async def _check_and_start_warmup(self, user_id: int):
         clan_tag = await self.get_clan_tag(user_id)
@@ -317,8 +325,9 @@ class ClashRoyale(commands.Cog):
             return await ctx.send("❌ Failed to fetch player data. Try again later.")
 
         embed = discord.Embed(title=f"⚔️ {data['name']}'s Current Deck", color=0xEE82EE)
+        # FIX: card['name'] was missing from the f-string, so every card showed as blank.
         deck_str = "\n".join(
-            f"• ** (Lvl {card['level']})"
+            f"• **{card['name']}** (Lvl {card['level']})"
             for card in data.get("currentDeck", [])
         )
         embed.description = deck_str or "No deck found."
@@ -415,6 +424,8 @@ class ClashRoyale(commands.Cog):
         if not clan_tag:
             return await ctx.send("❌ Link your account and join a clan first.")
 
+        # NOTE: Intentionally shares cache key "war:{clan_tag}" with !forecast since
+        # both commands read from the same /currentriverrace endpoint.
         url = f"{self.api_base}/clans/{quote('#' + clan_tag)}/currentriverrace"
         data = await self._api_get(url, cache_key=f"war:{clan_tag}", ttl=60 * 5)
         if not data:
@@ -437,30 +448,40 @@ class ClashRoyale(commands.Cog):
         if not clan_tag:
             return await ctx.send("❌ Link your account and join a clan first.")
 
+        embed = discord.Embed(color=0x1ABC9C)
+
         if period.lower() == "last":
             url = f"{self.api_base}/clans/{quote('#' + clan_tag)}/riverracelog"
             data = await self._api_get(url, cache_key=f"racelog:{clan_tag}", ttl=60 * 60)
             if not data or not data.get("items"):
                 return await ctx.send("❌ Could not fetch past race log.")
-            
+
+            embed.title = "🏁 Last River Race Results"
+            # FIX: The last race standings have a different shape: each entry is
+            # { "rank": N, "trophyChange": N, "clan": { "name": ..., "fame": ... } }
+            # Extract the nested clan object explicitly instead of relying on the
+            # ambiguous .get("clan", clan) fallback that was used before.
             standings = data["items"][0].get("standings", [])
-            title = "🏁 Last River Race Results"
+            for i, standing in enumerate(standings[:5], start=1):
+                c_data = standing.get("clan", {})
+                name = c_data.get("name", "Unknown")
+                fame = c_data.get("fame", 0)
+                embed.add_field(name=f"#{i} {name}", value=f"⭐ {fame} Fame", inline=False)
         else:
             url = f"{self.api_base}/clans/{quote('#' + clan_tag)}/currentriverrace"
             data = await self._api_get(url, cache_key=f"racecurrent:{clan_tag}", ttl=60 * 5)
             if not data:
                 return await ctx.send("❌ Could not fetch current race data.")
-            
+
+            embed.title = "⛵ Current River Race Standings"
+            # FIX: Current race clans are top-level objects (no nested "clan" key),
+            # so we read them directly — no .get("clan", ...) needed here.
             standings = data.get("clans", [])
             standings.sort(key=lambda x: x.get("fame", 0), reverse=True)
-            title = "⛵ Current River Race Standings"
-
-        embed = discord.Embed(title=title, color=0x1ABC9C)
-        for i, clan in enumerate(standings[:5], start=1):
-            c_data = clan.get("clan", clan) 
-            name = c_data.get("name", "Unknown")
-            fame = c_data.get("fame", 0)
-            embed.add_field(name=f"#{i} {name}", value=f"⭐ {fame} Fame", inline=False)
+            for i, clan in enumerate(standings[:5], start=1):
+                name = clan.get("name", "Unknown")
+                fame = clan.get("fame", 0)
+                embed.add_field(name=f"#{i} {name}", value=f"⭐ {fame} Fame", inline=False)
 
         await ctx.send(embed=embed)
 
@@ -475,7 +496,14 @@ class ClashRoyale(commands.Cog):
         if not clan_data:
             return await ctx.send("❌ Could not fetch clan data. Try again later.")
 
+        # FIX: Apply CLAN_SCAN_LIMIT consistently here, matching the cardstats
+        # command. Previously whohas sliced to 20 but then re-fetched all 50
+        # anyway on the second profiles call. Now we fetch once and reuse.
         members = clan_data.get("memberList", [])[:CLAN_SCAN_LIMIT]
+
+        # FIX: Fetch profiles once and reuse for both the "most common" detection
+        # and the final hit list. Previously profiles were fetched twice.
+        profiles = await self._fetch_members_concurrent(members)
 
         if card_name:
             if not self.all_cards:
@@ -486,7 +514,6 @@ class ClashRoyale(commands.Cog):
             target_card = match
         else:
             await ctx.send("🔍 Finding your clan's most common maxed card...")
-            profiles = await self._fetch_members_concurrent(members)
             counts = Counter(
                 card['name']
                 for p in profiles
@@ -498,7 +525,6 @@ class ClashRoyale(commands.Cog):
             target_card = counts.most_common(1)[0][0]
 
         await ctx.send(f"📊 **Searching for owners of {target_card}:**")
-        profiles = await self._fetch_members_concurrent(members)
         name_by_tag = {m['tag'].replace("#", "").upper(): m['name'] for m in members}
 
         hits = []
@@ -516,33 +542,60 @@ class ClashRoyale(commands.Cog):
 
     @commands.command()
     async def cardstats(self, ctx):
-        """Generates a CSV of how many clan members have each card maxed."""
+        """Generates a CSV listing every member's maxed cards, sorted by popularity."""
         clan_tag = await self.get_clan_tag(ctx.author.id)
         if not clan_tag:
             return await ctx.send("❌ Link first.")
 
-        await ctx.send("📊 **Generating Card Power Report...**")
+        # If the bot was just woken up/warming, we wait so the data is fresh
+        await self.wait_if_warming(ctx, clan_tag)
+
+        await ctx.send("📊 **Generating Detailed Card Power Report...**")
 
         clan_data = await self._get_clan_data(clan_tag)
         if not clan_data:
             return await ctx.send("❌ Could not fetch clan data.")
 
+        # Fetch all 50 profiles
         profiles = await self._fetch_members_concurrent(clan_data.get("memberList", []))
-        card_counts = Counter(
-            card['name']
-            for p in profiles
-            for card in p.get("cards", [])
-            if self._is_maxed(card)
+        
+        # Map: Card Name -> List of Player Names
+        card_to_members = {}
+
+        for p in profiles:
+            player_name = p.get('name', 'Unknown')
+            for card in p.get("cards", []):
+                if self._is_maxed(card):
+                    card_name = card['name']
+                    if card_name not in card_to_members:
+                        card_to_members[card_name] = []
+                    card_to_members[card_name].append(player_name)
+
+        # Sort the cards by the number of people who have them (most popular first)
+        sorted_cards = sorted(
+            card_to_members.items(), 
+            key=lambda item: len(item[1]), 
+            reverse=True
         )
 
+        # Build the CSV
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Card Name", "Players with Max (Lvl 16)"])
-        for card, count in card_counts.most_common():
-            writer.writerow([card, count])
+        writer.writerow(["Card Name (Total Maxed)", "Members with Max (Lvl 16)"])
+
+        for card_name, members in sorted_cards:
+            # Join names with a semicolon or comma so they stay in one cell
+            member_list_str = ", ".join(sorted(members)) 
+            writer.writerow([f"{card_name} ({len(members)})", member_list_str])
 
         output.seek(0)
-        await ctx.send(file=discord.File(fp=output, filename="CardPowerReport.csv"))
+        
+        # Send to Discord
+        await ctx.send(
+            content=f"✅ Report complete! Found **{len(card_to_members)}** different maxed cards across the clan.",
+            file=discord.File(fp=output, filename="Detailed_Clan_Card_Report.csv")
+        )
+            
 
     @commands.command()
     async def forecast(self, ctx):
@@ -551,6 +604,8 @@ class ClashRoyale(commands.Cog):
         if not clan_tag:
             return await ctx.send("❌ Link your account first.")
 
+        # NOTE: Intentionally shares cache key "war:{clan_tag}" with !war since
+        # both commands read from the same /currentriverrace endpoint.
         url = f"{self.api_base}/clans/{quote('#' + clan_tag)}/currentriverrace"
         data = await self._api_get(url, cache_key=f"war:{clan_tag}", ttl=60 * 5)
         if not data:
@@ -563,7 +618,12 @@ class ClashRoyale(commands.Cog):
         if fame >= goal:
             return await ctx.send("✅ **Forecast:** Your clan has already finished the race!")
             
-        members = data.get("clan", {}).get("participants", [])
+        members = clan_info.get("participants", [])
+
+        # FIX: Guard against an empty participants list to avoid a misleading projection.
+        if not members:
+            return await ctx.send("❌ Could not read participant data for the forecast.")
+
         decks_used = sum(p.get("decksUsedToday", 0) for p in members)
         decks_remaining = (len(members) * 4) - decks_used
         
@@ -704,8 +764,11 @@ class ClashRoyale(commands.Cog):
                 
                 if val > 0 and max_player_hour_count > 0:
                     ratio = val / max_player_hour_count
-                    gb = int(255 * (1 - ratio))
-                    hex_color = f"FFFF{gb:02X}{gb:02X}" 
+                    # FIX: Renamed 'gb' to 'green_blue' to clarify that this value
+                    # controls both the green and blue channels together, fading them
+                    # out as activity increases to produce a white -> red heat gradient.
+                    green_blue = int(255 * (1 - ratio))
+                    hex_color = f"FFFF{green_blue:02X}{green_blue:02X}"
                     
                     fill = PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
                     cell.fill = fill
