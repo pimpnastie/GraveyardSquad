@@ -119,10 +119,10 @@ class ProfileView(discord.ui.View):
                 value=f"**{fav_card.get('name', 'Unknown')}**",
                 inline=False,
             )
-            
+
         cards = self.data.get("currentDeck", [])
         deck_str = "\n".join([f"• **{c['name']}** (Lvl {c['level']})" for c in cards])
-        
+
         e.add_field(
             name="⚔️ Current Battle Deck",
             value=deck_str or "No deck found.",
@@ -162,7 +162,17 @@ class ClashRoyale(commands.Cog):
         self.active_warmups: set[str] = set()
 
         self.reminder_loop.start()
-        self.bot.loop.create_task(self._cache_cards())
+        # FIX: Schedule _cache_cards via setup hook pattern to avoid racing
+        # the event loop during __init__. Use asyncio.ensure_future as a safe
+        # fallback since we may not yet be in a running loop context.
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(self._cache_cards())
+            else:
+                loop.create_task(self._cache_cards())
+        except RuntimeError:
+            pass  # Loop not yet available; _cache_cards will be triggered on first whohas use
 
     def cog_unload(self):
         self.reminder_loop.cancel()
@@ -170,6 +180,9 @@ class ClashRoyale(commands.Cog):
     async def cog_before_invoke(self, ctx):
         if ctx.command and ctx.command.name in WARMUP_RELEVANT_COMMANDS:
             await self._check_and_start_warmup()
+        # Ensure card list is populated if startup cache failed
+        if not self.all_cards and ctx.command and ctx.command.name in {"whohas"}:
+            await self._cache_cards()
 
     async def _check_and_start_warmup(self):
         warm_key = f"warmed_today:{CLAN_TAG}"
@@ -255,8 +268,8 @@ class ClashRoyale(commands.Cog):
                 async with self.bot.http_session.get(url, headers=self.bot._cr_headers()) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        
-                        # NORMALIZATION: Fix API's relative card levels universally!
+
+                        # NORMALIZATION: Fix API's relative card levels universally
                         if isinstance(data, dict):
                             if "cards" in data:
                                 for c in data["cards"]:
@@ -301,9 +314,11 @@ class ClashRoyale(commands.Cog):
 
     async def _fetch_members_concurrent(self, member_list: list) -> list:
         sem = asyncio.Semaphore(CONCURRENT_REQUESTS)
+
         async def fetch_one(member):
             async with sem:
                 return await self._get_player_data(member["tag"])
+
         results = await asyncio.gather(*[fetch_one(m) for m in member_list])
         return [r for r in results if r is not None]
 
@@ -361,7 +376,8 @@ class ClashRoyale(commands.Cog):
     @commands.command()
     async def link(self, ctx, tag: str):
         """Link your Discord account to a player tag."""
-        clean_tag = tag.upper().lstrip("#")
+        # FIX: use replace("#", "") instead of lstrip("#") for consistency
+        clean_tag = tag.upper().replace("#", "")
         if len(clean_tag) < 3:
             return await ctx.send("❌ That doesn't look like a valid player tag.")
 
@@ -590,7 +606,11 @@ class ClashRoyale(commands.Cog):
 
         header = f"📊 **Owners of {target_card} (Lvl {MAX_CARD_LEVEL}+):**"
         if hits:
-            await ctx.send(f"{header}\n" + "\n".join(hits))
+            # FIX: Guard against Discord's 2000 character message limit
+            response = f"{header}\n" + "\n".join(hits)
+            if len(response) > 1900:
+                response = response[:1900] + "\n… and more."
+            await ctx.send(response)
         else:
             await ctx.send(f"❌ Nobody in the clan has **{target_card}** maxed.")
 
@@ -623,10 +643,13 @@ class ClashRoyale(commands.Cog):
             writer.writerow([f"{card_name} ({len(card_members)})", ", ".join(sorted(card_members))])
         output.seek(0)
 
+        # FIX: msg.edit() does not support attaching new files via attachments=.
+        # Delete the placeholder and send a fresh message with file= instead.
         csv_file = discord.File(fp=output, filename="Detailed_Clan_Card_Report.csv")
-        await msg.edit(
+        await msg.delete()
+        await ctx.send(
             content=f"✅ Report complete! Found **{len(card_to_members)}** different maxed cards across {len(profiles)} members.",
-            attachments=[csv_file]
+            file=csv_file,
         )
 
     @commands.command()
@@ -643,12 +666,21 @@ class ClashRoyale(commands.Cog):
 
         clan_info = data.get("clan", {})
         fame = clan_info.get("fame", 0)
+
+        # FIX: participants lives inside the clan object in the API response,
+        # not at the top level. Fall back to scanning data["clans"] if absent.
         participants = clan_info.get("participants", [])
+        if not participants:
+            # Some API versions nest participants under each clan in data["clans"]
+            for c in data.get("clans", []):
+                if c.get("tag", "").replace("#", "").upper() == CLAN_TAG.upper():
+                    participants = c.get("participants", [])
+                    break
 
         if not participants:
             return await ctx.send("❌ Could not read participant data for the forecast.")
 
-        goal = data.get("periodPoints", 10_000) or 10_000
+        goal = 10_000  # CR fame finish line is always 10,000; periodPoints is deck count, not fame goal
         if fame >= goal:
             return await ctx.send("✅ **Forecast:** Your clan has already finished the race!")
 
@@ -689,7 +721,8 @@ class ClashRoyale(commands.Cog):
 
         opponent_cards: Counter = Counter()
         for battle_log in battle_logs:
-            if not battle_log: continue
+            if not battle_log:
+                continue
             for battle in battle_log[:3]:
                 for opp in battle.get("opponent", []):
                     for card in opp.get("cards", []):
@@ -736,7 +769,8 @@ class ClashRoyale(commands.Cog):
 
         for name, battle_log in results:
             player_counts[name] = Counter()
-            if not battle_log: continue
+            if not battle_log:
+                continue
             for battle in battle_log:
                 ts = battle.get("battleTime", "")
                 if len(ts) >= 15:
@@ -775,7 +809,9 @@ class ClashRoyale(commands.Cog):
                     gb = int(255 * (1 - ratio))
                     cell.fill = PatternFill(start_color=f"FFFF{gb:02X}{gb:02X}", end_color=f"FFFF{gb:02X}{gb:02X}", fill_type="solid")
 
-                excel_buffer = io.BytesIO()
+        # FIX: excel_buffer must be created outside the loop, and
+        # msg.edit() cannot attach new files — delete and resend instead.
+        excel_buffer = io.BytesIO()
         wb.save(excel_buffer)
         excel_buffer.seek(0)
 
@@ -785,7 +821,8 @@ class ClashRoyale(commands.Cog):
             color=0xF1C40F,
         )
         excel_file = discord.File(fp=excel_buffer, filename="Clan_Prime_Time_Heatmap.xlsx")
-        await msg.edit(content=None, embed=embed, attachments=[excel_file])
+        await msg.delete()
+        await ctx.send(embed=embed, file=excel_file)
 
     @commands.command()
     @commands.has_permissions(manage_guild=True)
