@@ -54,6 +54,7 @@ app.secret_key = os.getenv("FLASK_SECRET", os.urandom(24))
 
 CR_API_KEY = os.getenv("CR_TOKEN")
 CLAN_TAG = "9LVY89UP"
+MAX_CARD_LEVEL = 16
 
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
@@ -76,10 +77,10 @@ def fetch_cr_api(endpoint: str) -> dict | None:
             if isinstance(data, dict):
                 if "cards" in data:
                     for c in data["cards"]:
-                        c["level"] = 14 - c.get("maxLevel", 14) + c.get("level", 1)
+                        c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
                 if "currentDeck" in data:
                     for c in data["currentDeck"]:
-                        c["level"] = 14 - c.get("maxLevel", 14) + c.get("level", 1)
+                        c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
                         
             return data
         else:
@@ -226,17 +227,17 @@ PLAYER_HTML = """
 
     <h2>📚 Collection Breakdown</h2>
     <div class="grid">
-        {% set counts = namespace(lvl16=0, lvl15=0, lvl14=0, total=data.cards|length) %}
+        {% set counts = namespace(maxed=0, minus_one=0, minus_two=0, total=data.cards|length) %}
         {% for c in data.cards %}
-            {% if c.level >= 16 %} {% set counts.lvl16 = counts.lvl16 + 1 %}
-            {% elif c.level == 15 %} {% set counts.lvl15 = counts.lvl15 + 1 %}
-            {% elif c.level == 14 %} {% set counts.lvl14 = counts.lvl14 + 1 %}
+            {% if c.level >= max_lvl %} {% set counts.maxed = counts.maxed + 1 %}
+            {% elif c.level == max_lvl - 1 %} {% set counts.minus_one = counts.minus_one + 1 %}
+            {% elif c.level == max_lvl - 2 %} {% set counts.minus_two = counts.minus_two + 1 %}
             {% endif %}
         {% endfor %}
         <div class="stat-box"><div class="label">Total Cards Found</div><div class="value white">{{ counts.total }} / 121</div></div>
-        <div class="stat-box"><div class="label">Maxed (Lvl 16+)</div><div class="value green">{{ counts.lvl16 }}</div></div>
-        <div class="stat-box"><div class="label">Elite (Lvl 15)</div><div class="value blue">{{ counts.lvl15 }}</div></div>
-        <div class="stat-box"><div class="label">Lvl 14</div><div class="value white">{{ counts.lvl14 }}</div></div>
+        <div class="stat-box"><div class="label">Maxed (Lvl {{ max_lvl }}+)</div><div class="value green">{{ counts.maxed }}</div></div>
+        <div class="stat-box"><div class="label">Lvl {{ max_lvl - 1 }}</div><div class="value blue">{{ counts.minus_one }}</div></div>
+        <div class="stat-box"><div class="label">Lvl {{ max_lvl - 2 }}</div><div class="value white">{{ counts.minus_two }}</div></div>
     </div>
 
     <h2>⚔️ Battle Stats</h2>
@@ -265,9 +266,9 @@ PLAYER_HTML = """
     <h2>🃏 Current Battle Deck</h2>
     <div class="deck-grid">
         {% for card in data.currentDeck %}
-            <div class="card-box {% if card.level >= 16 %}maxed{% endif %}">
+            <div class="card-box {% if card.level >= max_lvl %}maxed{% endif %}">
                 <div class="card-name">{{ card.name }}</div>
-                <span class="card-level">Lvl {{ card.level }}{% if card.level >= 16 %} ✓{% endif %}</span>
+                <span class="card-level">Lvl {{ card.level }}{% if card.level >= max_lvl %} ✓{% endif %}</span>
             </div>
         {% endfor %}
     </div>
@@ -289,7 +290,7 @@ def web_profile(tag):
     data = fetch_cr_api(f"players/%23{tag}")
     if not data:
         return "<h1>Player data not found.</h1>", 404
-    return render_template_string(PLAYER_HTML, data=data)
+    return render_template_string(PLAYER_HTML, data=data, max_lvl=MAX_CARD_LEVEL)
 
 @app.route("/login")
 def login():
