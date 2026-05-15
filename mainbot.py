@@ -5,8 +5,8 @@ import logging
 import threading
 import asyncio
 import urllib.parse
-import aiohttp        # Restored missing import for the Discord Bot
-import requests       # Used for the synchronous Flask website
+import aiohttp
+import requests
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -53,13 +53,12 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", os.urandom(24))
 
 CR_API_KEY = os.getenv("CR_TOKEN")
-CLAN_TAG = "9LVY89UP"  # Clean tag without the #
+CLAN_TAG = "9LVY89UP"
 
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 REDIRECT_URI = "https://graveyardbot.onrender.com/callback"
 
-# Sync MongoDB Client specifically for Flask
 mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 mongo_client_sync = MongoClient(mongo_url)
 db_sync = mongo_client_sync["graveyardbot"]
@@ -277,7 +276,6 @@ def web_profile(tag):
         return "<h1>Player data not found.</h1>", 404
     return render_template_string(PLAYER_HTML, data=data)
 
-# --- Discord OAuth2 Web Linking Flow ---
 @app.route("/login")
 def login():
     if not DISCORD_CLIENT_ID:
@@ -321,7 +319,6 @@ def web_link():
     error_msg = None
     if request.method == "POST":
         tag = request.form.get("tag", "").upper().replace("#", "")
-        
         cr_data = fetch_cr_api(f"players/%23{tag}")
         if cr_data and "name" in cr_data:
             users_sync.update_one(
@@ -379,7 +376,7 @@ class GraveyardBot(commands.Bot):
         if self.http_session:
             await self.http_session.close()
         if self.redis_available:
-            await self.redis.close()
+            await self.redis.aclose()
         await super().close()
 
 if __name__ == "__main__":
