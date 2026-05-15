@@ -4,6 +4,7 @@ import subprocess
 import logging
 import threading
 import asyncio
+import aiohttp
 import requests
 import discord
 from discord.ext import commands
