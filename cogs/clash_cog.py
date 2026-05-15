@@ -255,6 +255,16 @@ class ClashRoyale(commands.Cog):
                 async with self.bot.http_session.get(url, headers=self.bot._cr_headers()) as resp:
                     if resp.status == 200:
                         data = await resp.json()
+                        
+                        # NORMALIZATION: Fix API's relative card levels universally!
+                        if isinstance(data, dict):
+                            if "cards" in data:
+                                for c in data["cards"]:
+                                    c["level"] = 14 - c.get("maxLevel", 14) + c.get("level", 1)
+                            if "currentDeck" in data:
+                                for c in data["currentDeck"]:
+                                    c["level"] = 14 - c.get("maxLevel", 14) + c.get("level", 1)
+
                         if cache_key:
                             await self._cache_set(cache_key, data, ttl)
                         return data
@@ -578,7 +588,7 @@ class ClashRoyale(commands.Cog):
                 if card["name"] == target_card and self._is_maxed(card):
                     hits.append(f"• **{player_name}** (Lvl {card['level']})")
 
-        header = f"📊 **Owners of {target_card} (Lvl {MAX_CARD_LEVEL}):**"
+        header = f"📊 **Owners of {target_card} (Lvl {MAX_CARD_LEVEL}+):**"
         if hits:
             await ctx.send(f"{header}\n" + "\n".join(hits))
         else:
