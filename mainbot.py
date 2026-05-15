@@ -69,7 +69,22 @@ def fetch_cr_api(endpoint: str) -> dict | None:
     url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        return response.json() if response.status_code == 200 else None
+        if response.status_code == 200:
+            data = response.json()
+            
+            # NORMALIZATION: Fix API's relative card levels universally!
+            if isinstance(data, dict):
+                if "cards" in data:
+                    for c in data["cards"]:
+                        c["level"] = 14 - c.get("maxLevel", 14) + c.get("level", 1)
+                if "currentDeck" in data:
+                    for c in data["currentDeck"]:
+                        c["level"] = 14 - c.get("maxLevel", 14) + c.get("level", 1)
+                        
+            return data
+        else:
+            log.warning(f"Flask API returned {response.status_code} for {url}")
+            return None
     except Exception as e:
         log.error(f"Flask API Request failed: {e}")
         return None
@@ -213,13 +228,13 @@ PLAYER_HTML = """
     <div class="grid">
         {% set counts = namespace(lvl16=0, lvl15=0, lvl14=0, total=data.cards|length) %}
         {% for c in data.cards %}
-            {% if c.level == 16 %} {% set counts.lvl16 = counts.lvl16 + 1 %}
+            {% if c.level >= 16 %} {% set counts.lvl16 = counts.lvl16 + 1 %}
             {% elif c.level == 15 %} {% set counts.lvl15 = counts.lvl15 + 1 %}
             {% elif c.level == 14 %} {% set counts.lvl14 = counts.lvl14 + 1 %}
             {% endif %}
         {% endfor %}
         <div class="stat-box"><div class="label">Total Cards Found</div><div class="value white">{{ counts.total }} / 121</div></div>
-        <div class="stat-box"><div class="label">Maxed (Lvl 16)</div><div class="value green">{{ counts.lvl16 }}</div></div>
+        <div class="stat-box"><div class="label">Maxed (Lvl 16+)</div><div class="value green">{{ counts.lvl16 }}</div></div>
         <div class="stat-box"><div class="label">Elite (Lvl 15)</div><div class="value blue">{{ counts.lvl15 }}</div></div>
         <div class="stat-box"><div class="label">Lvl 14</div><div class="value white">{{ counts.lvl14 }}</div></div>
     </div>
@@ -250,9 +265,9 @@ PLAYER_HTML = """
     <h2>🃏 Current Battle Deck</h2>
     <div class="deck-grid">
         {% for card in data.currentDeck %}
-            <div class="card-box {% if card.level == 16 %}maxed{% endif %}">
+            <div class="card-box {% if card.level >= 16 %}maxed{% endif %}">
                 <div class="card-name">{{ card.name }}</div>
-                <span class="card-level">Lvl {{ card.level }}{% if card.level == 16 %} ✓{% endif %}</span>
+                <span class="card-level">Lvl {{ card.level }}{% if card.level >= 16 %} ✓{% endif %}</span>
             </div>
         {% endfor %}
     </div>
