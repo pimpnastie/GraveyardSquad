@@ -290,17 +290,6 @@ class ClashRoyale(commands.Cog):
         log.error(f"All {MAX_RETRIES} retries exhausted for {url}")
         return None
 
-            except asyncio.TimeoutError:
-                log.warning(f"Timeout on attempt {attempt} for {url}")
-                await asyncio.sleep(delay)
-                delay *= 2
-            except Exception as exc:
-                log.error(f"Unexpected error fetching {url}: {exc}")
-                return None
-
-        log.error(f"All {MAX_RETRIES} retries exhausted for {url}")
-        return None
-
     async def _get_player_data(self, tag: str):
         clean_tag = tag.upper().replace("#", "")
         url = f"{self.api_base}/players/{quote('#' + clean_tag)}"
@@ -629,7 +618,7 @@ class ClashRoyale(commands.Cog):
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Card Name (Total Maxed)", "Members with Max (Lvl 16)"])
+        writer.writerow(["Card Name (Total Maxed)", f"Members with Max (Lvl {MAX_CARD_LEVEL})"])
         for card_name, card_members in sorted_cards:
             writer.writerow([f"{card_name} ({len(card_members)})", ", ".join(sorted(card_members))])
         output.seek(0)
@@ -786,7 +775,7 @@ class ClashRoyale(commands.Cog):
                     gb = int(255 * (1 - ratio))
                     cell.fill = PatternFill(start_color=f"FFFF{gb:02X}{gb:02X}", end_color=f"FFFF{gb:02X}{gb:02X}", fill_type="solid")
 
-        excel_buffer = io.BytesIO()
+                excel_buffer = io.BytesIO()
         wb.save(excel_buffer)
         excel_buffer.seek(0)
 
