@@ -16,17 +16,17 @@ from thefuzz import process
 
 log = logging.getLogger("clashbot")
 
+CLAN_TAG            = "9LVY89UP"  # Hardcoded Graveyard Squad Tag
 MAX_CARD_LEVEL      = 16
 CONCURRENT_REQUESTS = 5
 
 # --- Cache TTLs (seconds) ---
-TTL_CARDS       = 60 * 60 * 24   # 24 hours  – card list rarely changes
+TTL_CARDS       = 60 * 60 * 24   # 24 hours
 TTL_CLAN        = 60 * 10        # 10 minutes
 TTL_PLAYER      = 60 * 5         # 5 minutes
-TTL_CLAN_TAG    = 60 * 60        # 1 hour
-TTL_BATTLE_LOG  = 60 * 60 * 24   # 24 hours  – "first use of the day" log cache
-TTL_WAR         = 60 * 5         # 5 minutes  – live war data
-TTL_PROFILES    = 60 * 60 * 24   # 24 hours  – bulk profile warmup
+TTL_BATTLE_LOG  = 60 * 60 * 24   # 24 hours
+TTL_WAR         = 60 * 5         # 5 minutes
+TTL_PROFILES    = 60 * 60 * 24   # 24 hours
 
 # CR API retry settings
 MAX_RETRIES     = 3
@@ -143,8 +143,7 @@ class ProfileView(discord.ui.View):
                 value=f"**{fav_card.get('name', 'Unknown')}",
                 inline=False,
             )
-        deck_str = "\n".join(
-            f"• ** (Lvl {card['level']})"
+        deck_str = "** (Lvl {card['level']})"
             for card in self.data.get("currentDeck", [])
         )
         e.add_field(
@@ -201,27 +200,23 @@ class ClashRoyale(commands.Cog):
 
     async def cog_before_invoke(self, ctx):
         if ctx.command and ctx.command.name in WARMUP_RELEVANT_COMMANDS:
-            await self._check_and_start_warmup(ctx.author.id)
+            await self._check_and_start_warmup()
 
-    async def _check_and_start_warmup(self, user_id: int):
-        clan_tag = await self.get_clan_tag(user_id)
-        if not clan_tag:
-            return
-
-        warm_key = f"warmed_today:{clan_tag}"
+    async def _check_and_start_warmup(self):
+        warm_key = f"warmed_today:{CLAN_TAG}"
         is_warmed = await self._cache_get(warm_key)
 
-        if is_warmed or clan_tag in self.active_warmups:
+        if is_warmed or CLAN_TAG in self.active_warmups:
             return
 
-        self.active_warmups.add(clan_tag)
+        self.active_warmups.add(CLAN_TAG)
         await self._cache_set(warm_key, True, TTL_BATTLE_LOG)
-        asyncio.create_task(self._run_warmup_task(clan_tag))
+        asyncio.create_task(self._run_warmup_task())
 
-    async def _run_warmup_task(self, clan_tag: str):
+    async def _run_warmup_task(self):
         try:
-            log.info(f"⏰ Warming cache for clan #{clan_tag}...")
-            clan_data = await self._get_clan_data(clan_tag)
+            log.info(f"⏰ Warming cache for clan #{CLAN_TAG}...")
+            clan_data = await self._get_clan_data(CLAN_TAG)
             if not clan_data:
                 return
 
@@ -245,19 +240,19 @@ class ClashRoyale(commands.Cog):
                     )
 
             await asyncio.gather(*[warm_member(m) for m in members])
-            log.info(f"✅ Cache warming complete for #{clan_tag}.")
+            log.info(f"✅ Cache warming complete for #{CLAN_TAG}.")
         except Exception as exc:
-            log.error(f"Error during warmup for #{clan_tag}: {exc}")
+            log.error(f"Error during warmup for #{CLAN_TAG}: {exc}")
         finally:
-            self.active_warmups.discard(clan_tag)
+            self.active_warmups.discard(CLAN_TAG)
 
-    async def wait_if_warming(self, ctx, clan_tag: str):
-        if clan_tag in self.active_warmups:
+    async def wait_if_warming(self, ctx):
+        if CLAN_TAG in self.active_warmups:
             msg = await ctx.send(
                 "⏳ **Waking up!** Gathering today's data for the clan. "
                 "This takes about 10–15 seconds…"
             )
-            while clan_tag in self.active_warmups:
+            while CLAN_TAG in self.active_warmups:
                 await asyncio.sleep(1)
             await msg.delete()
 
@@ -376,24 +371,6 @@ class ClashRoyale(commands.Cog):
             self.all_cards = [c["name"] for c in data.get("items", [])]
             log.info(f"✅ Fetched and cached {len(self.all_cards)} cards.")
 
-    async def get_clan_tag(self, user_id: int) -> str | None:
-        d_id = str(user_id)
-        cache_key = f"clan_tag:{d_id}"
-
-        cached = await self._cache_get(cache_key)
-        if cached:
-            return cached if isinstance(cached, str) else cached.get("tag")
-
-        user_doc = await self.users.find_one({"_id": d_id})
-        if not user_doc:
-            return None
-
-        data = await self._get_player_data(user_doc["player_id"])
-        if data and "clan" in data:
-            tag = data["clan"]["tag"].replace("#", "")
-            await self._cache_set(cache_key, tag, TTL_CLAN_TAG)
-            return tag
-        return None
 
     # ------------------------------------------------------------------ #
     # ERROR HANDLER                                                      #
@@ -409,7 +386,7 @@ class ClashRoyale(commands.Cog):
             log.error(f"Error in command '{ctx.command}': {error}")
 
     # ------------------------------------------------------------------ #
-    # PLAYER COMMANDS                                                    #
+    # INDIVIDUAL PLAYER COMMANDS (Still require linking)                 #
     # ------------------------------------------------------------------ #
 
     @commands.command(aliases=["profile", "analytics"])
@@ -461,7 +438,6 @@ class ClashRoyale(commands.Cog):
             {"$set": {"player_id": clean_tag}},
             upsert=True,
         )
-        await self._cache_delete(f"clan_tag:{ctx.author.id}")
 
         role = ctx.guild.get_role(self.role_id)
         if role:
@@ -523,8 +499,7 @@ class ClashRoyale(commands.Cog):
         embed = discord.Embed(
             title=f"⚔️ {data['name']}'s Current Deck", color=0xEE82EE
         )
-        deck_str = "\n".join(
-            f"• ** (Lvl {card['level']})"
+        deck_str = "** (Lvl {card['level']})"
             for card in data.get("currentDeck", [])
         )
         embed.description = deck_str or "No deck found."
@@ -601,17 +576,13 @@ class ClashRoyale(commands.Cog):
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------ #
-    # CLAN COMMANDS                                                      #
+    # CLAN COMMANDS (Hardcoded, no linking required)                     #
     # ------------------------------------------------------------------ #
 
     @commands.command()
     async def clan(self, ctx):
         """Shows a general overview of the clan."""
-        clan_tag = await self.get_clan_tag(ctx.author.id)
-        if not clan_tag:
-            return await ctx.send("❌ Link your account and join a clan first.")
-
-        data = await self._get_clan_data(clan_tag)
+        data = await self._get_clan_data(CLAN_TAG)
         if not data:
             return await ctx.send("❌ Could not fetch clan data.")
 
@@ -638,12 +609,8 @@ class ClashRoyale(commands.Cog):
     @commands.command()
     async def war(self, ctx):
         """Shows the current status of our clan as a quick overview."""
-        clan_tag = await self.get_clan_tag(ctx.author.id)
-        if not clan_tag:
-            return await ctx.send("❌ Link your account and join a clan first.")
-
-        url = f"{self.api_base}/clans/{quote('#' + clan_tag)}/currentriverrace"
-        data = await self._api_get(url, cache_key=f"currentrace:{clan_tag}", ttl=TTL_WAR)
+        url = f"{self.api_base}/clans/{quote('#' + CLAN_TAG)}/currentriverrace"
+        data = await self._api_get(url, cache_key=f"currentrace:{CLAN_TAG}", ttl=TTL_WAR)
         if not data:
             return await ctx.send("❌ Could not fetch war data.")
 
@@ -663,16 +630,12 @@ class ClashRoyale(commands.Cog):
     @commands.command()
     async def race(self, ctx, period: str = "current"):
         """Gives the results of the current river race, or the last if specified."""
-        clan_tag = await self.get_clan_tag(ctx.author.id)
-        if not clan_tag:
-            return await ctx.send("❌ Link your account and join a clan first.")
-
         embed = discord.Embed(color=0x1ABC9C)
 
         if period.lower() == "last":
-            url = f"{self.api_base}/clans/{quote('#' + clan_tag)}/riverracelog"
+            url = f"{self.api_base}/clans/{quote('#' + CLAN_TAG)}/riverracelog"
             data = await self._api_get(
-                url, cache_key=f"racelog:{clan_tag}", ttl=60 * 60
+                url, cache_key=f"racelog:{CLAN_TAG}", ttl=60 * 60
             )
             if not data or not data.get("items"):
                 return await ctx.send("❌ Could not fetch past race log.")
@@ -687,9 +650,9 @@ class ClashRoyale(commands.Cog):
                     inline=False,
                 )
         else:
-            url = f"{self.api_base}/clans/{quote('#' + clan_tag)}/currentriverrace"
+            url = f"{self.api_base}/clans/{quote('#' + CLAN_TAG)}/currentriverrace"
             data = await self._api_get(
-                url, cache_key=f"currentrace:{clan_tag}", ttl=TTL_WAR
+                url, cache_key=f"currentrace:{CLAN_TAG}", ttl=TTL_WAR
             )
             if not data:
                 return await ctx.send("❌ Could not fetch current race data.")
@@ -712,13 +675,9 @@ class ClashRoyale(commands.Cog):
     @commands.command()
     async def whohas(self, ctx, *, card_name: str = None):
         """Fuzzy search for maxed card owners in the clan."""
-        clan_tag = await self.get_clan_tag(ctx.author.id)
-        if not clan_tag:
-            return await ctx.send("❌ Link your account and join a clan first.")
+        await self.wait_if_warming(ctx)
 
-        await self.wait_if_warming(ctx, clan_tag)
-
-        clan_data = await self._get_clan_data(clan_tag)
+        clan_data = await self._get_clan_data(CLAN_TAG)
         if not clan_data:
             return await ctx.send("❌ Could not fetch clan data. Try again later.")
 
@@ -765,14 +724,10 @@ class ClashRoyale(commands.Cog):
     @commands.command()
     async def cardstats(self, ctx):
         """Generates a CSV listing every member's maxed cards, sorted by popularity."""
-        clan_tag = await self.get_clan_tag(ctx.author.id)
-        if not clan_tag:
-            return await ctx.send("❌ Link first.")
-
-        await self.wait_if_warming(ctx, clan_tag)
+        await self.wait_if_warming(ctx)
         msg = await ctx.send("📊 **Generating Detailed Card Power Report…**")
 
-        clan_data = await self._get_clan_data(clan_tag)
+        clan_data = await self._get_clan_data(CLAN_TAG)
         if not clan_data:
             return await msg.edit(content="❌ Could not fetch clan data.")
 
@@ -808,12 +763,8 @@ class ClashRoyale(commands.Cog):
     @commands.command()
     async def forecast(self, ctx):
         """Calculates if your clan will finish the race today based on current pace."""
-        clan_tag = await self.get_clan_tag(ctx.author.id)
-        if not clan_tag:
-            return await ctx.send("❌ Link your account first.")
-
-        url = f"{self.api_base}/clans/{quote('#' + clan_tag)}/currentriverrace"
-        data = await self._api_get(url, cache_key=f"currentrace:{clan_tag}", ttl=TTL_WAR)
+        url = f"{self.api_base}/clans/{quote('#' + CLAN_TAG)}/currentriverrace"
+        data = await self._api_get(url, cache_key=f"currentrace:{CLAN_TAG}", ttl=TTL_WAR)
         if not data:
             return await ctx.send("❌ Could not fetch war data.")
 
@@ -865,15 +816,11 @@ class ClashRoyale(commands.Cog):
     @commands.command()
     async def scout(self, ctx):
         """Analyzes recent battles from all clan members to show the current meta."""
-        clan_tag = await self.get_clan_tag(ctx.author.id)
-        if not clan_tag:
-            return await ctx.send("❌ Link your account and join a clan first.")
-
-        await self.wait_if_warming(ctx, clan_tag)
+        await self.wait_if_warming(ctx)
 
         msg = await ctx.send("🔍 Scouting enemy meta…")
 
-        clan_data = await self._get_clan_data(clan_tag)
+        clan_data = await self._get_clan_data(CLAN_TAG)
         if not clan_data:
             return await msg.edit(content="❌ Could not fetch clan data.")
 
@@ -919,15 +866,11 @@ class ClashRoyale(commands.Cog):
     @commands.command()
     async def primetime(self, ctx):
         """Analyzes recent battle logs to produce an EST Excel heatmap of clan activity."""
-        clan_tag = await self.get_clan_tag(ctx.author.id)
-        if not clan_tag:
-            return await ctx.send("❌ Link your account and join a clan first.")
-
-        await self.wait_if_warming(ctx, clan_tag)
+        await self.wait_if_warming(ctx)
 
         msg = await ctx.send("🕒 Calculating activity heatmap for all members…")
 
-        clan_data = await self._get_clan_data(clan_tag)
+        clan_data = await self._get_clan_data(CLAN_TAG)
         if not clan_data:
             return await msg.edit(content="❌ Could not fetch clan data.")
 
@@ -1057,7 +1000,7 @@ class ClashRoyale(commands.Cog):
     @reminder_loop.error
     async def reminder_loop_error(self, error):
         log.error(f"Reminder loop crashed: {error}", exc_info=error)
-        await asyncio.sleep(60)  # brief cooldown before restart
+        await asyncio.sleep(60)
         self.reminder_loop.restart()
 
     @reminder_loop.before_loop
