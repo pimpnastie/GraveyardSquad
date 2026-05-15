@@ -249,7 +249,7 @@ class ClashRoyale(commands.Cog):
             if cached is not None:
                 return cached
 
-       delay = RETRY_BACKOFF
+        delay = RETRY_BACKOFF
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 async with self.bot.http_session.get(url, headers=self.bot._cr_headers()) as resp:
@@ -278,6 +278,17 @@ class ClashRoyale(commands.Cog):
 
                     log.warning(f"CR API returned {resp.status} for {url}")
                     return None
+
+            except asyncio.TimeoutError:
+                log.warning(f"Timeout on attempt {attempt} for {url}")
+                await asyncio.sleep(delay)
+                delay *= 2
+            except Exception as exc:
+                log.error(f"Unexpected error fetching {url}: {exc}")
+                return None
+
+        log.error(f"All {MAX_RETRIES} retries exhausted for {url}")
+        return None
 
             except asyncio.TimeoutError:
                 log.warning(f"Timeout on attempt {attempt} for {url}")
