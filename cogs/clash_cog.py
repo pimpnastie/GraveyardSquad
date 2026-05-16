@@ -7,12 +7,13 @@ import logging
 import discord
 from collections import Counter
 from urllib.parse import quote
-from datetime import datetime
 import zoneinfo
+from datetime import datetime, time as dt_time
 import openpyxl
 from openpyxl.styles import PatternFill
 from discord.ext import commands, tasks
 from thefuzz import process
+from pymongo import UpdateOne
 
 log = logging.getLogger("clashbot")
 
@@ -156,14 +157,15 @@ class ClashRoyale(commands.Cog):
         self.api_base = "https://proxy.royaleapi.dev/v1"
         self.role_id = int(os.getenv("BADGE_ROLE_ID", 1464091054960803893))
 
-        # Core Configuration Parameters
         self.clan_tag = "9LVY89UP"  
         self.max_card_level = 16    
 
         self.all_cards: list[str] = []
         self.active_warmups: set[str] = set()
 
+        # Start loops safely
         self.reminder_loop.start()
+        self.daily_snapshot_loop.start()
         
         try:
             loop = asyncio.get_event_loop()
@@ -176,6 +178,7 @@ class ClashRoyale(commands.Cog):
 
     def cog_unload(self):
         self.reminder_loop.cancel()
+        self.daily_snapshot_loop.cancel()
 
     async def cog_before_invoke(self, ctx):
         if ctx.command and ctx.command.name in WARMUP_RELEVANT_COMMANDS:
@@ -197,7 +200,7 @@ class ClashRoyale(commands.Cog):
     async def _run_warmup_task(self):
         try:
             log.info(f"⏰ Warming cache for clan #{self.clan_tag}...")
-            clan_data = await self._get_clan_data(self.clan_tag)
+            clan_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}")
             if not clan_data: return
 
             members = clan_data.get("memberList", [])
@@ -206,10 +209,8 @@ class ClashRoyale(commands.Cog):
             async def warm_member(member):
                 async with sem:
                     raw_tag = member["tag"].replace("#", "")
-                    url_log = f"{self.api_base}/players/{quote('#' + raw_tag)}/battlelog"
-                    await self._api_get(url_log, cache_key=f"battlelog:{raw_tag}", ttl=TTL_BATTLE_LOG)
-                    url_player = f"{self.api_base}/players/{quote('#' + raw_tag)}"
-                    await self._api_get(url_player, cache_key=f"player:{raw_tag}", ttl=TTL_PROFILES)
+                    await self.bot.async_fetch_cr_api(f"players/%23{raw_tag}/battlelog")
+                    await self.bot.async_fetch_cr_api(f"players/%23{raw_tag}")
 
             await asyncio.gather(*[warm_member(m) for m in members])
             log.info(f"✅ Cache warming complete for #{self.clan_tag}.")
@@ -253,51 +254,20 @@ class ClashRoyale(commands.Cog):
         else:
             await self.mongo_cache.delete_one({"_id": key})
 
-    async def _api_get(self, url: str, cache_key: str = None, ttl: int = TTL_PLAYER):
-        if cache_key:
-            cached = await self._cache_get(cache_key)
-            if cached is not None: return cached
-
-        delay = RETRY_BACKOFF
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                async with self.bot.http_session.get(url, headers=self.bot._cr_headers()) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-
-                        if isinstance(data, dict):
-                            if "cards" in data:
-                                for c in data["cards"]:
-                                    c["level"] = self.max_card_level - c.get("maxLevel", self.max_card_level) + c.get("level", 1)
-                            if "currentDeck" in data:
-                                for c in data["currentDeck"]:
-                                    c["level"] = self.max_card_level - c.get("maxLevel", self.max_card_level) + c.get("level", 1)
-
-                        if cache_key: await self._cache_set(cache_key, data, ttl)
-                        return data
-
-                    if resp.status == 429:
-                        retry_after = float(resp.headers.get("Retry-After", delay))
-                        await asyncio.sleep(retry_after)
-                        delay *= 2
-                        continue
-                    return None
-            except asyncio.TimeoutError:
-                await asyncio.sleep(delay)
-                delay *= 2
-            except Exception as exc:
-                log.error(f"Unexpected error fetching {url}: {exc}")
-                return None
-        return None
-
     async def _get_player_data(self, tag: str):
         clean_tag = tag.upper().replace("#", "")
-        url = f"{self.api_base}/players/{quote('#' + clean_tag)}"
-        return await self._api_get(url, cache_key=f"player:{clean_tag}", ttl=TTL_PLAYER)
+        cached = await self._cache_get(f"player:{clean_tag}")
+        if cached: return cached
+        data = await self.bot.async_fetch_cr_api(f"players/%23{clean_tag}")
+        if data: await self._cache_set(f"player:{clean_tag}", data, TTL_PLAYER)
+        return data
 
     async def _get_clan_data(self, clan_tag: str):
-        url = f"{self.api_base}/clans/{quote('#' + clan_tag)}"
-        return await self._api_get(url, cache_key=f"clan:{clan_tag}", ttl=TTL_CLAN)
+        cached = await self._cache_get(f"clan:{clan_tag}")
+        if cached: return cached
+        data = await self.bot.async_fetch_cr_api(f"clans/%23{clan_tag}")
+        if data: await self._cache_set(f"clan:{clan_tag}", data, TTL_CLAN)
+        return data
 
     async def _fetch_members_concurrent(self, member_list: list) -> list:
         sem = asyncio.Semaphore(CONCURRENT_REQUESTS)
@@ -315,9 +285,10 @@ class ClashRoyale(commands.Cog):
         if cached:
             self.all_cards = cached
             return
-        data = await self._api_get(f"{self.api_base}/cards", cache_key=cache_key, ttl=TTL_CARDS)
+        data = await self.bot.async_fetch_cr_api(f"cards")
         if data:
             self.all_cards = [c["name"] for c in data.get("items", [])]
+            await self._cache_set(cache_key, self.all_cards, TTL_CARDS)
 
     async def cog_command_error(self, ctx, error):
         if isinstance(error, commands.CommandOnCooldown):
@@ -404,8 +375,13 @@ class ClashRoyale(commands.Cog):
         if not user_doc: return await ctx.send("❌ Account unlinked.")
 
         clean_tag = user_doc["player_id"]
-        url = f"{self.api_base}/players/{quote('#' + clean_tag)}/upcomingchests"
-        data = await self._api_get(url, cache_key=f"chests:{clean_tag}", ttl=60 * 5)
+        cached = await self._cache_get(f"chests:{clean_tag}")
+        if cached:
+            data = cached
+        else:
+            data = await self.bot.async_fetch_cr_api(f"players/%23{clean_tag}/upcomingchests")
+            if data: await self._cache_set(f"chests:{clean_tag}", data, 60 * 5)
+            
         if not data or "items" not in data: return await ctx.send("❌ Failed to fetch chest items.")
 
         embed = discord.Embed(title=f"🎁 Upcoming Chests for #{clean_tag}", color=0xFFD700)
@@ -424,8 +400,13 @@ class ClashRoyale(commands.Cog):
         if not user_doc: return await ctx.send("❌ Account unlinked.")
 
         clean_tag = user_doc["player_id"]
-        url = f"{self.api_base}/players/{quote('#' + clean_tag)}/battlelog"
-        data = await self._api_get(url, cache_key=f"battlelog:{clean_tag}", ttl=60 * 5)
+        cached = await self._cache_get(f"battlelog:{clean_tag}")
+        if cached:
+            data = cached
+        else:
+            data = await self.bot.async_fetch_cr_api(f"players/%23{clean_tag}/battlelog")
+            if data: await self._cache_set(f"battlelog:{clean_tag}", data, 60 * 5)
+            
         if not data: return await ctx.send("❌ Failed to fetch logs.")
 
         embed = discord.Embed(title=f"⚔️ Last 5 Battles for #{clean_tag}", color=0x3498DB)
@@ -450,8 +431,13 @@ class ClashRoyale(commands.Cog):
 
     @commands.command()
     async def war(self, ctx):
-        url = f"{self.api_base}/clans/{quote('#' + self.clan_tag)}/currentriverrace"
-        data = await self._api_get(url, cache_key=f"currentrace:{self.clan_tag}", ttl=TTL_WAR)
+        cached = await self._cache_get(f"currentrace:{self.clan_tag}")
+        if cached:
+            data = cached
+        else:
+            data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
+            if data: await self._cache_set(f"currentrace:{self.clan_tag}", data, TTL_WAR)
+            
         if not data: return await ctx.send("❌ Failed to parse war data.")
 
         state = data.get("state", "Unknown").title()
@@ -465,13 +451,21 @@ class ClashRoyale(commands.Cog):
     async def race(self, ctx, period: str = "current"):
         embed = discord.Embed(color=0x1ABC9C)
         if period.lower() == "last":
-            url = f"{self.api_base}/clans/{quote('#' + self.clan_tag)}/riverracelog"
-            data = await self._api_get(url, cache_key=f"racelog:{self.clan_tag}", ttl=60 * 60)
+            cached = await self._cache_get(f"racelog:{self.clan_tag}")
+            if cached:
+                data = cached
+            else:
+                data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/riverracelog")
+                if data: await self._cache_set(f"racelog:{self.clan_tag}", data, 60 * 60)
             if not data or not data.get("items"): return await ctx.send("❌ No past logs found.")
             standings = data["items"][0].get("standings", [])
         else:
-            url = f"{self.api_base}/clans/{quote('#' + self.clan_tag)}/currentriverrace"
-            data = await self._api_get(url, cache_key=f"currentrace:{self.clan_tag}", ttl=TTL_WAR)
+            cached = await self._cache_get(f"currentrace:{self.clan_tag}")
+            if cached:
+                data = cached
+            else:
+                data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
+                if data: await self._cache_set(f"currentrace:{self.clan_tag}", data, TTL_WAR)
             if not data: return await ctx.send("❌ Failed to map current race data.")
             standings = data.get("clans", [])
 
@@ -535,14 +529,18 @@ class ClashRoyale(commands.Cog):
 
     @commands.command()
     async def forecast(self, ctx):
-        url = f"{self.api_base}/clans/{quote('#' + self.clan_tag)}/currentriverrace"
-        data = await self._api_get(url, cache_key=f"currentrace:{self.clan_tag}", ttl=TTL_WAR)
+        cached = await self._cache_get(f"currentrace:{self.clan_tag}")
+        if cached:
+            data = cached
+        else:
+            data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
+            if data: await self._cache_set(f"currentrace:{self.clan_tag}", data, TTL_WAR)
+            
         if not data: return await ctx.send("❌ Error capturing metrics.")
 
         clan_info = data.get("clan", {})
         fame = clan_info.get("fame", 0)
         
-        # FIX 9: Re-applied smooth multi-tier structural fallback checks across array elements
         participants = clan_info.get("participants", [])
         if not participants and "clans" in data:
             for c in data["clans"]:
@@ -569,7 +567,14 @@ class ClashRoyale(commands.Cog):
         clan_data = await self._get_clan_data(self.clan_tag)
         if not clan_data: return await msg.edit(content="❌ Meta mapping failed.")
 
-        battle_logs = await asyncio.gather(*[self._api_get(f"{self.api_base}/players/{quote('#' + m['tag'].replace('#',''))}/battlelog", cache_key=f"battlelog:{m['tag'].replace('#','')}", ttl=TTL_BATTLE_LOG) for m in clan_data.get("memberList", [])])
+        async def fetch_blog(tag):
+            cached = await self._cache_get(f"battlelog:{tag}")
+            if cached: return cached
+            data = await self.bot.async_fetch_cr_api(f"players/%23{tag}/battlelog")
+            if data: await self._cache_set(f"battlelog:{tag}", data, TTL_BATTLE_LOG)
+            return data
+
+        battle_logs = await asyncio.gather(*[fetch_blog(m['tag'].replace('#','')) for m in clan_data.get("memberList", [])])
         opponent_cards: Counter = Counter()
         for log_entry in [b for b in battle_logs if b]:
             for battle in log_entry[:3]:
@@ -588,7 +593,14 @@ class ClashRoyale(commands.Cog):
         clan_data = await self._get_clan_data(self.clan_tag)
         if not clan_data: return await msg.edit(content="❌ Heatmap metrics unreachable.")
 
-        results = await asyncio.gather(*[self._api_get(f"{self.api_base}/players/{quote('#' + m['tag'].replace('#',''))}/battlelog", cache_key=f"battlelog:{m['tag'].replace('#','')}", ttl=TTL_BATTLE_LOG) for m in clan_data.get("memberList", [])])
+        async def fetch_blog(tag):
+            cached = await self._cache_get(f"battlelog:{tag}")
+            if cached: return cached
+            data = await self.bot.async_fetch_cr_api(f"players/%23{tag}/battlelog")
+            if data: await self._cache_set(f"battlelog:{tag}", data, TTL_BATTLE_LOG)
+            return data
+
+        results = await asyncio.gather(*[fetch_blog(m['tag'].replace('#','')) for m in clan_data.get("memberList", [])])
         
         total_counts = Counter()
         for log_entry in [r for r in results if r]:
@@ -598,7 +610,7 @@ class ClashRoyale(commands.Cog):
                     h = datetime.strptime(ts[:15], "%Y%m%dT%H%M%S").replace(tzinfo=zoneinfo.ZoneInfo("UTC")).astimezone(zoneinfo.ZoneInfo("America/New_York")).hour
                     total_counts[h] += 1
 
-        top_hour = total_hour_counts.most_common(1)[0][0] if total_counts else 20
+        top_hour = total_counts.most_common(1)[0][0] if total_counts else 20
         await msg.delete()
         await ctx.send(f"🔥 Prime active window evaluates to **{top_hour:02d}:00 Eastern Time Zone** metrics.")
 
@@ -610,15 +622,133 @@ class ClashRoyale(commands.Cog):
 
     @tasks.loop(hours=12)
     async def reminder_loop(self):
-        async for g in self.guilds.find({"channel_id": {"$exists": True}}):
-            channel = self.bot.get_channel(g["channel_id"])
-            if channel:
-                try: await channel.send("⚔️ **War Reminder:** River Race is active. Burn your remaining card logs immediately!")
-                except discord.HTTPException: pass
-            await asyncio.sleep(0.5)
+        if getattr(self.bot, "feature_auto_pings", False):
+            async for g in self.guilds.find({"channel_id": {"$exists": True}}):
+                channel = self.bot.get_channel(g["channel_id"])
+                if channel:
+                    try: await channel.send("⚔️ **War Reminder:** River Race is active. Burn your remaining card logs immediately!")
+                    except discord.HTTPException: pass
+                await asyncio.sleep(0.5)
 
     @reminder_loop.before_loop
-    async def before_reminder_loop(self): await self.bot.wait_until_ready()
+    async def before_reminder_loop(self): 
+        await self.bot.wait_until_ready()
+
+    # ── THE ULTIMATE MASTER HARVESTER ──
+    @tasks.loop(time=dt_time(hour=23, minute=55, tzinfo=zoneinfo.ZoneInfo("America/New_York")))
+    async def daily_snapshot_loop(self):
+        clan_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}")
+        war_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
+        if not clan_data: 
+            return
+            
+        snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        members = clan_data.get("memberList", [])
+        
+        # Parse War Participants
+        raw_participants = []
+        if war_data and "clan" in war_data and "participants" in war_data["clan"]:
+            raw_participants = war_data["clan"]["participants"]
+        elif war_data and "clans" in war_data:
+            for c in war_data["clans"]:
+                if c.get("tag", "").replace("#", "").upper() == self.clan_tag.upper():
+                    raw_participants = c.get("participants", [])
+                    break
+                    
+        war_participants = {p["tag"]: p for p in raw_participants}
+        
+        # 1. Prepare Bulk Ops Arrays
+        snapshot_ops = []
+        profile_ops = []
+        battle_ops = []
+        
+        # 2. Concurrency limit (Semaphore) to protect the API from rate limits
+        sem = asyncio.Semaphore(5)
+
+        async def harvest_member(member):
+            tag = member["tag"].replace("#", "")
+            async with sem:
+                # Optimized: Execute both API calls in parallel under the semaphore slot
+                profile, blog = await asyncio.gather(
+                    self.bot.async_fetch_cr_api(f"players/%23{tag}"),
+                    self.bot.async_fetch_cr_api(f"players/%23{tag}/battlelog")
+                )
+            return tag, member, profile, blog
+
+        # Fetch all 50 members concurrently but safely (takes about ~5 seconds)
+        log.info("📡 Initiating Master Data Harvest for 50 clan members...")
+        results = await asyncio.gather(*(harvest_member(m) for m in members))
+        
+        for tag, m, profile, blog in results:
+            
+            # --- A. SNAPSHOT DATA (Daily CSV metrics) ---
+            flat_data = {
+                "date": snapshot_date,
+                "name": m.get("name", ""),
+                "tag": tag,
+                "role": m.get("role", ""),
+                "expLevel": m.get("expLevel", 0),
+                "trophies": m.get("trophies", 0),
+                "donations": m.get("donations", 0),
+                "donationsReceived": m.get("donationsReceived", 0)
+            }
+            if tag in war_participants:
+                wp = war_participants[tag]
+                flat_data["fame"] = wp.get("fame", 0)
+                flat_data["decksUsedToday"] = wp.get("decksUsedToday", 0)
+                
+            # Grab extended profile stats if available
+            if profile:
+                flat_data["totalWins"] = profile.get("wins", 0)
+                flat_data["totalLosses"] = profile.get("losses", 0)
+                flat_data["warDayWins"] = profile.get("warDayWins", 0)
+                fav_card = profile.get("currentFavouriteCard", {})
+                flat_data["favoriteCard"] = fav_card.get("name", "Unknown") if isinstance(fav_card, dict) else "Unknown"
+                
+                # Update their permanent profile in MongoDB
+                profile_ops.append(UpdateOne({"_id": tag}, {"$set": profile}, upsert=True))
+
+            snapshot_ops.append(UpdateOne(
+                {"tag": tag, "date": snapshot_date},
+                {"$set": flat_data},
+                upsert=True
+            ))
+
+            # --- B. BATTLE LOG DATA (Card vs Card tracking) ---
+            if blog and isinstance(blog, list):
+                for battle in blog:
+                    battle_time = battle.get("battleTime")
+                    if not battle_time: continue
+                    
+                    # Create a mathematically unique ID so we NEVER store duplicate battles
+                    battle_id = f"{tag}_{battle_time}"
+                    
+                    # Extract the card names played by both sides
+                    team_cards = [c["name"] for c in battle.get("team", [{}])[0].get("cards", [])]
+                    opp_cards = [c["name"] for c in battle.get("opponent", [{}])[0].get("cards", [])]
+                    
+                    battle_doc = {
+                        "player_tag": tag,
+                        "battle_time": battle_time,
+                        "type": battle.get("type", ""),
+                        "gameMode": battle.get("gameMode", {}).get("name", ""),
+                        "team_cards": team_cards,
+                        "opponent_cards": opp_cards,
+                        "team_crowns": battle.get("team", [{}])[0].get("crowns", 0),
+                        "opponent_crowns": battle.get("opponent", [{}])[0].get("crowns", 0)
+                    }
+                    battle_ops.append(UpdateOne({"_id": battle_id}, {"$set": battle_doc}, upsert=True))
+            
+        # 3. Execute all database writes in lightning-fast bulk payloads
+        if snapshot_ops: await self.db["historical_snapshots"].bulk_write(snapshot_ops)
+        if profile_ops: await self.db["player_profiles"].bulk_write(profile_ops)
+        if battle_ops: await self.db["battle_history"].bulk_write(battle_ops)
+            
+        log.info(f"✅ Harvest Complete! Saved {len(snapshot_ops)} snapshots, {len(profile_ops)} profiles, and {len(battle_ops)} battles to MongoDB.")
+
+    @daily_snapshot_loop.before_loop
+    async def before_daily_snapshot_loop(self):
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot):
