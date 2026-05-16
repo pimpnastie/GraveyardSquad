@@ -11,3 +11,4 @@ openpyxl==3.1.5
 tzdata==2024.1
 requests==2.32.3
 clashroyale==4.0.1
+audioop-bytes; python_version >= "3.13"
