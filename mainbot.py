@@ -8,6 +8,8 @@ import urllib.parse
 import aiohttp
 import requests
 import time
+import json
+from datetime import timedelta
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -20,7 +22,7 @@ import redis.asyncio as redis
 # --- 1. AUTOMATED ENVIRONMENT SETUP ---
 def sync_environment():
     if os.name != 'nt':
-        return  # Render handles dependencies at build time. Skip to prevent loops on Linux.
+        return  
         
     req_file = "requirements.txt"
     venv_dir = "venv"
@@ -54,9 +56,9 @@ log = logging.getLogger("mainbot")
 
 # --- 3. UNIFIED FLASK WEB INFRASTRUCTURE ---
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET", "graveyard_squad_permanent_secret_key_1993")
+app.secret_key = os.environ["FLASK_SECRET"]
+app.permanent_session_lifetime = timedelta(days=30) 
 
-CR_API_KEY = os.getenv("CR_TOKEN")
 CLAN_TAG = "9LVY89UP"
 MAX_CARD_LEVEL = 16
 
@@ -73,11 +75,13 @@ users_sync = db_sync["users"]
 import redis as sync_redis
 redis_sync_client = sync_redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
+cr_api_session = requests.Session()
+
 def fetch_cr_api(endpoint: str) -> dict | None:
-    headers = {"Authorization": f"Bearer {CR_API_KEY}", "Accept": "application/json"}
     url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
+    headers = {"Authorization": f"Bearer {os.getenv('CR_TOKEN')}", "Accept": "application/json"}
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = cr_api_session.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
             if isinstance(data, dict):
@@ -105,17 +109,39 @@ def get_user_guild_roles(token: str) -> list:
     return []
 
 def is_admin():
-    if "discord_id" not in session:
-        return False
-    if session.get("discord_id") == os.getenv("ADMIN_OWNER_ID", "751975709643112569"):
-        return True
+    if "discord_id" not in session: return False
+    discord_id = str(session.get("discord_id"))
+    
+    if discord_id == "751975709643112569": return True
+    
     sys_config_db = db_sync["config"].find_one({"_id": "system_config_file"}) or {}
     allowed_roles = sys_config_db.get("admin_role_ids", [])
+    allowed_users = sys_config_db.get("admin_user_ids", []) 
+    
+    if discord_id in allowed_users: return True
+    
     user_roles = session.get("user_roles", [])
     return any(str(role_id) in allowed_roles for role_id in user_roles)
 
-# ── HTML UI PAGE STRINGS ────────────────────────────────────────────────── #
-ROSTER_HTML = """
+# ── IN-MEMORY HTML CACHE ────────────────────────────────────────────────── #
+_HTML_CACHE = {}
+
+def get_template(template_name):
+    """Fetches the user's custom HTML string from RAM cache to avoid DB spam."""
+    if template_name in _HTML_CACHE:
+        return _HTML_CACHE[template_name]
+        
+    doc = db_sync["config"].find_one({"_id": "html_templates"})
+    if doc and template_name in doc:
+        _HTML_CACHE[template_name] = doc[template_name]
+        return doc[template_name]
+        
+    fallback = globals().get(f"DEFAULT_{template_name.upper()}_HTML", "")
+    _HTML_CACHE[template_name] = fallback
+    return fallback
+
+# ── HTML UI DEFAULT PAGE STRINGS ────────────────────────────────────────── #
+DEFAULT_ROSTER_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -139,6 +165,9 @@ ROSTER_HTML = """
 <body>
     <div class="container">
         <h1>🛡️ Graveyard Clan Roster</h1>
+        {% if session.get('is_admin_user') %}
+            <a href="/admin" class="btn-discord" style="background: #2ecc71; margin-right: 10px;">💀 Go to HQ Control Panel</a>
+        {% endif %}
         <a href="/login" class="btn-discord">Log in with Discord</a>
         <p class="subtitle">{{ members | length }} members · Click a name to view their profile</p>
         {% for m in members %}
@@ -155,7 +184,7 @@ ROSTER_HTML = """
 </html>
 """
 
-LINK_HTML = """
+DEFAULT_LINK_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -184,7 +213,7 @@ LINK_HTML = """
 </html>
 """
 
-PLAYER_HTML = """
+DEFAULT_PLAYER_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -266,11 +295,11 @@ PLAYER_HTML = """
 </html>
 """
 
-ADMIN_HTML = """
+DEFAULT_ADMIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Graveyard Squad - HQ Panel</title>
+    <title>Graveyard Squad - HQ Control Center</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { background: #0b0c10; color: #c5c6c7; font-family: 'Segoe UI', sans-serif; display: flex; min-height: 100vh; }
@@ -278,26 +307,23 @@ ADMIN_HTML = """
         .sidebar h2 { color: #66fcf1; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 1px; }
         .sidebar a { color: #c5c6c7; text-decoration: none; padding: 12px; border-radius: 6px; transition: 0.2s; }
         .sidebar a:hover, .sidebar a.active { background: #45a29e; color: #0b0c10; font-weight: bold; }
-        .main-content { flex: 1; padding: 40px; overflow-y: auto; }
+        .main-content { flex: 1; padding: 30px; overflow-y: auto; }
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #1f2833; padding-bottom: 20px; margin-bottom: 30px; }
         .header h1 { color: #66fcf1; }
-        .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px; }
-        .metric-card { background: #1f2833; border: 1px solid #45a29e; border-radius: 8px; padding: 20px; }
-        .metric-card p { color: #86c232; font-size: 1.8rem; font-weight: bold; margin-top: 5px; }
-        .panel-section { background: #1f2833; border-radius: 8px; padding: 25px; margin-bottom: 30px; }
+        .panel-section { background: #1f2833; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #252e3a; }
         .panel-section h3 { margin-bottom: 20px; color: #66fcf1; border-left: 4px solid #45a29e; padding-left: 10px; }
-        table { width: 100%; border-collapse: collapse; text-align: left; }
-        th, td { padding: 12px 15px; border-bottom: 1px solid #0b0c10; }
-        th { background: #0b0c10; color: #45a29e; text-transform: uppercase; font-size: 0.8rem; }
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
+        th, td { padding: 10px 12px; border-bottom: 1px solid #0b0c10; vertical-align: middle; }
+        th { background: #0b0c10; color: #45a29e; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; }
         tr:hover { background: #252e3a; }
-        .btn { background: #45a29e; color: #0b0c10; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.2s; text-decoration: none; display: inline-block; }
+        .btn { background: #45a29e; color: #0b0c10; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.2s; text-decoration: none; display: inline-block; font-size: 0.8rem; }
         .btn:hover { background: #66fcf1; }
         .btn-warn { background: #e74c3c; color: white; border: none; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer; display: inline-block; }
+        .btn-warn:hover { background: #c0392b; }
         .form-group { margin-bottom: 15px; display: flex; flex-direction: column; gap: 5px; }
         label { font-size: 0.9rem; color: #45a29e; font-weight: bold; }
-        input[type="number"], input[type="text"] { background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 10px; border-radius: 4px; width: 100%; max-width: 400px; }
+        input[type="text"] { background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 8px; border-radius: 4px; width: 100%; }
         .checkbox-group { display: flex; align-items: center; gap: 10px; margin: 15px 0; }
-        .subtitle-desc { font-size: 0.8rem; color: #888; }
     </style>
 </head>
 <body>
@@ -321,37 +347,50 @@ ADMIN_HTML = """
         {% endif %}
 
         <div class="metrics">
-            <div class="metric-card"><h5>Active War Logs</h5><p>{{ war_players | length }} Members</p></div>
-            <div class="metric-card"><h5>Unused Decks (Today)</h5><p style="color:#e74c3c;">{{ total_decks_left }}</p></div>
-            <div class="metric-card"><h5>Database Mappings</h5><p>{{ linked_count }}</p></div>
+            <div class="metric-card" style="background: #1f2833; border: 1px solid #45a29e; border-radius: 8px; padding: 20px; display:inline-block; margin-right:15px;">
+                <h5>Active War Logs</h5><p style="color: #86c232; font-size: 1.8rem; font-weight: bold;">{{ war_players | length }} Members</p>
+            </div>
+            <div class="metric-card" style="background: #1f2833; border: 1px solid #45a29e; border-radius: 8px; padding: 20px; display:inline-block; margin-right:15px;">
+                <h5>Unused Decks (Today)</h5><p style="color:#e74c3c; font-size: 1.8rem; font-weight: bold;">{{ total_decks_left }}</p>
+            </div>
+            <div class="metric-card" style="background: #1f2833; border: 1px solid #45a29e; border-radius: 8px; padding: 20px; display:inline-block;">
+                <h5>Database Mappings</h5><p style="color: #86c232; font-size: 1.8rem; font-weight: bold;">{{ linked_count }}</p>
+            </div>
         </div>
 
         <div class="panel-section">
             <h3>⚔️ Operational War Deck Monitor</h3>
-            <table>
+            <table style="margin-bottom: 20px;">
                 <thead>
                     <tr>
-                        <th>Player Name</th>
+                        <th>Member Name</th>
                         <th>Role</th>
-                        <th>Fame Metric</th>
+                        <th>War Fame</th>
                         <th>Decks Used</th>
-                        <th>Decks Remaining</th>
+                        <th>Decks Left</th>
                         <th>Action Trigger</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for p in war_players %}
                     <tr>
-                        <td style="font-weight: bold; color:white;">{{ p.name }}</td>
-                        <td>{{ p.role }}</td>
-                        <td style="color: #2ecc71;">⚡ {{ p.fame }}</td>
-                        <td>{{ p.decksUsed }} / 4</td>
-                        <td style="font-weight:bold; color: {{ '#e74c3c' if (4 - p.decksUsed) > 0 else '#2ecc71' }};">{{ 4 - p.decksUsed }}</td>
                         <td>
-                            {% if (4 - p.decksUsed) > 0 %}
-                                <a href="/admin/ping/{{ p.name }}/{{ 4 - p.decksUsed }}" class="btn">Nudge Player</a>
+                            <a href="/admin/grant-role/{{ p.tag }}" style="color: #66fcf1; font-weight: bold; text-decoration: none; border-bottom: 1px dashed #45a29e;" title="Click to grant dashboard access">
+                                {{ p.name }}
+                            </a>
+                            <div style="font-size: 0.7rem; color: #888;">#{{ p.tag }}</div>
+                        </td>
+                        <td>{{ p.role }}</td>
+                        <td style="color: #2ecc71; font-weight: bold;">⚡ {{ p.fame }}</td>
+                        <td>{{ p.decksUsedToday }} / 4</td>
+                        <td style="font-weight: bold; color: {{ '#e74c3c' if p.decksRemaining > 0 else '#2ecc71' }};">
+                            {{ p.decksRemaining }}
+                        </td>
+                        <td>
+                            {% if p.decksRemaining > 0 %}
+                                <a href="/admin/ping/{{ p.name }}/{{ p.decksRemaining }}" class="btn">Nudge</a>
                             {% else %}
-                                <span style="color:#2ecc71; font-size:0.85rem;">✓ Complete</span>
+                                <span style="color:#2ecc71; font-size:0.8rem;">✓ Clear</span>
                             {% endif %}
                         </td>
                     </tr>
@@ -359,13 +398,35 @@ ADMIN_HTML = """
                 </tbody>
             </table>
         </div>
+        
+        <div class="panel-section">
+            <h3>🎨 Live Web UI Studio (HTML/CSS Code Editor)</h3>
+            <p style="font-size:0.85rem; margin-bottom:15px; color:#aaa;">Select a page below to live-edit its source code. <br>⚠️ <strong>Warning:</strong> Be careful with <code>{% raw %}{{{% endraw %} ... {% raw %}}}{% endraw %}</code> brackets—breaking Jinja syntax will crash the page! If you ever get locked out by a crash, navigate to <strong>/admin/reset-html</strong> to factory reset.</p>
+            
+            <form method="POST" action="/admin/update-html">
+                <div class="form-group" style="display:flex; justify-content:space-between; align-items:center;">
+                    <select id="template_selector" name="template_name" onchange="switchTemplate()" style="max-width: 300px; padding:8px; font-weight:bold; cursor:pointer;">
+                        <option value="roster">Public Roster Page (ROSTER_HTML)</option>
+                        <option value="player">Player Profile Page (PLAYER_HTML)</option>
+                        <option value="link">Link Account Page (LINK_HTML)</option>
+                        <option value="admin">Control Panel (ADMIN_HTML)</option>
+                    </select>
+                    <a href="/admin/reset-html" class="btn-warn" style="font-size:0.75rem; background:#c0392b; padding:6px 10px;" onclick="return confirm('Are you sure? This permanently deletes all your custom UI code and restores the factory templates.')">Factory Reset All Templates</a>
+                </div>
+                
+                <div class="form-group">
+                    <textarea id="html_editor" name="html_content" rows="25" style="font-family: 'Courier New', monospace; background:#1e1e1e; color:#a6e22e; width:100%; padding:15px; border:1px solid #45a29e; border-radius:5px; line-height:1.4; resize:vertical;"></textarea>
+                </div>
+                <button type="submit" class="btn" style="background:#f1c40f; color:#0b0c10; font-size:1rem; padding:10px 20px;">💾 Deploy Code Live</button>
+            </form>
+        </div>
 
         <div class="panel-section">
-            <h3>🛠️ Live System File Configurations (Zero Restart)</h3>
+            <h3>🛠️ Live System File Configurations</h3>
             <form method="POST" action="/admin/update-system-config">
                 <div class="form-group">
                     <label>Bot Command Prefix</label>
-                    <input type="text" name="command_prefix" value="{{ sys_config.command_prefix or '!' }}" max_length="3">
+                    <input type="text" name="command_prefix" value="{{ sys_config.command_prefix or '!' }}" max_length="3" style="max-width: 400px;">
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" name="maintenance_mode" id="maintenance_mode" {% if sys_config.maintenance_mode %}checked{% endif %}>
@@ -373,39 +434,58 @@ ADMIN_HTML = """
                 </div>
                 <div class="form-group">
                     <label>Discord War Nudge Channel ID</label>
-                    <input type="text" name="war_channel_id" value="{{ sys_config.war_channel_id or '' }}">
+                    <input type="text" name="war_channel_id" value="{{ sys_config.war_channel_id or '' }}" style="max-width: 400px;">
                 </div>
                 <div class="form-group">
-                    <label>Authorized Admin Role IDs</label>
-                    <input type="text" name="admin_role_ids" value="{{ sys_config.admin_role_ids | join(', ') if sys_config.admin_role_ids else '' }}">
+                    <label>Authorized Admin Role IDs (Comma-separated)</label>
+                    <input type="text" name="admin_role_ids" value="{{ sys_config.admin_role_ids | join(', ') if sys_config.admin_role_ids else '' }}" style="max-width: 600px;">
                 </div>
                 <div class="form-group">
-                    <label>Ignored/Muted Discord Channels</label>
-                    <input type="text" name="ignored_channels" value="{{ sys_config.ignored_channels | join(', ') if sys_config.ignored_channels else '' }}">
+                    <label>Authorized Admin User IDs (Comma-separated)</label>
+                    <div style="font-size: 0.8rem; color: #888; margin-top:-5px; margin-bottom:5px;">Discord IDs granted via the roster table. Delete an ID here to revoke access.</div>
+                    <input type="text" name="admin_user_ids" value="{{ sys_config.admin_user_ids | join(', ') if sys_config.admin_user_ids else '' }}" style="max-width: 600px;">
                 </div>
-                <button type="submit" class="btn" style="background:#66fcf1; color:#0b0c10;">Save System Variables</button>
+                <div class="form-group">
+                    <label>Ignored/Muted Discord Channels (Comma-separated)</label>
+                    <input type="text" name="ignored_channels" value="{{ sys_config.ignored_channels | join(', ') if sys_config.ignored_channels else '' }}" style="max-width: 600px;">
+                </div>
+                <button type="submit" class="btn" style="background:#66fcf1; color:#0b0c10; margin-top: 10px;">Save System Variables</button>
             </form>
         </div>
     </div>
+    
+    <div style="display:none;">
+        <textarea id="raw_roster">{{ raw_roster }}</textarea>
+        <textarea id="raw_player">{{ raw_player }}</textarea>
+        <textarea id="raw_link">{{ raw_link }}</textarea>
+        <textarea id="raw_admin">{{ raw_admin }}</textarea>
+    </div>
+
+    <script>
+        function switchTemplate() {
+            var sel = document.getElementById("template_selector").value;
+            document.getElementById("html_editor").value = document.getElementById("raw_" + sel).value;
+        }
+        window.onload = switchTemplate;
+    </script>
 </body>
 </html>
 """
 
-# ── FLASK ROUTES ─────────────────────────────────────────────────────────── #
-
+# ── FLASK ROUTE CONTROLLERS ──────────────────────────────────────────────── #
 @app.route("/")
 def index():
     data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
     if not data:
         return "<h1>Clan not found or API down.</h1>", 500
-    return render_template_string(ROSTER_HTML, members=data.get("memberList", []))
+    return render_template_string(get_template("roster"), members=data.get("memberList", []))
 
 @app.route("/player/<tag>")
 def web_profile(tag):
     data = fetch_cr_api(f"players/%23{tag}")
     if not data:
         return "<h1>Player data not found.</h1>", 404
-    return render_template_string(PLAYER_HTML, data=data, max_lvl=MAX_CARD_LEVEL)
+    return render_template_string(get_template("player"), data=data, max_lvl=MAX_CARD_LEVEL)
 
 @app.route("/login")
 def login():
@@ -437,17 +517,16 @@ def web_link():
                 {"$set": {"player_id": tag}},
                 upsert=True
             )
-            session.clear()
+            # Removed session.clear() to keep Admins persistently logged in
             return redirect(f"/player/{tag}")
         else:
             error_msg = "Could not find a Clash Royale account with that tag."
-    return render_template_string(LINK_HTML, name=session.get("discord_name", "Unknown"), error=error_msg)
+    return render_template_string(get_template("link"), name=session.get("discord_name", "Unknown"), error=error_msg)
 
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
-    if not code:
-        return "Authentication Failed.", 400
+    if not code: return "Authentication Failed.", 400
 
     data = {
         "client_id": DISCORD_CLIENT_ID, "client_secret": DISCORD_CLIENT_SECRET,
@@ -463,19 +542,18 @@ def callback():
         return "OAuth token extraction failed. Please log in again.", 400
 
     token = token_data["access_token"]
-    user_data = requests.get(
-        "https://discord.com/api/users/@me",
-        headers={"Authorization": f"Bearer {token}"}
-    ).json()
+    user_data = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {token}"}).json()
 
     if "id" not in user_data:
         return "Failed to fetch Discord user info.", 400
 
+    session.permanent = True
     session["discord_id"] = user_data["id"]
     session["discord_name"] = user_data["username"]
     session["user_roles"] = get_user_guild_roles(token)
+    session["is_admin_user"] = is_admin()
 
-    return redirect("/admin" if is_admin() else "/link")
+    return redirect("/admin" if session["is_admin_user"] else "/link")
 
 @app.route("/admin")
 def admin_panel():
@@ -483,36 +561,96 @@ def admin_panel():
         return "<h1>Unauthorized Access Denied.</h1>", 403
 
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
-    war_players = []
-    total_decks_left = 0
+    raw_participants = []
 
     if war_data and "clan" in war_data and "participants" in war_data["clan"]:
-        war_players = war_data["clan"]["participants"]
+        raw_participants = war_data["clan"]["participants"]
     elif war_data and "clans" in war_data:
         for c in war_data["clans"]:
             if c.get("tag", "").replace("#", "").upper() == CLAN_TAG.upper():
-                war_players = c.get("participants", [])
+                raw_participants = c.get("participants", [])
                 break
 
-    if war_players:
-        war_players = sorted(war_players, key=lambda x: x.get("decksUsed", 0))
-        for p in war_players:
-            total_decks_left += max(0, 4 - p.get("decksUsed", 0))
-
-    linked_count = users_sync.count_documents({})
-    config_db = db_sync["config"].find_one({"_id": "global_bot_settings"}) or {}
     sys_config_db = db_sync["config"].find_one({"_id": "system_config_file"}) or {}
+    war_players = []
+    total_decks_left = 0
+
+    for p in raw_participants:
+        p_tag = p.get("tag", "").replace("#", "").upper()
+        fame = p.get("fame", 0)
+        decks_used_today = p.get("decksUsedToday", 0)
+        decks_remaining = max(0, 4 - decks_used_today)
+
+        player_clean_meta = {
+            "tag": p_tag,
+            "name": p.get("name", "Unknown"),
+            "role": p.get("role", "Member").replace("_", " ").title(),
+            "fame": fame,
+            "decksUsedToday": decks_used_today,
+            "decksRemaining": decks_remaining,
+        }
+        total_decks_left += decks_remaining
+        war_players.append(player_clean_meta)
+
+    war_players = sorted(war_players, key=lambda x: -x["decksRemaining"])
+    linked_count = users_sync.count_documents({})
 
     return render_template_string(
-        ADMIN_HTML, war_players=war_players, total_decks_left=total_decks_left,
-        linked_count=linked_count, config=config_db, sys_config=sys_config_db,
-        success=request.args.get('success'), error=request.args.get('error')
+        get_template("admin"), 
+        war_players=war_players, 
+        total_decks_left=total_decks_left,
+        linked_count=linked_count, 
+        sys_config=sys_config_db,
+        raw_roster=get_template("roster"),
+        raw_player=get_template("player"),
+        raw_link=get_template("link"),
+        raw_admin=get_template("admin"),
+        success=request.args.get('success'), 
+        error=request.args.get('error')
     )
+
+@app.route("/admin/update-html", methods=["POST"])
+def update_html():
+    if not is_admin(): return "Unauthorized", 403
+    template_name = request.form.get("template_name")
+    html_content = request.form.get("html_content")
+    
+    if template_name in ["roster", "player", "link", "admin"]:
+        db_sync["config"].update_one(
+            {"_id": "html_templates"},
+            {"$set": {template_name: html_content}},
+            upsert=True
+        )
+        _HTML_CACHE.clear() # Bust RAM cache so changes reflect instantly
+        return redirect("/admin?success=UI+Code+Deployed+Live!")
+    return redirect("/admin?error=Invalid+Template+Name")
+
+@app.route("/admin/reset-html")
+def reset_html():
+    if not is_admin(): return "Unauthorized", 403
+    db_sync["config"].delete_one({"_id": "html_templates"})
+    _HTML_CACHE.clear() # Bust RAM cache to revert to factory defaults
+    return redirect("/admin?success=All+UI+Templates+Reset+to+Factory+Defaults!")
+
+@app.route("/admin/grant-role/<player_tag>")
+def admin_grant_role(player_tag):
+    if not is_admin(): return "Unauthorized", 403
+    linked_user = users_sync.find_one({"player_id": player_tag.upper()})
+    if not linked_user:
+        return redirect("/admin?error=This+player+has+not+linked+their+Discord+account+yet.")
+
+    db_sync["config"].update_one(
+        {"_id": "system_config_file"},
+        {"$addToSet": {"admin_user_ids": str(linked_user["_id"])}},
+        upsert=True
+    )
+    try: redis_sync_client.publish("graveyard_bot_signals", json.dumps({"action": "RELOAD"}))
+    except Exception: pass
+    return redirect("/admin?success=Granted+dashboard+admin+privileges!")
 
 @app.route("/admin/update-system-config", methods=["POST"])
 def update_system_config():
-    if not is_admin():
-        return "Unauthorized", 403
+    if not is_admin(): return "Unauthorized", 403
     db_sync["config"].update_one(
         {"_id": "system_config_file"},
         {"$set": {
@@ -520,49 +658,45 @@ def update_system_config():
             "maintenance_mode": bool(request.form.get("maintenance_mode")),
             "war_channel_id": request.form.get("war_channel_id", "").strip(),
             "ignored_channels": [c.strip() for c in request.form.get("ignored_channels", "").split(",") if c.strip()],
-            "admin_role_ids": [r.strip() for r in request.form.get("admin_role_ids", "").split(",") if r.strip()]
+            "admin_role_ids": [r.strip() for r in request.form.get("admin_role_ids", "").split(",") if r.strip()],
+            "admin_user_ids": [u.strip() for u in request.form.get("admin_user_ids", "").split(",") if u.strip()]
         }},
         upsert=True
     )
-    try:
-        redis_sync_client.publish("graveyard_bot_signals", "RELOAD_SYSTEM_CONFIG")
-    except Exception as e:
-        log.warning(f"⚠️ Redis offline, saved to DB only: {e}")
+    try: redis_sync_client.publish("graveyard_bot_signals", json.dumps({"action": "RELOAD"}))
+    except Exception as e: log.warning(f"⚠️ Redis offline: {e}")
     return redirect("/admin?success=System+configuration+updated+instantly!")
 
 @app.route("/admin/ping/<player_name>/<int:decks_left>")
 def admin_ping_player(player_name, decks_left):
-    if not is_admin():
-        return "Unauthorized", 403
+    if not is_admin(): return "Unauthorized", 403
     try:
-        redis_sync_client.publish("graveyard_bot_signals", f"SINGLE_PING:{player_name}:{decks_left}")
+        payload = json.dumps({"action": "SINGLE_PING", "player_name": player_name, "decks_left": decks_left})
+        redis_sync_client.publish("graveyard_bot_signals", payload)
         return redirect("/admin?success=Sent+nudge+alert!")
-    except Exception as e:
-        log.error(f"Redis error during nudge: {e}")
+    except Exception:
         return redirect("/admin?error=Redis+offline.+Instant+pings+currently+unavailable.")
 
 @app.route("/admin/mass-ping")
 def admin_mass_ping():
-    if not is_admin():
-        return "Unauthorized", 403
+    if not is_admin(): return "Unauthorized", 403
     try:
-        redis_sync_client.publish("graveyard_bot_signals", "MASS_WAR_PING")
+        redis_sync_client.publish("graveyard_bot_signals", json.dumps({"action": "MASS_PING"}))
         return redirect("/admin?success=Mass+War+Alert+Broadcasted!")
-    except Exception as e:
-        log.error(f"Redis error during mass ping: {e}")
+    except Exception:
         return redirect("/admin?error=Redis+offline.+Mass+pings+unavailable.")
 
 @app.route("/health")
 def health():
     return {"status": "ok"}, 200
 
-# --- 4. FLASK RUNNER (must be top-level, called from __main__) ---
+# --- 4. FLASK SERVER MANAGER RUNNER ---
 def run_flask():
     port = int(os.getenv("PORT", 5000))
     log.info(f"🌐 Flask dashboard running on port {port}")
     serve(app, host="0.0.0.0", port=port)
 
-# --- 5. DYNAMIC PREFIX CALLABLE ---
+# --- 5. DYNAMIC PREFIX CALLABLE LINK ---
 def get_dynamic_prefix(bot_instance, message):
     return bot_instance.active_prefix
 
@@ -571,7 +705,7 @@ class GraveyardBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
-        intents.members = True  # Privileged intent — must be enabled in Discord Developer Portal
+        intents.members = True
 
         super().__init__(command_prefix=get_dynamic_prefix, intents=intents)
         self.http_session = None
@@ -587,9 +721,6 @@ class GraveyardBot(commands.Bot):
         self.db = self.mongo_client["graveyardbot"]
         self.db_users = self.db["users"]
 
-    def _cr_headers(self):
-        return {"Authorization": f"Bearer {CR_API_KEY}", "Accept": "application/json"}
-
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
         redis_url = os.getenv("REDIS_URL")
@@ -601,7 +732,6 @@ class GraveyardBot(commands.Bot):
                 await self.redis.ping()
                 self.redis_available = True
                 self.loop.create_task(self.listen_to_web_ui())
-                log.info("📡 Redis connected. Instant web-hooks active.")
             except Exception as e:
                 log.warning(f"⚠️ Redis down: {e}")
                 self.redis_available = False
@@ -611,10 +741,8 @@ class GraveyardBot(commands.Bot):
         await self.load_extension("cogs.clash_cog")
 
     async def on_message(self, message):
-        if message.author.bot:
-            return
+        if message.author.bot: return
 
-        # Debounced config reload fallback when Redis is unavailable
         if not self.redis_available:
             now = time.time()
             if now - self._last_config_load > 30:
@@ -627,12 +755,9 @@ class GraveyardBot(commands.Bot):
         if self.maintenance_mode:
             ctx = await self.get_context(message)
             if ctx.valid:
-                return await message.channel.send(
-                    "⚠️ GraveyardBot is down for configuration edits via the web panel."
-                )
+                return await message.channel.send("⚠️ GraveyardBot is down for web configuration maintenance. Try again shortly.")
 
-        if str(message.channel.id) in self.ignored_channels:
-            return
+        if str(message.channel.id) in self.ignored_channels: return
 
         await self.process_commands(message)
 
@@ -650,42 +775,48 @@ class GraveyardBot(commands.Bot):
             self.war_channel_id = 0
 
     async def listen_to_web_ui(self):
-        pubsub = self.redis.pubsub()
-        await pubsub.subscribe("graveyard_bot_signals")
+        while not self.is_closed():
+            pubsub = None
+            try:
+                pubsub = self.redis.pubsub()
+                await pubsub.subscribe("graveyard_bot_signals")
+                log.info("📡 Redis PubSub listener active.")
+                
+                async for message in pubsub.listen():
+                    if message['type'] == 'message':
+                        try:
+                            payload = json.loads(message['data'])
+                            action = payload.get("action")
+                            
+                            if action == "RELOAD":
+                                await self.load_system_config()
+                            elif action == "SINGLE_PING":
+                                channel = self.get_channel(self.war_channel_id)
+                                if channel:
+                                    player_name = payload.get("player_name")
+                                    decks_left = payload.get("decks_left")
+                                    matched_user = await self.db_users.find_one({"clan_name_cache": player_name})
+                                    mention_str = f"<@{matched_user['_id']}>" if matched_user else f"**{player_name}**"
+                                    embed = discord.Embed(title="⚔️ River Race Nudge Alert!", description=f"Yo {mention_str}, you still have **{decks_left} war decks** left! Lock it in.", color=0xe74c3c)
+                                    await channel.send(embed=embed)
+                            elif action == "MASS_PING":
+                                channel = self.get_channel(self.war_channel_id)
+                                if channel:
+                                    await channel.send("🚨 **SQUAD ATTENTION!** 🚨 Complete remaining battles immediately!")
+                        except json.JSONDecodeError:
+                            log.warning("Received malformed payload in Redis. Ignoring.")
 
-        async for message in pubsub.listen():
-            if message['type'] == 'message':
-                data = message['data']
-                if data == "RELOAD_SYSTEM_CONFIG":
-                    await self.load_system_config()
-                    log.info("🔄 System config reloaded via Redis signal.")
-                elif data.startswith("SINGLE_PING:"):
-                    channel = self.get_channel(self.war_channel_id)
-                    if channel:
-                        # Split with maxsplit=2 to handle player names containing colons
-                        parts = data.split(":", 2)
-                        if len(parts) == 3:
-                            _, player_name, decks_left = parts
-                            matched_user = await self.db_users.find_one({"clan_name_cache": player_name})
-                            mention_str = f"<@{matched_user['_id']}>" if matched_user else f"**{player_name}**"
-                            embed = discord.Embed(
-                                title="⚔️ River Race Nudge Alert!",
-                                description=f"Yo {mention_str}, you still have **{decks_left} war decks** left! Lock it in.",
-                                color=0xe74c3c
-                            )
-                            await channel.send(embed=embed)
-                elif data == "MASS_WAR_PING":
-                    channel = self.get_channel(self.war_channel_id)
-                    if channel:
-                        await channel.send("🚨 **SQUAD ATTENTION!** 🚨 Complete remaining battles immediately!")
+            except Exception as e:
+                log.error(f"Redis listener dropped: {e}. Reconnecting in 5 seconds...")
+                await asyncio.sleep(5)
+            finally:
+                if pubsub:
+                    await pubsub.close()
 
     async def close(self):
-        if self.http_session:
-            await self.http_session.close()
-        if self.redis_available:
-            await self.redis.aclose()
+        if self.http_session: await self.http_session.close()
+        if self.redis_available: await self.redis.aclose()
         await super().close()
-
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
