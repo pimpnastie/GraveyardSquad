@@ -9,14 +9,17 @@ import aiohttp
 import requests
 import time
 import json
-from datetime import timedelta
+import csv
+import io
+import zoneinfo
+from datetime import datetime, timedelta, time as dt_time
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from flask import Flask, render_template_string, request, redirect, session
 from waitress import serve
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import MongoClient
+from pymongo import MongoClient, UpdateOne
 import redis.asyncio as redis
 
 # --- 1. AUTOMATED ENVIRONMENT SETUP ---
@@ -322,10 +325,9 @@ DEFAULT_ADMIN_HTML = """
         .btn-warn:hover { background: #c0392b; }
         .form-group { margin-bottom: 15px; display: flex; flex-direction: column; gap: 5px; }
         label { font-size: 0.9rem; color: #45a29e; font-weight: bold; }
-        input[type="text"] { background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 8px; border-radius: 4px; width: 100%; }
+        input[type="text"], input[type="checkbox"] { background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 8px; border-radius: 4px; }
         .checkbox-group { display: flex; align-items: center; gap: 10px; margin: 15px 0; }
         
-        /* Modal Styles */
         .modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; align-items:center; justify-content:center; }
         .modal-content { background:#1f2833; padding:25px; border-radius:8px; border:1px solid #45a29e; width:450px; max-width:90%; position:relative; }
     </style>
@@ -424,6 +426,33 @@ DEFAULT_ADMIN_HTML = """
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+
+        <div class="panel-section">
+            <h3>📥 Custom Report Builder (CSV/Excel)</h3>
+            <p style="font-size:0.85rem; color:#888; margin-bottom:15px;">Select the exact data points you want to export. The engine will dynamically build your spreadsheet.</p>
+            <form method="POST" action="/admin/export/custom" style="background:#0b0c10; padding:15px; border-radius:5px; border:1px solid #45a29e;">
+                <h4 style="color:#66fcf1; margin-bottom:10px;">Player Identity</h4>
+                <div style="display:flex; gap:15px; margin-bottom:15px;">
+                    <label><input type="checkbox" name="fields" value="name" checked> Player Name</label>
+                    <label><input type="checkbox" name="fields" value="tag" checked> Player Tag</label>
+                    <label><input type="checkbox" name="fields" value="role"> Clan Role</label>
+                    <label><input type="checkbox" name="fields" value="expLevel"> XP Level</label>
+                </div>
+                <h4 style="color:#66fcf1; margin-bottom:10px;">Progression & Social</h4>
+                <div style="display:flex; gap:15px; margin-bottom:15px;">
+                    <label><input type="checkbox" name="fields" value="trophies"> Current Trophies</label>
+                    <label><input type="checkbox" name="fields" value="donations"> Donations Given</label>
+                    <label><input type="checkbox" name="fields" value="donationsReceived"> Donations Received</label>
+                </div>
+                <h4 style="color:#66fcf1; margin-bottom:10px;">Live River Race Data</h4>
+                <div style="display:flex; gap:15px; margin-bottom:20px;">
+                    <label><input type="checkbox" name="fields" value="fame" checked> War Fame</label>
+                    <label><input type="checkbox" name="fields" value="decksUsedToday"> Decks Used</label>
+                    <label><input type="checkbox" name="fields" value="decksRemaining" checked> Decks Remaining</label>
+                </div>
+                <button type="submit" class="btn" style="background:#f1c40f; color:#0b0c10;">Generate Custom Excel File</button>
+            </form>
         </div>
         
         <div class="panel-section">
@@ -799,6 +828,61 @@ def admin_mass_ping():
     except Exception:
         return redirect("/admin?error=Redis+offline.+Mass+pings+unavailable.")
 
+@app.route("/admin/export/custom", methods=["POST"])
+def export_custom_csv():
+    if not is_admin(): return "Unauthorized", 403
+    
+    selected_fields = request.form.getlist("fields")
+    if not selected_fields:
+        return redirect("/admin?error=No+fields+selected+for+export.")
+
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    
+    members = clan_data.get("memberList", []) if clan_data else []
+    
+    raw_participants = []
+    if war_data and "clan" in war_data and "participants" in war_data["clan"]:
+        raw_participants = war_data["clan"]["participants"]
+    elif war_data and "clans" in war_data:
+        for c in war_data["clans"]:
+            if c.get("tag", "").replace("#", "").upper() == CLAN_TAG.upper():
+                raw_participants = c.get("participants", [])
+                break
+                
+    war_participants = {p["tag"]: p for p in raw_participants}
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(selected_fields)
+
+    for m in members:
+        tag = m["tag"]
+        flat_data = {
+            "name": m.get("name", ""),
+            "tag": tag,
+            "role": m.get("role", ""),
+            "expLevel": m.get("expLevel", 0),
+            "trophies": m.get("trophies", 0),
+            "donations": m.get("donations", 0),
+            "donationsReceived": m.get("donationsReceived", 0)
+        }
+        
+        if tag in war_participants:
+            wp = war_participants[tag]
+            flat_data["fame"] = wp.get("fame", 0)
+            flat_data["decksUsedToday"] = wp.get("decksUsedToday", 0)
+            flat_data["decksRemaining"] = max(0, 4 - wp.get("decksUsedToday", 0))
+
+        row = [flat_data.get(field, "N/A") for field in selected_fields]
+        writer.writerow(row)
+
+    return app.response_class(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"}
+    )
+
 @app.route("/health")
 def health():
     return {"status": "ok"}, 200
@@ -836,6 +920,28 @@ class GraveyardBot(commands.Bot):
         self.db_users = self.db["users"]
         self.custom_cmds = self.db["custom_commands"]
 
+    # ── ASYNC API HOOK TO PREVENT EVENT LOOP FREEZING ──
+    async def async_fetch_cr_api(self, endpoint: str) -> dict | None:
+        url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
+        headers = {"Authorization": f"Bearer {os.getenv('CR_TOKEN')}", "Accept": "application/json"}
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with self.http_session.get(url, headers=headers, timeout=timeout) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if isinstance(data, dict):
+                        if "cards" in data:
+                            for c in data["cards"]:
+                                c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
+                        if "currentDeck" in data:
+                            for c in data["currentDeck"]:
+                                c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
+                    return data
+                return None
+        except Exception as e:
+            log.error(f"Async API Request failed: {e}")
+            return None
+
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
         redis_url = os.getenv("REDIS_URL")
@@ -854,6 +960,7 @@ class GraveyardBot(commands.Bot):
             self.redis_available = False
 
         await self.load_extension("cogs.clash_cog")
+        self.daily_snapshot_loop.start()
 
     async def on_message(self, message):
         if message.author.bot: return
@@ -867,7 +974,6 @@ class GraveyardBot(commands.Bot):
                 except Exception as e:
                     log.error(f"Failed fallback config load: {e}")
 
-        # Strict Maintenance Mode Block - Protects Built-in and Custom Commands
         prefix = self.active_prefix
         if self.maintenance_mode and message.content.startswith(prefix):
             await message.channel.send("⚠️ GraveyardBot is down for web configuration maintenance. Try again shortly.")
@@ -937,6 +1043,63 @@ class GraveyardBot(commands.Bot):
             finally:
                 if pubsub:
                     await pubsub.close()
+
+    # ── THE MIDNIGHT MASTER SNAPSHOT ──
+    @tasks.loop(time=dt_time(hour=23, minute=55, tzinfo=zoneinfo.ZoneInfo("America/New_York")))
+    async def daily_snapshot_loop(self):
+        clan_data = await self.async_fetch_cr_api(f"clans/%23{CLAN_TAG}")
+        war_data = await self.async_fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+        if not clan_data: 
+            return
+            
+        snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        members = clan_data.get("memberList", [])
+        
+        raw_participants = []
+        if war_data and "clan" in war_data and "participants" in war_data["clan"]:
+            raw_participants = war_data["clan"]["participants"]
+        elif war_data and "clans" in war_data:
+            for c in war_data["clans"]:
+                if c.get("tag", "").replace("#", "").upper() == CLAN_TAG.upper():
+                    raw_participants = c.get("participants", [])
+                    break
+                    
+        war_participants = {p["tag"]: p for p in raw_participants}
+        
+        # Build Bulk Operations Array
+        ops = []
+        for m in members:
+            tag = m["tag"].replace("#", "")
+            flat_data = {
+                "date": snapshot_date,
+                "name": m.get("name", ""),
+                "tag": tag,
+                "role": m.get("role", ""),
+                "expLevel": m.get("expLevel", 0),
+                "trophies": m.get("trophies", 0),
+                "donations": m.get("donations", 0),
+                "donationsReceived": m.get("donationsReceived", 0)
+            }
+            if tag in war_participants:
+                wp = war_participants[tag]
+                flat_data["fame"] = wp.get("fame", 0)
+                flat_data["decksUsedToday"] = wp.get("decksUsedToday", 0)
+            
+            # Queue up the update instruction
+            ops.append(UpdateOne(
+                {"tag": tag, "date": snapshot_date},
+                {"$set": flat_data},
+                upsert=True
+            ))
+            
+        # Execute all 50 database writes in a single, hyper-fast payload block
+        if ops:
+            await self.db["historical_snapshots"].bulk_write(ops)
+            log.info(f"📊 Captured Midnight Daily Snapshot for {len(members)} clan members via Bulk Write.")
+
+    @daily_snapshot_loop.before_loop
+    async def before_daily_snapshot_loop(self):
+        await self.wait_until_ready()
 
     async def close(self):
         if self.http_session: await self.http_session.close()
