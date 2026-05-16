@@ -1055,6 +1055,7 @@ class GraveyardBot(commands.Bot):
         snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         members = clan_data.get("memberList", [])
         
+        # Parse War Participants
         raw_participants = []
         if war_data and "clan" in war_data and "participants" in war_data["clan"]:
             raw_participants = war_data["clan"]["participants"]
@@ -1066,10 +1067,31 @@ class GraveyardBot(commands.Bot):
                     
         war_participants = {p["tag"]: p for p in raw_participants}
         
-        # Build Bulk Operations Array
-        ops = []
-        for m in members:
-            tag = m["tag"].replace("#", "")
+        # 1. Prepare Bulk Ops Arrays
+        snapshot_ops = []
+        profile_ops = []
+        battle_ops = []
+        
+        # 2. Concurrency limit (Semaphore) to protect the API from rate limits
+        sem = asyncio.Semaphore(5)
+
+        async def harvest_member(member):
+            tag = member["tag"].replace("#", "")
+            async with sem:
+                # Optimized: Execute both API calls in parallel
+                profile, blog = await asyncio.gather(
+                    self.async_fetch_cr_api(f"players/%23{tag}"),
+                    self.async_fetch_cr_api(f"players/%23{tag}/battlelog")
+                )
+            return tag, member, profile, blog
+
+        # Fetch all 50 members concurrently but safely
+        log.info("📡 Initiating Master Data Harvest for 50 clan members...")
+        results = await asyncio.gather(*(harvest_member(m) for m in members))
+        
+        for tag, m, profile, blog in results:
+            
+            # --- A. SNAPSHOT DATA (Daily CSV metrics) ---
             flat_data = {
                 "date": snapshot_date,
                 "name": m.get("name", ""),
@@ -1084,18 +1106,51 @@ class GraveyardBot(commands.Bot):
                 wp = war_participants[tag]
                 flat_data["fame"] = wp.get("fame", 0)
                 flat_data["decksUsedToday"] = wp.get("decksUsedToday", 0)
-            
-            # Queue up the update instruction
-            ops.append(UpdateOne(
+                
+            if profile:
+                flat_data["totalWins"] = profile.get("wins", 0)
+                flat_data["totalLosses"] = profile.get("losses", 0)
+                flat_data["warDayWins"] = profile.get("warDayWins", 0)
+                fav_card = profile.get("currentFavouriteCard", {})
+                flat_data["favoriteCard"] = fav_card.get("name", "Unknown") if isinstance(fav_card, dict) else "Unknown"
+                
+                profile_ops.append(UpdateOne({"_id": tag}, {"$set": profile}, upsert=True))
+
+            snapshot_ops.append(UpdateOne(
                 {"tag": tag, "date": snapshot_date},
                 {"$set": flat_data},
                 upsert=True
             ))
+
+            # --- B. BATTLE LOG DATA (Card vs Card tracking) ---
+            if blog and isinstance(blog, list):
+                for battle in blog:
+                    battle_time = battle.get("battleTime")
+                    if not battle_time: continue
+                    
+                    battle_id = f"{tag}_{battle_time}"
+                    
+                    team_cards = [c["name"] for c in battle.get("team", [{}])[0].get("cards", [])]
+                    opp_cards = [c["name"] for c in battle.get("opponent", [{}])[0].get("cards", [])]
+                    
+                    battle_doc = {
+                        "player_tag": tag,
+                        "battle_time": battle_time,
+                        "type": battle.get("type", ""),
+                        "gameMode": battle.get("gameMode", {}).get("name", ""),
+                        "team_cards": team_cards,
+                        "opponent_cards": opp_cards,
+                        "team_crowns": battle.get("team", [{}])[0].get("crowns", 0),
+                        "opponent_crowns": battle.get("opponent", [{}])[0].get("crowns", 0)
+                    }
+                    battle_ops.append(UpdateOne({"_id": battle_id}, {"$set": battle_doc}, upsert=True))
             
-        # Execute all 50 database writes in a single, hyper-fast payload block
-        if ops:
-            await self.db["historical_snapshots"].bulk_write(ops)
-            log.info(f"📊 Captured Midnight Daily Snapshot for {len(members)} clan members via Bulk Write.")
+        # 3. Execute all database writes in lightning-fast bulk payloads
+        if snapshot_ops: await self.db["historical_snapshots"].bulk_write(snapshot_ops)
+        if profile_ops: await self.db["player_profiles"].bulk_write(profile_ops)
+        if battle_ops: await self.db["battle_history"].bulk_write(battle_ops)
+            
+        log.info(f"✅ Harvest Complete! Saved {len(snapshot_ops)} snapshots, {len(profile_ops)} profiles, and {len(battle_ops)} battles to MongoDB.")
 
     @daily_snapshot_loop.before_loop
     async def before_daily_snapshot_loop(self):
