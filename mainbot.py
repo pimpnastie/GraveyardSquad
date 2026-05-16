@@ -54,7 +54,6 @@ log = logging.getLogger("mainbot")
 
 # --- 3. UNIFIED FLASK WEB INFRASTRUCTURE ---
 app = Flask(__name__)
-# FIX 5: Fallback to fixed config fallback or env var string to preserve sessions across restarts
 app.secret_key = os.getenv("FLASK_SECRET", "graveyard_squad_permanent_secret_key_1993")
 
 CR_API_KEY = os.getenv("CR_TOKEN")
@@ -71,7 +70,6 @@ mongo_client_sync = MongoClient(mongo_url)
 db_sync = mongo_client_sync["graveyardbot"]
 users_sync = db_sync["users"]
 
-# Sync Redis client for unified Flask actions
 import redis as sync_redis
 redis_sync_client = sync_redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
@@ -109,11 +107,8 @@ def get_user_guild_roles(token: str) -> list:
 def is_admin():
     if "discord_id" not in session:
         return False
-        
-    # Hardcoded Master Override Key for Eric
-    if session.get("discord_id") == "751975709643112569":
+    if session.get("discord_id") == os.getenv("ADMIN_OWNER_ID", "751975709643112569"):
         return True
-        
     sys_config_db = db_sync["config"].find_one({"_id": "system_config_file"}) or {}
     allowed_roles = sys_config_db.get("admin_role_ids", [])
     user_roles = session.get("user_roles", [])
@@ -160,8 +155,116 @@ ROSTER_HTML = """
 </html>
 """
 
-LINK_HTML = """<!-- Link layout string remains matching base setup perfectly -->"""
-PLAYER_HTML = """<!-- Player deep statistics template remains matching base setup perfectly -->"""
+LINK_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Link Account</title>
+    <style>
+        body { background: #121212; color: white; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 50px; }
+        .box { background: #1e1e1e; padding: 40px; border-radius: 10px; max-width: 400px; margin: auto; border: 1px solid #333; }
+        h2 { color: #f1c40f; margin-bottom: 10px; }
+        input { width: 100%; padding: 12px; margin: 15px 0; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 5px; font-size: 1rem;}
+        button { width: 100%; background: #5865F2; color: white; padding: 12px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 1rem;}
+        button:hover { background: #4752C4; }
+        .error { color: #e74c3c; margin-bottom: 15px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>Link Clash Royale Tag</h2>
+        <p style="color: #aaa; margin-bottom: 20px;">Authenticated as <strong>@{{ name }}</strong></p>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <form method="POST">
+            <input type="text" name="tag" placeholder="e.g. #2Y8JLYPQ2" required>
+            <button type="submit">Link to Discord</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+PLAYER_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ data.name }} - Analytics</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #0f0f0f; color: #eee; font-family: 'Segoe UI', sans-serif; padding: 40px 30px; max-width: 1000px; margin: auto; }
+        a.back { color: #f1c40f; text-decoration: none; font-weight: bold; font-size: 0.9rem; }
+        a.back:hover { text-decoration: underline; }
+        .header { border-bottom: 2px solid #f1c40f; padding-bottom: 14px; margin: 20px 0 30px; display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
+        .header h1 { font-size: 1.8rem; }
+        .header .tag { color: #5dade2; font-size: 1rem; font-weight: normal; margin-left: 8px; }
+        .header .clan-badge { background: #1e1e1e; border: 1px solid #333; border-radius: 6px; padding: 6px 14px; font-size: 0.85rem; color: #ccc; }
+        .header .clan-badge strong { color: #f1c40f; }
+        h2 { color: #f1c40f; margin: 30px 0 14px; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 1px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+        .stat-box { background: #1a1a1a; padding: 18px 20px; border-radius: 10px; border: 1px solid #2a2a2a; }
+        .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .value { font-size: 1.6rem; font-weight: bold; color: #f1c40f; }
+        .value.blue  { color: #5dade2; }
+        .value.green { color: #2ecc71; }
+        .value.red   { color: #e74c3c; }
+        .value.white { color: #eee; }
+        .deck-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        @media (max-width: 600px) { .deck-grid { grid-template-columns: repeat(2, 1fr); } }
+        .card-box { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 14px 10px; text-align: center; }
+        .card-box .card-name { font-size: 0.82rem; font-weight: bold; margin-bottom: 5px; }
+        .card-box .card-level { display: inline-block; background: #2a2a2a; color: #aaa; font-size: 0.75rem; border-radius: 4px; padding: 2px 7px; }
+        .card-box.maxed { border-color: #f1c40f !important; }
+        .card-box.maxed .card-level { color: #f1c40f; }
+    </style>
+</head>
+<body>
+    <a class="back" href="/">← Back to Roster</a>
+    <div class="header">
+        <div><h1>{{ data.name }}<span class="tag">{{ data.tag }}</span></h1></div>
+        {% if data.clan %}
+            <div class="clan-badge">🛡️ <strong>{{ data.clan.name }}</strong> &nbsp;·&nbsp; {{ data.role | replace('_', ' ') | title }}</div>
+        {% else %}
+            <div class="clan-badge">No Clan</div>
+        {% endif %}
+    </div>
+
+    <h2>📈 Progression</h2>
+    <div class="grid">
+        <div class="stat-box"><div class="label">XP Level</div><div class="value white">⭐ {{ data.expLevel }}</div></div>
+        <div class="stat-box"><div class="label">Current Trophies</div><div class="value blue">🏆 {{ data.trophies }}</div></div>
+        <div class="stat-box"><div class="label">Best Trophies</div><div class="value blue">🏅 {{ data.bestTrophies }}</div></div>
+        <div class="stat-box"><div class="label">Arena</div><div class="value white" style="font-size:1rem; padding-top:4px;">{{ data.arena.name if data.arena else '—' }}</div></div>
+    </div>
+
+    <h2>⚔️ Battle Stats</h2>
+    <div class="grid">
+        <div class="stat-box"><div class="label">Total Wins</div><div class="value green">{{ data.wins }}</div></div>
+        <div class="stat-box"><div class="label">Losses</div><div class="value red">{{ data.losses }}</div></div>
+        <div class="stat-box"><div class="label">3-Crown Wins</div><div class="value green">👑 {{ data.threeCrownWins }}</div></div>
+        <div class="stat-box"><div class="label">Total Battles</div><div class="value white">{{ data.battleCount }}</div></div>
+        <div class="stat-box"><div class="label">Win Rate</div><div class="value {% if data.battleCount > 0 and (data.wins / data.battleCount * 100) >= 50 %}green{% else %}red{% endif %}">
+            {% if data.battleCount > 0 %}{{ "%.1f" | format(data.wins / data.battleCount * 100) }}%{% else %}—{% endif %}
+        </div></div>
+    </div>
+
+    <h2>🎁 Social & Misc</h2>
+    <div class="grid">
+        <div class="stat-box"><div class="label">Total Donations</div><div class="value white">{{ data.totalDonations }}</div></div>
+        <div class="stat-box"><div class="label">War Day Wins</div><div class="value white">{{ data.warDayWins }}</div></div>
+    </div>
+
+    <h2>🃏 Current Battle Deck</h2>
+    <div class="deck-grid">
+        {% for card in data.currentDeck %}
+            <div class="card-box {% if card.level >= max_lvl %}maxed{% endif %}">
+                <div class="card-name">{{ card.name }}</div>
+                <span class="card-level">Lvl {{ card.level }}{% if card.level >= max_lvl %} ✓{% endif %}</span>
+            </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
+"""
 
 ADMIN_HTML = """
 <!DOCTYPE html>
@@ -289,16 +392,100 @@ ADMIN_HTML = """
 """
 
 # ── FLASK ROUTES ─────────────────────────────────────────────────────────── #
+
+@app.route("/")
+def index():
+    data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    if not data:
+        return "<h1>Clan not found or API down.</h1>", 500
+    return render_template_string(ROSTER_HTML, members=data.get("memberList", []))
+
+@app.route("/player/<tag>")
+def web_profile(tag):
+    data = fetch_cr_api(f"players/%23{tag}")
+    if not data:
+        return "<h1>Player data not found.</h1>", 404
+    return render_template_string(PLAYER_HTML, data=data, max_lvl=MAX_CARD_LEVEL)
+
+@app.route("/login")
+def login():
+    if not DISCORD_CLIENT_ID:
+        return "Discord Client ID not configured.", 500
+    scope = "identify"
+    if GUILD_ID:
+        scope = "identify guilds.members.read"
+    url = (
+        f"https://discord.com/api/oauth2/authorize"
+        f"?client_id={DISCORD_CLIENT_ID}"
+        f"&redirect_uri={urllib.parse.quote(REDIRECT_URI)}"
+        f"&response_type=code"
+        f"&scope={urllib.parse.quote(scope)}"
+    )
+    return redirect(url)
+
+@app.route("/link", methods=["GET", "POST"])
+def web_link():
+    if "discord_id" not in session:
+        return redirect("/login")
+    error_msg = None
+    if request.method == "POST":
+        tag = request.form.get("tag", "").upper().replace("#", "")
+        cr_data = fetch_cr_api(f"players/%23{tag}")
+        if cr_data and "name" in cr_data:
+            users_sync.update_one(
+                {"_id": session["discord_id"]},
+                {"$set": {"player_id": tag}},
+                upsert=True
+            )
+            session.clear()
+            return redirect(f"/player/{tag}")
+        else:
+            error_msg = "Could not find a Clash Royale account with that tag."
+    return render_template_string(LINK_HTML, name=session.get("discord_name", "Unknown"), error=error_msg)
+
+@app.route("/callback")
+def callback():
+    code = request.args.get("code")
+    if not code:
+        return "Authentication Failed.", 400
+
+    data = {
+        "client_id": DISCORD_CLIENT_ID, "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT_URI
+    }
+    r = requests.post(
+        "https://discord.com/api/oauth2/token", data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+
+    token_data = r.json()
+    if "access_token" not in token_data:
+        return "OAuth token extraction failed. Please log in again.", 400
+
+    token = token_data["access_token"]
+    user_data = requests.get(
+        "https://discord.com/api/users/@me",
+        headers={"Authorization": f"Bearer {token}"}
+    ).json()
+
+    if "id" not in user_data:
+        return "Failed to fetch Discord user info.", 400
+
+    session["discord_id"] = user_data["id"]
+    session["discord_name"] = user_data["username"]
+    session["user_roles"] = get_user_guild_roles(token)
+
+    return redirect("/admin" if is_admin() else "/link")
+
 @app.route("/admin")
 def admin_panel():
     if not is_admin():
         return "<h1>Unauthorized Access Denied.</h1>", 403
-    
+
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
     war_players = []
     total_decks_left = 0
-    
-    # FIX 9: Handle alternate nesting schemas in Supercell's API response smoothly
+
     if war_data and "clan" in war_data and "participants" in war_data["clan"]:
         war_players = war_data["clan"]["participants"]
     elif war_data and "clans" in war_data:
@@ -306,11 +493,11 @@ def admin_panel():
             if c.get("tag", "").replace("#", "").upper() == CLAN_TAG.upper():
                 war_players = c.get("participants", [])
                 break
-                
+
     if war_players:
         war_players = sorted(war_players, key=lambda x: x.get("decksUsed", 0))
         for p in war_players:
-            total_decks_left += (4 - p.get("decksUsed", 0))
+            total_decks_left += max(0, 4 - p.get("decksUsed", 0))
 
     linked_count = users_sync.count_documents({})
     config_db = db_sync["config"].find_one({"_id": "global_bot_settings"}) or {}
@@ -324,13 +511,13 @@ def admin_panel():
 
 @app.route("/admin/update-system-config", methods=["POST"])
 def update_system_config():
-    if not is_admin(): return "Unauthorized", 403
-    
+    if not is_admin():
+        return "Unauthorized", 403
     db_sync["config"].update_one(
         {"_id": "system_config_file"},
         {"$set": {
             "command_prefix": request.form.get("command_prefix", "!"),
-            "maintenance_mode": True if request.form.get("maintenance_mode") else False,
+            "maintenance_mode": bool(request.form.get("maintenance_mode")),
             "war_channel_id": request.form.get("war_channel_id", "").strip(),
             "ignored_channels": [c.strip() for c in request.form.get("ignored_channels", "").split(",") if c.strip()],
             "admin_role_ids": [r.strip() for r in request.form.get("admin_role_ids", "").split(",") if r.strip()]
@@ -345,71 +532,63 @@ def update_system_config():
 
 @app.route("/admin/ping/<player_name>/<int:decks_left>")
 def admin_ping_player(player_name, decks_left):
-    if not is_admin(): return "Unauthorized", 403
+    if not is_admin():
+        return "Unauthorized", 403
     try:
         redis_sync_client.publish("graveyard_bot_signals", f"SINGLE_PING:{player_name}:{decks_left}")
         return redirect("/admin?success=Sent+nudge+alert!")
     except Exception as e:
+        log.error(f"Redis error during nudge: {e}")
         return redirect("/admin?error=Redis+offline.+Instant+pings+currently+unavailable.")
 
 @app.route("/admin/mass-ping")
 def admin_mass_ping():
-    if not is_admin(): return "Unauthorized", 403
+    if not is_admin():
+        return "Unauthorized", 403
     try:
         redis_sync_client.publish("graveyard_bot_signals", "MASS_WAR_PING")
         return redirect("/admin?success=Mass+War+Alert+Broadcasted!")
     except Exception as e:
+        log.error(f"Redis error during mass ping: {e}")
         return redirect("/admin?error=Redis+offline.+Mass+pings+unavailable.")
 
-@app.route("/callback")
-def callback():
-    code = request.args.get("code")
-    if not code: return "Authentication Failed.", 400
-    
-    data = {
-        "client_id": DISCORD_CLIENT_ID, "client_secret": DISCORD_CLIENT_SECRET,
-        "grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT_URI
-    }
-    r = requests.post("https://discord.com/api/oauth2/token", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    
-    # FIX 4: Securely guard against expired or invalid tokens before unpacking json attributes
-    token_data = r.json()
-    if "access_token" not in token_data:
-        return "OAuth token extraction failed. Please log in again.", 400
-        
-    token = token_data["access_token"]
-    user_data = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {token}"}).json()
-    
-    session["discord_id"] = user_data["id"]
-    session["discord_name"] = user_data["username"]
-    session["user_roles"] = get_user_guild_roles(token)
-    
-    return redirect("/admin" if is_admin() else "/link")
+@app.route("/health")
+def health():
+    return {"status": "ok"}, 200
 
-# --- 4. DYNAMIC PREFIX CALLABLE LINK ---
+# --- 4. FLASK RUNNER (must be top-level, called from __main__) ---
+def run_flask():
+    port = int(os.getenv("PORT", 5000))
+    log.info(f"🌐 Flask dashboard running on port {port}")
+    serve(app, host="0.0.0.0", port=port)
+
+# --- 5. DYNAMIC PREFIX CALLABLE ---
 def get_dynamic_prefix(bot_instance, message):
     return bot_instance.active_prefix
 
-# --- 5. DISCORD BOT ENGINE SETUP ---
+# --- 6. DISCORD BOT ENGINE SETUP ---
 class GraveyardBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
-        intents.members = True # Note 10: Privileged intent validated
-        
+        intents.members = True  # Privileged intent — must be enabled in Discord Developer Portal
+
         super().__init__(command_prefix=get_dynamic_prefix, intents=intents)
         self.http_session = None
         self.redis_available = False
-        
+
         self.active_prefix = "!"
         self.maintenance_mode = False
         self.ignored_channels = []
         self.war_channel_id = 0
-        self._last_config_load = 0 # Fix 7 setup
-        
+        self._last_config_load = 0
+
         self.mongo_client = AsyncIOMotorClient(mongo_url)
         self.db = self.mongo_client["graveyardbot"]
         self.db_users = self.db["users"]
+
+    def _cr_headers(self):
+        return {"Authorization": f"Bearer {CR_API_KEY}", "Accept": "application/json"}
 
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
@@ -422,18 +601,20 @@ class GraveyardBot(commands.Bot):
                 await self.redis.ping()
                 self.redis_available = True
                 self.loop.create_task(self.listen_to_web_ui())
+                log.info("📡 Redis connected. Instant web-hooks active.")
             except Exception as e:
                 log.warning(f"⚠️ Redis down: {e}")
                 self.redis_available = False
         else:
             self.redis_available = False
-                
+
         await self.load_extension("cogs.clash_cog")
 
     async def on_message(self, message):
-        if message.author.bot: return
+        if message.author.bot:
+            return
 
-        # FIX 7: Combined On-Use Fallback check with a 30 second time debounce block to guard database
+        # Debounced config reload fallback when Redis is unavailable
         if not self.redis_available:
             now = time.time()
             if now - self._last_config_load > 30:
@@ -441,18 +622,20 @@ class GraveyardBot(commands.Bot):
                     await self.load_system_config()
                     self._last_config_load = now
                 except Exception as e:
-                    log.error(f"Failed fallback load: {e}")
+                    log.error(f"Failed fallback config load: {e}")
 
         if self.maintenance_mode:
             ctx = await self.get_context(message)
             if ctx.valid:
-                return await message.channel.send("⚠️ GraveyardBot is down for configuration edits via the web panel.")
-                
+                return await message.channel.send(
+                    "⚠️ GraveyardBot is down for configuration edits via the web panel."
+                )
+
         if str(message.channel.id) in self.ignored_channels:
             return
-            
+
         await self.process_commands(message)
-        
+
     async def load_system_config(self):
         config_doc = await self.db["config"].find_one({"_id": "system_config_file"})
         if config_doc:
@@ -475,25 +658,34 @@ class GraveyardBot(commands.Bot):
                 data = message['data']
                 if data == "RELOAD_SYSTEM_CONFIG":
                     await self.load_system_config()
+                    log.info("🔄 System config reloaded via Redis signal.")
                 elif data.startswith("SINGLE_PING:"):
                     channel = self.get_channel(self.war_channel_id)
                     if channel:
-                        # FIX 8: Limit splits to protect against names containing colons
-                        _, player_name, decks_left = data.split(":", 2)
-                        matched_user = await self.db_users.find_one({"clan_name_cache": player_name})
-                        mention_str = f"<@{matched_user['_id']}>" if matched_user else f"**{player_name}**"
-                        
-                        embed = discord.Embed(title="⚔️ River Race Nudge Alert!", description=f"Yo {mention_str}, you still have **{decks_left} war decks** left! Lock it in.", color=0xe74c3c)
-                        await channel.send(embed=embed)
+                        # Split with maxsplit=2 to handle player names containing colons
+                        parts = data.split(":", 2)
+                        if len(parts) == 3:
+                            _, player_name, decks_left = parts
+                            matched_user = await self.db_users.find_one({"clan_name_cache": player_name})
+                            mention_str = f"<@{matched_user['_id']}>" if matched_user else f"**{player_name}**"
+                            embed = discord.Embed(
+                                title="⚔️ River Race Nudge Alert!",
+                                description=f"Yo {mention_str}, you still have **{decks_left} war decks** left! Lock it in.",
+                                color=0xe74c3c
+                            )
+                            await channel.send(embed=embed)
                 elif data == "MASS_WAR_PING":
                     channel = self.get_channel(self.war_channel_id)
                     if channel:
                         await channel.send("🚨 **SQUAD ATTENTION!** 🚨 Complete remaining battles immediately!")
 
     async def close(self):
-        if self.http_session: await self.http_session.close()
-        if self.redis_available: await self.redis.aclose()
+        if self.http_session:
+            await self.http_session.close()
+        if self.redis_available:
+            await self.redis.aclose()
         await super().close()
+
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
