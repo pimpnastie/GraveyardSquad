@@ -71,6 +71,7 @@ mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 mongo_client_sync = MongoClient(mongo_url)
 db_sync = mongo_client_sync["graveyardbot"]
 users_sync = db_sync["users"]
+custom_cmds_sync = db_sync["custom_commands"]
 
 import redis as sync_redis
 redis_sync_client = sync_redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
@@ -127,7 +128,6 @@ def is_admin():
 _HTML_CACHE = {}
 
 def get_template(template_name):
-    """Fetches the user's custom HTML string from RAM cache to avoid DB spam."""
     if template_name in _HTML_CACHE:
         return _HTML_CACHE[template_name]
         
@@ -324,9 +324,36 @@ DEFAULT_ADMIN_HTML = """
         label { font-size: 0.9rem; color: #45a29e; font-weight: bold; }
         input[type="text"] { background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 8px; border-radius: 4px; width: 100%; }
         .checkbox-group { display: flex; align-items: center; gap: 10px; margin: 15px 0; }
+        
+        /* Modal Styles */
+        .modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; align-items:center; justify-content:center; }
+        .modal-content { background:#1f2833; padding:25px; border-radius:8px; border:1px solid #45a29e; width:450px; max-width:90%; position:relative; }
     </style>
 </head>
 <body>
+    <div id="actionModal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 id="modalName" style="color:#66fcf1; margin-bottom:5px; font-size:1.4rem;">Player Name</h3>
+            <p id="modalTag" style="color:#888; font-size:0.9rem; margin-bottom:20px;">#TAG</p>
+            
+            <div style="display:flex; flex-direction:column; gap:12px;">
+                <a id="btnProfile" href="#" class="btn" style="text-align:center; background:#5dade2; padding:10px; font-size:0.9rem;">📊 View Player Analytics</a>
+                <a id="btnAdmin" href="#" class="btn" style="text-align:center; background:#f1c40f; color:#121212; padding:10px; font-size:0.9rem;">🔑 Grant HQ Dashboard Access</a>
+                
+                <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
+                
+                <h4 style="color:#45a29e; font-size:0.95rem; margin-bottom:5px;">🔗 Manually Map Discord Account</h4>
+                <form method="POST" action="/admin/manual-link" style="display:flex; flex-direction:column; gap:10px;">
+                    <input type="hidden" name="player_tag" id="modalInputTag">
+                    <input type="text" name="discord_id" placeholder="Paste 18-digit Discord ID..." required style="background:#0b0c10; border:1px solid #45a29e; color:white; padding:10px; border-radius:4px;">
+                    <button type="submit" class="btn" style="background:#2ecc71; color:#0b0c10; padding:10px;">Link Account Database</button>
+                </form>
+                
+                <button onclick="closeModal()" class="btn-warn" style="margin-top:10px; width:100%; padding:10px;">Cancel & Close</button>
+            </div>
+        </div>
+    </div>
+
     <div class="sidebar">
         <h2>💀 GY HQ</h2>
         <a href="/">Roster Monitor</a>
@@ -375,7 +402,7 @@ DEFAULT_ADMIN_HTML = """
                     {% for p in war_players %}
                     <tr>
                         <td>
-                            <a href="/admin/grant-role/{{ p.tag }}" style="color: #66fcf1; font-weight: bold; text-decoration: none; border-bottom: 1px dashed #45a29e;" title="Click to grant dashboard access">
+                            <a href="#" onclick="openModal('{{ p.name | escape }}', '{{ p.tag }}'); return false;" style="color: #66fcf1; font-weight: bold; text-decoration: none; border-bottom: 1px dashed #45a29e;" title="Click for action menu">
                                 {{ p.name }}
                             </a>
                             <div style="font-size: 0.7rem; color: #888;">#{{ p.tag }}</div>
@@ -397,6 +424,36 @@ DEFAULT_ADMIN_HTML = """
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+        
+        <div class="panel-section">
+            <h3>💬 Dynamic Custom Commands (Auto-Responder)</h3>
+            <table style="margin-bottom: 20px;">
+                <thead>
+                    <tr>
+                        <th>Command Trigger</th>
+                        <th>Bot Response</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cmd in custom_commands %}
+                    <tr>
+                        <td style="font-weight: bold; color: #66fcf1;">{{ sys_config.command_prefix or '!' }}{{ cmd._id }}</td>
+                        <td>{{ cmd.response }}</td>
+                        <td>
+                            <a href="/admin/delete-command/{{ cmd._id }}" class="btn-warn" style="padding: 4px 8px; font-size: 0.75rem;">Delete</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            
+            <form method="POST" action="/admin/add-command" style="display: flex; gap: 10px;">
+                <input type="text" name="trigger" placeholder="Trigger (e.g. rules)" required style="width: 20%; background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 10px; border-radius: 4px;">
+                <input type="text" name="response" placeholder="Bot Response..." required style="width: 60%; background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 10px; border-radius: 4px;">
+                <button type="submit" class="btn" style="background: #2ecc71; color: #0b0c10;">+ Add Command</button>
+            </form>
         </div>
         
         <div class="panel-section">
@@ -430,7 +487,11 @@ DEFAULT_ADMIN_HTML = """
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" name="maintenance_mode" id="maintenance_mode" {% if sys_config.maintenance_mode %}checked{% endif %}>
-                    <label for="maintenance_mode">Enable Global Maintenance Mode</label>
+                    <label for="maintenance_mode">Enable Global Maintenance Mode (Disable Bot Commands)</label>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" name="feature_auto_pings" id="feature_auto_pings" {% if sys_config.feature_auto_pings %}checked{% endif %}>
+                    <label for="feature_auto_pings">Enable Automated War Pings (Feature Flag)</label>
                 </div>
                 <div class="form-group">
                     <label>Discord War Nudge Channel ID</label>
@@ -465,6 +526,17 @@ DEFAULT_ADMIN_HTML = """
         function switchTemplate() {
             var sel = document.getElementById("template_selector").value;
             document.getElementById("html_editor").value = document.getElementById("raw_" + sel).value;
+        }
+        function openModal(name, tag) {
+            document.getElementById('modalName').innerText = name;
+            document.getElementById('modalTag').innerText = '#' + tag;
+            document.getElementById('btnProfile').href = '/player/' + tag;
+            document.getElementById('btnAdmin').href = '/admin/grant-role/' + tag;
+            document.getElementById('modalInputTag').value = tag;
+            document.getElementById('actionModal').style.display = 'flex';
+        }
+        function closeModal() {
+            document.getElementById('actionModal').style.display = 'none';
         }
         window.onload = switchTemplate;
     </script>
@@ -517,7 +589,6 @@ def web_link():
                 {"$set": {"player_id": tag}},
                 upsert=True
             )
-            # Removed session.clear() to keep Admins persistently logged in
             return redirect(f"/player/{tag}")
         else:
             error_msg = "Could not find a Clash Royale account with that tag."
@@ -594,6 +665,7 @@ def admin_panel():
 
     war_players = sorted(war_players, key=lambda x: -x["decksRemaining"])
     linked_count = users_sync.count_documents({})
+    all_custom_cmds = list(custom_cmds_sync.find())
 
     return render_template_string(
         get_template("admin"), 
@@ -601,6 +673,7 @@ def admin_panel():
         total_decks_left=total_decks_left,
         linked_count=linked_count, 
         sys_config=sys_config_db,
+        custom_commands=all_custom_cmds,
         raw_roster=get_template("roster"),
         raw_player=get_template("player"),
         raw_link=get_template("link"),
@@ -621,7 +694,7 @@ def update_html():
             {"$set": {template_name: html_content}},
             upsert=True
         )
-        _HTML_CACHE.clear() # Bust RAM cache so changes reflect instantly
+        _HTML_CACHE.clear() 
         return redirect("/admin?success=UI+Code+Deployed+Live!")
     return redirect("/admin?error=Invalid+Template+Name")
 
@@ -629,7 +702,7 @@ def update_html():
 def reset_html():
     if not is_admin(): return "Unauthorized", 403
     db_sync["config"].delete_one({"_id": "html_templates"})
-    _HTML_CACHE.clear() # Bust RAM cache to revert to factory defaults
+    _HTML_CACHE.clear() 
     return redirect("/admin?success=All+UI+Templates+Reset+to+Factory+Defaults!")
 
 @app.route("/admin/grant-role/<player_tag>")
@@ -648,6 +721,45 @@ def admin_grant_role(player_tag):
     except Exception: pass
     return redirect("/admin?success=Granted+dashboard+admin+privileges!")
 
+@app.route("/admin/manual-link", methods=["POST"])
+def admin_manual_link():
+    if not is_admin(): return "Unauthorized", 403
+    player_tag = request.form.get("player_tag", "").strip().upper().replace("#", "")
+    discord_id = request.form.get("discord_id", "").strip()
+    
+    if not player_tag or not discord_id:
+        return redirect("/admin?error=Missing+tag+or+Discord+ID")
+        
+    if not discord_id.isdigit() or len(discord_id) < 17:
+        return redirect("/admin?error=Invalid+Discord+ID+Format.+Must+be+17%2B+digits.")
+        
+    users_sync.update_one(
+        {"_id": discord_id}, 
+        {"$set": {"player_id": player_tag}},
+        upsert=True
+    )
+    return redirect(f"/admin?success=Successfully+Linked+Tag+to+Discord+ID!")
+
+@app.route("/admin/add-command", methods=["POST"])
+def admin_add_command():
+    if not is_admin(): return "Unauthorized", 403
+    trigger = request.form.get("trigger", "").strip().lower()
+    response_text = request.form.get("response", "").strip()
+    
+    if trigger.startswith("!") or trigger.startswith("?"):
+        trigger = trigger[1:] 
+        
+    if trigger and response_text:
+        custom_cmds_sync.update_one({"_id": trigger}, {"$set": {"response": response_text}}, upsert=True)
+        return redirect("/admin?success=Custom+Command+Added!")
+    return redirect("/admin?error=Trigger+and+Response+Required")
+
+@app.route("/admin/delete-command/<cmd_id>")
+def admin_delete_command(cmd_id):
+    if not is_admin(): return "Unauthorized", 403
+    custom_cmds_sync.delete_one({"_id": cmd_id})
+    return redirect("/admin?success=Command+Deleted!")
+
 @app.route("/admin/update-system-config", methods=["POST"])
 def update_system_config():
     if not is_admin(): return "Unauthorized", 403
@@ -656,6 +768,7 @@ def update_system_config():
         {"$set": {
             "command_prefix": request.form.get("command_prefix", "!"),
             "maintenance_mode": bool(request.form.get("maintenance_mode")),
+            "feature_auto_pings": bool(request.form.get("feature_auto_pings")),
             "war_channel_id": request.form.get("war_channel_id", "").strip(),
             "ignored_channels": [c.strip() for c in request.form.get("ignored_channels", "").split(",") if c.strip()],
             "admin_role_ids": [r.strip() for r in request.form.get("admin_role_ids", "").split(",") if r.strip()],
@@ -713,6 +826,7 @@ class GraveyardBot(commands.Bot):
 
         self.active_prefix = "!"
         self.maintenance_mode = False
+        self.feature_auto_pings = False 
         self.ignored_channels = []
         self.war_channel_id = 0
         self._last_config_load = 0
@@ -720,6 +834,7 @@ class GraveyardBot(commands.Bot):
         self.mongo_client = AsyncIOMotorClient(mongo_url)
         self.db = self.mongo_client["graveyardbot"]
         self.db_users = self.db["users"]
+        self.custom_cmds = self.db["custom_commands"]
 
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
@@ -752,12 +867,20 @@ class GraveyardBot(commands.Bot):
                 except Exception as e:
                     log.error(f"Failed fallback config load: {e}")
 
-        if self.maintenance_mode:
-            ctx = await self.get_context(message)
-            if ctx.valid:
-                return await message.channel.send("⚠️ GraveyardBot is down for web configuration maintenance. Try again shortly.")
+        # Strict Maintenance Mode Block - Protects Built-in and Custom Commands
+        prefix = self.active_prefix
+        if self.maintenance_mode and message.content.startswith(prefix):
+            await message.channel.send("⚠️ GraveyardBot is down for web configuration maintenance. Try again shortly.")
+            return
 
         if str(message.channel.id) in self.ignored_channels: return
+
+        if message.content.startswith(prefix):
+            cmd_name = message.content[len(prefix):].split()[0].lower()
+            custom_cmd = await self.custom_cmds.find_one({"_id": cmd_name})
+            if custom_cmd:
+                await message.channel.send(custom_cmd["response"])
+                return 
 
         await self.process_commands(message)
 
@@ -766,11 +889,13 @@ class GraveyardBot(commands.Bot):
         if config_doc:
             self.active_prefix = config_doc.get("command_prefix", "!")
             self.maintenance_mode = config_doc.get("maintenance_mode", False)
+            self.feature_auto_pings = config_doc.get("feature_auto_pings", False)
             self.ignored_channels = config_doc.get("ignored_channels", [])
             self.war_channel_id = int(config_doc.get("war_channel_id") or 0)
         else:
             self.active_prefix = "!"
             self.maintenance_mode = False
+            self.feature_auto_pings = False
             self.ignored_channels = []
             self.war_channel_id = 0
 
