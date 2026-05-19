@@ -496,6 +496,7 @@ DEFAULT_ADMIN_HTML = """
                         <option value="player">Player Profile Page (PLAYER_HTML)</option>
                         <option value="link">Link Account Page (LINK_HTML)</option>
                         <option value="admin">Control Panel (ADMIN_HTML)</option>
+                        <option value="custom_csv">CSV Export Engine (CUSTOM_CSV)</option>
                     </select>
                     <a href="/admin/reset-html" class="btn-warn" style="font-size:0.75rem; background:#c0392b; padding:6px 10px;" onclick="return confirm('Are you sure? This permanently deletes all your custom UI code and restores the factory templates.')">Factory Reset All Templates</a>
                 </div>
@@ -549,6 +550,7 @@ DEFAULT_ADMIN_HTML = """
         <textarea id="raw_player">{{ raw_player }}</textarea>
         <textarea id="raw_link">{{ raw_link }}</textarea>
         <textarea id="raw_admin">{{ raw_admin }}</textarea>
+        <textarea id="raw_custom_csv">{{ raw_custom_csv }}</textarea>
     </div>
 
     <script>
@@ -573,13 +575,57 @@ DEFAULT_ADMIN_HTML = """
 </html>
 """
 
+DEFAULT_CUSTOM_CSV_HTML = """{%- if selected_fields -%}
+{{ selected_fields | join(',') }}
+{% for m in members %}
+{% set tag = m.tag | replace('#', '') %}
+{% set p = profiles.get(tag, {}) %}
+{% set row = [] %}
+{% for field in selected_fields %}
+    {% if field == 'name' %}{% set _ = row.append(m.name) %}
+    {% elif field == 'tag' %}{% set _ = row.append(tag) %}
+    {% elif field == 'role' %}{% set _ = row.append(m.role) %}
+    {% elif field == 'expLevel' %}{% set _ = row.append(m.expLevel | string) %}
+    {% elif field == 'trophies' %}{% set _ = row.append(m.trophies | string) %}
+    {% elif field == 'donations' %}{% set _ = row.append(m.donations | string) %}
+    {% elif field == 'current_streak' %}{% set _ = row.append(p.get('current_streak', 0) | string) %}
+    {% else %}{% set _ = row.append('N/A') %}
+    {% endif %}
+{% endfor %}
+{{ row | join(',') }}
+{% endfor %}
+{%- else -%}
+Name,Tag,Trophies,Current Win Streak
+{% for m in members %}
+{% set tag = m.tag | replace('#', '') %}
+{% set p = profiles.get(tag, {}) %}
+{{ m.name }},{{ tag }},{{ m.trophies }},{{ p.get('current_streak', 0) }}
+{% endfor %}
+{%- endif -%}"""
+
 # ── FLASK ROUTE CONTROLLERS ──────────────────────────────────────────────── #
 @app.route("/")
 def index():
     data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
     if not data:
         return "<h1>Clan not found or API down.</h1>", 500
-    return render_template_string(get_template("roster"), members=data.get("memberList", []))
+        
+    members = data.get("memberList", [])
+    
+    # 1. Get a list of all 50 player tags
+    member_tags = [m["tag"].replace("#", "") for m in members]
+    
+    # 2. Do a single, lightning-fast bulk query to MongoDB to get their saved profiles
+    profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+    profile_map = {p["_id"]: p for p in profiles}
+    
+    # 3. Attach the database metrics to the live roster
+    for m in members:
+        tag = m["tag"].replace("#", "")
+        # If the harvester ran last night, grab the streak. If not, default to 0.
+        m["current_streak"] = profile_map.get(tag, {}).get("current_streak", 0)
+        
+    return render_template_string(get_template("roster"), members=members)
 
 @app.route("/player/<tag>")
 def web_profile(tag):
@@ -707,6 +753,7 @@ def admin_panel():
         raw_player=get_template("player"),
         raw_link=get_template("link"),
         raw_admin=get_template("admin"),
+        raw_custom_csv=get_template("custom_csv"),
         success=request.args.get('success'), 
         error=request.args.get('error')
     )
@@ -717,7 +764,7 @@ def update_html():
     template_name = request.form.get("template_name")
     html_content = request.form.get("html_content")
     
-    if template_name in ["roster", "player", "link", "admin"]:
+    if template_name in ["roster", "player", "link", "admin", "custom_csv"]:
         db_sync["config"].update_one(
             {"_id": "html_templates"},
             {"$set": {template_name: html_content}},
@@ -831,54 +878,25 @@ def admin_mass_ping():
 @app.route("/admin/export/custom", methods=["POST"])
 def export_custom_csv():
     if not is_admin(): return "Unauthorized", 403
-    
-    selected_fields = request.form.getlist("fields")
-    if not selected_fields:
-        return redirect("/admin?error=No+fields+selected+for+export.")
 
     clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
-    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
-    
     members = clan_data.get("memberList", []) if clan_data else []
-    
-    raw_participants = []
-    if war_data and "clan" in war_data and "participants" in war_data["clan"]:
-        raw_participants = war_data["clan"]["participants"]
-    elif war_data and "clans" in war_data:
-        for c in war_data["clans"]:
-            if c.get("tag", "").replace("#", "").upper() == CLAN_TAG.upper():
-                raw_participants = c.get("participants", [])
-                break
-                
-    war_participants = {p["tag"]: p for p in raw_participants}
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(selected_fields)
+    member_tags = [m["tag"].replace("#", "") for m in members]
+    db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+    profiles_map = {p["_id"]: p for p in db_profiles}
 
-    for m in members:
-        tag = m["tag"]
-        flat_data = {
-            "name": m.get("name", ""),
-            "tag": tag,
-            "role": m.get("role", ""),
-            "expLevel": m.get("expLevel", 0),
-            "trophies": m.get("trophies", 0),
-            "donations": m.get("donations", 0),
-            "donationsReceived": m.get("donationsReceived", 0)
-        }
-        
-        if tag in war_participants:
-            wp = war_participants[tag]
-            flat_data["fame"] = wp.get("fame", 0)
-            flat_data["decksUsedToday"] = wp.get("decksUsedToday", 0)
-            flat_data["decksRemaining"] = max(0, 4 - wp.get("decksUsedToday", 0))
+    csv_template = get_template("custom_csv")
 
-        row = [flat_data.get(field, "N/A") for field in selected_fields]
-        writer.writerow(row)
+    rendered_csv = render_template_string(
+        csv_template,
+        members=members,
+        profiles=profiles_map,
+        selected_fields=request.form.getlist("fields")
+    )
 
     return app.response_class(
-        output.getvalue(),
+        rendered_csv,
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"}
     )
@@ -921,12 +939,14 @@ class GraveyardBot(commands.Bot):
         self.custom_cmds = self.db["custom_commands"]
 
     # ── ASYNC API HOOK TO PREVENT EVENT LOOP FREEZING ──
+    def _cr_headers(self):
+        return {"Authorization": f"Bearer {os.getenv('CR_TOKEN')}", "Accept": "application/json"}
+
     async def async_fetch_cr_api(self, endpoint: str) -> dict | None:
         url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
-        headers = {"Authorization": f"Bearer {os.getenv('CR_TOKEN')}", "Accept": "application/json"}
         try:
             timeout = aiohttp.ClientTimeout(total=10)
-            async with self.http_session.get(url, headers=headers, timeout=timeout) as response:
+            async with self.http_session.get(url, headers=self._cr_headers(), timeout=timeout) as response:
                 if response.status == 200:
                     data = await response.json()
                     if isinstance(data, dict):
@@ -960,7 +980,6 @@ class GraveyardBot(commands.Bot):
             self.redis_available = False
 
         await self.load_extension("cogs.clash_cog")
-        self.daily_snapshot_loop.start()
 
     async def on_message(self, message):
         if message.author.bot: return
@@ -989,6 +1008,15 @@ class GraveyardBot(commands.Bot):
                 return 
 
         await self.process_commands(message)
+
+    # ── GLOBAL ERROR HANDLER ──
+    async def on_command_error(self, ctx, error):
+        # Silently ignore user typos (like "!plivewire" instead of "!p livewire")
+        if isinstance(error, commands.CommandNotFound):
+            return
+            
+        # Optional: You can handle other global errors here, or just let them log naturally
+        log.error(f"Global Command Error: {error}")
 
     async def load_system_config(self):
         config_doc = await self.db["config"].find_one({"_id": "system_config_file"})
@@ -1043,118 +1071,6 @@ class GraveyardBot(commands.Bot):
             finally:
                 if pubsub:
                     await pubsub.close()
-
-    # ── THE MIDNIGHT MASTER SNAPSHOT ──
-    @tasks.loop(time=dt_time(hour=23, minute=55, tzinfo=zoneinfo.ZoneInfo("America/New_York")))
-    async def daily_snapshot_loop(self):
-        clan_data = await self.async_fetch_cr_api(f"clans/%23{CLAN_TAG}")
-        war_data = await self.async_fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
-        if not clan_data: 
-            return
-            
-        snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-        members = clan_data.get("memberList", [])
-        
-        # Parse War Participants
-        raw_participants = []
-        if war_data and "clan" in war_data and "participants" in war_data["clan"]:
-            raw_participants = war_data["clan"]["participants"]
-        elif war_data and "clans" in war_data:
-            for c in war_data["clans"]:
-                if c.get("tag", "").replace("#", "").upper() == CLAN_TAG.upper():
-                    raw_participants = c.get("participants", [])
-                    break
-                    
-        war_participants = {p["tag"]: p for p in raw_participants}
-        
-        # 1. Prepare Bulk Ops Arrays
-        snapshot_ops = []
-        profile_ops = []
-        battle_ops = []
-        
-        # 2. Concurrency limit (Semaphore) to protect the API from rate limits
-        sem = asyncio.Semaphore(5)
-
-        async def harvest_member(member):
-            tag = member["tag"].replace("#", "")
-            async with sem:
-                # Optimized: Execute both API calls in parallel
-                profile, blog = await asyncio.gather(
-                    self.async_fetch_cr_api(f"players/%23{tag}"),
-                    self.async_fetch_cr_api(f"players/%23{tag}/battlelog")
-                )
-            return tag, member, profile, blog
-
-        # Fetch all 50 members concurrently but safely
-        log.info("📡 Initiating Master Data Harvest for 50 clan members...")
-        results = await asyncio.gather(*(harvest_member(m) for m in members))
-        
-        for tag, m, profile, blog in results:
-            
-            # --- A. SNAPSHOT DATA (Daily CSV metrics) ---
-            flat_data = {
-                "date": snapshot_date,
-                "name": m.get("name", ""),
-                "tag": tag,
-                "role": m.get("role", ""),
-                "expLevel": m.get("expLevel", 0),
-                "trophies": m.get("trophies", 0),
-                "donations": m.get("donations", 0),
-                "donationsReceived": m.get("donationsReceived", 0)
-            }
-            if tag in war_participants:
-                wp = war_participants[tag]
-                flat_data["fame"] = wp.get("fame", 0)
-                flat_data["decksUsedToday"] = wp.get("decksUsedToday", 0)
-                
-            if profile:
-                flat_data["totalWins"] = profile.get("wins", 0)
-                flat_data["totalLosses"] = profile.get("losses", 0)
-                flat_data["warDayWins"] = profile.get("warDayWins", 0)
-                fav_card = profile.get("currentFavouriteCard", {})
-                flat_data["favoriteCard"] = fav_card.get("name", "Unknown") if isinstance(fav_card, dict) else "Unknown"
-                
-                profile_ops.append(UpdateOne({"_id": tag}, {"$set": profile}, upsert=True))
-
-            snapshot_ops.append(UpdateOne(
-                {"tag": tag, "date": snapshot_date},
-                {"$set": flat_data},
-                upsert=True
-            ))
-
-            # --- B. BATTLE LOG DATA (Card vs Card tracking) ---
-            if blog and isinstance(blog, list):
-                for battle in blog:
-                    battle_time = battle.get("battleTime")
-                    if not battle_time: continue
-                    
-                    battle_id = f"{tag}_{battle_time}"
-                    
-                    team_cards = [c["name"] for c in battle.get("team", [{}])[0].get("cards", [])]
-                    opp_cards = [c["name"] for c in battle.get("opponent", [{}])[0].get("cards", [])]
-                    
-                    battle_doc = {
-                        "player_tag": tag,
-                        "battle_time": battle_time,
-                        "type": battle.get("type", ""),
-                        "gameMode": battle.get("gameMode", {}).get("name", ""),
-                        "team_cards": team_cards,
-                        "opponent_cards": opp_cards,
-                        "team_crowns": battle.get("team", [{}])[0].get("crowns", 0),
-                        "opponent_crowns": battle.get("opponent", [{}])[0].get("crowns", 0)
-                    }
-                    battle_ops.append(UpdateOne({"_id": battle_id}, {"$set": battle_doc}, upsert=True))
-            
-        # 3. Execute all database writes in lightning-fast bulk payloads
-        if snapshot_ops: await self.db["historical_snapshots"].bulk_write(snapshot_ops)
-        if profile_ops: await self.db["player_profiles"].bulk_write(profile_ops)
-        if battle_ops: await self.db["battle_history"].bulk_write(battle_ops)
-            
-        log.info(f"✅ Harvest Complete! Saved {len(snapshot_ops)} snapshots, {len(profile_ops)} profiles, and {len(battle_ops)} battles to MongoDB.")
-
-    @daily_snapshot_loop.before_loop
-    async def before_daily_snapshot_loop(self):
-        await self.wait_until_ready()
 
     async def close(self):
         if self.http_session: await self.http_session.close()
