@@ -101,6 +101,24 @@ def fetch_cr_api(endpoint: str) -> dict | None:
         log.error(f"Flask API Request failed: {e}")
         return None
 
+def validate_jinja_syntax(html: str) -> tuple[bool, str, int | None]:
+    """
+    Validates Jinja template syntax without needing a real context.
+    DebugUndefined silently swallows unknown variables so {{ anything }} passes.
+    Only catches real syntax errors that would crash the page.
+    """
+    from jinja2 import Environment, DebugUndefined
+    import re
+ 
+    try:
+        env = Environment(undefined=DebugUndefined)
+        env.parse(html)
+        return True, "Template syntax is valid.", None
+    except Exception as e:
+        line_match = re.search(r'line (\d+)', str(e))
+        line = int(line_match.group(1)) if line_match else None
+        return False, str(e), line
+        
 def get_user_guild_roles(token: str) -> list:
     url = f"https://discord.com/api/users/@me/guilds/{GUILD_ID}/member"
     headers = {"Authorization": f"Bearer {token}"}
@@ -900,7 +918,44 @@ def export_custom_csv():
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"}
     )
-
+    
+@app.route("/admin/validate-template", methods=["POST"])
+def validate_template():
+    if not is_admin():
+        return {"error": "Unauthorized"}, 403
+ 
+    html = request.json.get("html", "")
+    ok, message, line = validate_jinja_syntax(html)
+    return {"ok": ok, "message": message, "line": line}
+ 
+ 
+@app.route("/admin/save-template-safe", methods=["POST"])
+def save_template_safe():
+    if not is_admin():
+        return {"error": "Unauthorized"}, 403
+ 
+    html = request.json.get("html", "")
+    template_name = request.json.get("template_name", "")
+ 
+    if template_name not in ["roster", "player", "link", "admin", "custom_csv"]:
+        return {"ok": False, "message": "Invalid template name."}, 400
+ 
+    ok, message, line = validate_jinja_syntax(html)
+    if not ok:
+        return {
+            "ok": False,
+            "message": f"Validation failed — template NOT saved: {message}",
+            "line": line
+        }
+ 
+    db_sync["config"].update_one(
+        {"_id": "html_templates"},
+        {"$set": {template_name: html}},
+        upsert=True
+    )
+    _HTML_CACHE.clear()
+    return {"ok": True, "message": f"'{template_name}' validated and deployed successfully."}
+    
 @app.route("/health")
 def health():
     return {"status": "ok"}, 200
