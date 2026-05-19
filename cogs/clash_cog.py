@@ -129,7 +129,7 @@ class ProfileView(discord.ui.View):
         )
         e.add_field(
             name="📚 Collection",
-            value=f"Cards Found: **{self.data.get('cardsFound', 0)}**",
+            value=f"Cards Found: **{len(self.data.get('cards', []))}**", # FIXED: No longer hardcoded to 0
             inline=False,
         )
         return e
@@ -306,7 +306,28 @@ class ClashRoyale(commands.Cog):
                 if user_doc: tag_to_search = user_doc["player_id"]
                 else: return await ctx.send("❌ That user hasn't linked their account.")
             else:
-                tag_to_search = target.upper().replace("#", "")
+                clean_target = target.upper().replace("#", "")
+                
+                # Check if it is a valid CR Tag (only uses specific characters)
+                valid_chars = set("0289CGJLPQRUVY")
+                if all(c in valid_chars for c in clean_target) and len(clean_target) > 3:
+                    tag_to_search = clean_target
+                else:
+                    # If not a tag, perform a Fuzzy Name Search against the Clan Roster
+                    clan_data = await self._get_clan_data(self.clan_tag)
+                    if clan_data and "memberList" in clan_data:
+                        members = clan_data["memberList"]
+                        names = [m["name"] for m in members]
+                        
+                        match, score = process.extractOne(target, names)
+                        if score >= 70:  # 70% confidence threshold
+                            for m in members:
+                                if m["name"] == match:
+                                    tag_to_search = m["tag"].replace("#", "")
+                                    break
+                    
+                    if not tag_to_search:
+                        return await ctx.send(f"❌ Could not find a valid tag or clan member matching **'{target}'**.")
         else:
             user_doc = await self.users.find_one({"_id": str(ctx.author.id)})
             if user_doc: tag_to_search = user_doc["player_id"]
@@ -697,33 +718,32 @@ class ClashRoyale(commands.Cog):
                 flat_data["fame"] = wp.get("fame", 0)
                 flat_data["decksUsedToday"] = wp.get("decksUsedToday", 0)
                 
-            # Grab extended profile stats if available
-            if profile:
-                flat_data["totalWins"] = profile.get("wins", 0)
-                flat_data["totalLosses"] = profile.get("losses", 0)
-                flat_data["warDayWins"] = profile.get("warDayWins", 0)
-                fav_card = profile.get("currentFavouriteCard", {})
-                flat_data["favoriteCard"] = fav_card.get("name", "Unknown") if isinstance(fav_card, dict) else "Unknown"
-                
-                # Update their permanent profile in MongoDB
-                profile_ops.append(UpdateOne({"_id": tag}, {"$set": profile}, upsert=True))
-
             snapshot_ops.append(UpdateOne(
                 {"tag": tag, "date": snapshot_date},
                 {"$set": flat_data},
                 upsert=True
             ))
 
-            # --- B. BATTLE LOG DATA (Card vs Card tracking) ---
+            # --- B. BATTLE LOG DATA & WIN STREAK ---
+            current_streak = 0
+            streak_broken = False
+            
             if blog and isinstance(blog, list):
                 for battle in blog:
                     battle_time = battle.get("battleTime")
                     if not battle_time: continue
                     
-                    # Create a mathematically unique ID so we NEVER store duplicate battles
-                    battle_id = f"{tag}_{battle_time}"
+                    team_crowns = battle.get("team", [{}])[0].get("crowns", 0)
+                    opp_crowns = battle.get("opponent", [{}])[0].get("crowns", 0)
                     
-                    # Extract the card names played by both sides
+                    # 1. Calculate the win streak (Logs are ordered newest to oldest)
+                    if team_crowns > opp_crowns and not streak_broken:
+                        current_streak += 1
+                    elif team_crowns <= opp_crowns:
+                        streak_broken = True
+
+                    # 2. Save the battle
+                    battle_id = f"{tag}_{battle_time}"
                     team_cards = [c["name"] for c in battle.get("team", [{}])[0].get("cards", [])]
                     opp_cards = [c["name"] for c in battle.get("opponent", [{}])[0].get("cards", [])]
                     
@@ -734,10 +754,24 @@ class ClashRoyale(commands.Cog):
                         "gameMode": battle.get("gameMode", {}).get("name", ""),
                         "team_cards": team_cards,
                         "opponent_cards": opp_cards,
-                        "team_crowns": battle.get("team", [{}])[0].get("crowns", 0),
-                        "opponent_crowns": battle.get("opponent", [{}])[0].get("crowns", 0)
+                        "team_crowns": team_crowns,
+                        "opponent_crowns": opp_crowns
                     }
                     battle_ops.append(UpdateOne({"_id": battle_id}, {"$set": battle_doc}, upsert=True))
+            
+            # --- C. PROFILE UPDATES ---
+            if profile:
+                flat_data["totalWins"] = profile.get("wins", 0)
+                flat_data["totalLosses"] = profile.get("losses", 0)
+                flat_data["warDayWins"] = profile.get("warDayWins", 0)
+                fav_card = profile.get("currentFavouriteCard", {})
+                flat_data["favoriteCard"] = fav_card.get("name", "Unknown") if isinstance(fav_card, dict) else "Unknown"
+                
+                # Add the computed streak
+                profile["current_streak"] = current_streak
+                
+                # Update their permanent profile in MongoDB
+                profile_ops.append(UpdateOne({"_id": tag}, {"$set": profile}, upsert=True))
             
         # 3. Execute all database writes in lightning-fast bulk payloads
         if snapshot_ops: await self.db["historical_snapshots"].bulk_write(snapshot_ops)
