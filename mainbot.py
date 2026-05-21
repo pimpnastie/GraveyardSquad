@@ -9,31 +9,36 @@ import aiohttp
 import requests
 import time
 import json
-import csv
-import io
 import zoneinfo
 from datetime import datetime, timedelta, time as dt_time
+
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
-from flask import Flask, render_template_string, request, redirect, session
+from flask import Flask, render_template_string, request, redirect, session, jsonify
 from waitress import serve
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient, UpdateOne
 import redis.asyncio as redis
+import redis as sync_redis
 
-# --- 1. AUTOMATED ENVIRONMENT SETUP ---
+# ---------------------------------------------------------------------------
+# 1. AUTOMATED ENVIRONMENT SETUP
+# ---------------------------------------------------------------------------
 def sync_environment():
-    if os.name != 'nt':
-        return  
-        
+    if os.name != "nt":
+        return
+
     req_file = "requirements.txt"
     venv_dir = "venv"
     is_venv = sys.prefix != sys.base_prefix or os.path.exists(venv_dir)
 
     if not os.path.exists(req_file):
         with open(req_file, "w") as f:
-            f.write("discord.py\naiohttp\nmotor\npymongo\nredis\nflask\npython-dotenv\nthefuzz\nwaitress\nopenpyxl\ntzdata\nrequests\n")
+            f.write(
+                "discord.py\naiohttp\nmotor\npymongo\nredis\nflask\n"
+                "python-dotenv\nthefuzz\nwaitress\nopenpyxl\ntzdata\nrequests\n"
+            )
         print(f"✅ Created default {req_file}")
 
     if not is_venv:
@@ -45,22 +50,30 @@ def sync_environment():
         try:
             import pkg_resources
             with open(req_file, "r") as f:
-                required_packages = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-            pkg_resources.require(required_packages)
+                required = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+            pkg_resources.require(required)
         except Exception:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_file])
 
+
 sync_environment()
 
-# --- 2. STANDARD IMPORTS & SETUP ---
+# ---------------------------------------------------------------------------
+# 2. STANDARD IMPORTS & SETUP
+# ---------------------------------------------------------------------------
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)-10s %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)-10s %(message)s",
+)
 log = logging.getLogger("mainbot")
 
-# --- 3. UNIFIED FLASK WEB INFRASTRUCTURE ---
+# ---------------------------------------------------------------------------
+# 3. UNIFIED FLASK WEB INFRASTRUCTURE
+# ---------------------------------------------------------------------------
 app = Flask(__name__)
 app.secret_key = os.environ["FLASK_SECRET"]
-app.permanent_session_lifetime = timedelta(days=30) 
+app.permanent_session_lifetime = timedelta(days=30)
 
 CLAN_TAG = "9LVY89UP"
 MAX_CARD_LEVEL = 16
@@ -76,49 +89,74 @@ db_sync = mongo_client_sync["graveyardbot"]
 users_sync = db_sync["users"]
 custom_cmds_sync = db_sync["custom_commands"]
 
-import redis as sync_redis
 redis_sync_client = sync_redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
 cr_api_session = requests.Session()
 
-def fetch_cr_api(endpoint: str) -> dict | None:
+
+# ---------------------------------------------------------------------------
+# UTILITY HELPERS
+# ---------------------------------------------------------------------------
+def clean_tag(tag: str) -> str:
+    """Normalises Clash Royale tags to uppercase, stripping whitespace and '#'."""
+    return tag.strip().upper().replace("#", "")
+
+
+def _normalize_card_levels(data: dict) -> dict:
+    for key in ("cards", "currentDeck"):
+        for card in data.get(key, []):
+            card["level"] = (
+                MAX_CARD_LEVEL
+                - card.get("maxLevel", MAX_CARD_LEVEL)
+                + card.get("level", 1)
+            )
+    return data
+
+
+def fetch_cr_api(endpoint: str, retries: int = 3) -> dict | None:
+    """Synchronous CR API fetcher with exponential back-off for rate limits."""
     url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
-    headers = {"Authorization": f"Bearer {os.getenv('CR_TOKEN')}", "Accept": "application/json"}
-    try:
-        response = cr_api_session.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, dict):
-                if "cards" in data:
-                    for c in data["cards"]:
-                        c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
-                if "currentDeck" in data:
-                    for c in data["currentDeck"]:
-                        c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
-            return data
-        return None
-    except Exception as e:
-        log.error(f"Flask API Request failed: {e}")
-        return None
+    headers = {
+        "Authorization": f"Bearer {os.getenv('CR_TOKEN')}",
+        "Accept": "application/json",
+    }
+
+    for attempt in range(retries):
+        try:
+            response = cr_api_session.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict):
+                    _normalize_card_levels(data)
+                return data
+            elif response.status_code == 429:
+                wait = 2 ** attempt
+                log.warning(f"Flask API rate-limited (429) on {endpoint}. Retrying in {wait}s…")
+                time.sleep(wait)
+            else:
+                log.error(f"Flask API request failed [{response.status_code}] on {endpoint}")
+                return None
+        except Exception as e:
+            wait = 2 ** attempt
+            log.error(f"Flask API exception: {e}. Retrying in {wait}s…")
+            time.sleep(wait)
+
+    return None
+
 
 def validate_jinja_syntax(html: str) -> tuple[bool, str, int | None]:
-    """
-    Validates Jinja template syntax without needing a real context.
-    DebugUndefined silently swallows unknown variables so {{ anything }} passes.
-    Only catches real syntax errors that would crash the page.
-    """
     from jinja2 import Environment, DebugUndefined
     import re
- 
+
     try:
-        env = Environment(undefined=DebugUndefined)
-        env.parse(html)
+        Environment(undefined=DebugUndefined).parse(html)
         return True, "Template syntax is valid.", None
     except Exception as e:
-        line_match = re.search(r'line (\d+)', str(e))
+        line_match = re.search(r"line (\d+)", str(e))
         line = int(line_match.group(1)) if line_match else None
         return False, str(e), line
-        
+
+
 def get_user_guild_roles(token: str) -> list:
     url = f"https://discord.com/api/users/@me/guilds/{GUILD_ID}/member"
     headers = {"Authorization": f"Bearer {token}"}
@@ -126,81 +164,174 @@ def get_user_guild_roles(token: str) -> list:
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             return r.json().get("roles", [])
+        log.warning(f"Could not fetch guild roles — HTTP {r.status_code}")
     except Exception as e:
         log.error(f"Failed to fetch guild roles: {e}")
     return []
 
-def is_admin():
-    if "discord_id" not in session: return False
+
+def is_admin() -> bool:
+    if "discord_id" not in session:
+        return False
+
     discord_id = str(session.get("discord_id"))
-    
-    if discord_id == "751975709643112569": return True
-    
+
+    master_admin = os.getenv("MASTER_ADMIN_ID", "")
+    if master_admin and discord_id == master_admin:
+        return True
+
     sys_config_db = db_sync["config"].find_one({"_id": "system_config_file"}) or {}
     allowed_roles = sys_config_db.get("admin_role_ids", [])
-    allowed_users = sys_config_db.get("admin_user_ids", []) 
-    
-    if discord_id in allowed_users: return True
-    
+    allowed_users = sys_config_db.get("admin_user_ids", [])
+
+    if discord_id in allowed_users:
+        return True
+
     user_roles = session.get("user_roles", [])
     return any(str(role_id) in allowed_roles for role_id in user_roles)
 
-# ── IN-MEMORY HTML CACHE ────────────────────────────────────────────────── #
-_HTML_CACHE = {}
 
-def get_template(template_name):
+# ---------------------------------------------------------------------------
+# IN-MEMORY HTML CACHE
+# ---------------------------------------------------------------------------
+_HTML_CACHE: dict[str, str] = {}
+
+
+def get_template(template_name: str) -> str:
     if template_name in _HTML_CACHE:
         return _HTML_CACHE[template_name]
-        
+
     doc = db_sync["config"].find_one({"_id": "html_templates"})
     if doc and template_name in doc:
         _HTML_CACHE[template_name] = doc[template_name]
         return doc[template_name]
-        
+
     fallback = globals().get(f"DEFAULT_{template_name.upper()}_HTML", "")
     _HTML_CACHE[template_name] = fallback
     return fallback
 
-# ── HTML UI DEFAULT PAGE STRINGS ────────────────────────────────────────── #
+
+def invalidate_template_cache() -> None:
+    _HTML_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# HTML TEMPLATE DEFAULTS
+# ---------------------------------------------------------------------------
 DEFAULT_ROSTER_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Graveyard Clan Dashboard</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #121212; color: white; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 40px 20px; }
-        h1 { color: #f1c40f; margin-bottom: 8px; font-size: 2rem; }
-        .subtitle { color: #888; margin-bottom: 30px; font-size: 0.9rem; }
-        .container { max-width: 800px; margin: auto; }
-        .member-card { background: #1e1e1e; padding: 15px 20px; margin: 8px 0; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; text-decoration: none; color: white; border: 1px solid #333; transition: 0.2s; }
-        .member-card:hover { border-color: #f1c40f; background: #252525; }
-        .member-left { display: flex; flex-direction: column; align-items: flex-start; }
-        .member-name { font-weight: bold; font-size: 1rem; }
-        .member-role { color: #888; font-size: 0.78rem; margin-top: 2px; text-transform: capitalize; }
-        .trophies { color: #5dade2; font-weight: bold; font-size: 1rem; }
-        .btn-discord { background: #5865F2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block; margin-bottom: 20px; transition: 0.2s;}
-        .btn-discord:hover { background: #4752C4; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graveyard Squad | Roster</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0b0c10; color: #c5c6c7; font-family: 'Segoe UI', system-ui, sans-serif; padding-bottom: 50px; }
+
+  .hero { background: #111418; padding: 40px 20px; text-align: center; border-bottom: 1px solid #1e2530; }
+  .hero h1 { font-size: 2rem; color: #fff; font-weight: 700; margin-bottom: 14px; }
+  .hero h1 span { color: #f1c40f; }
+  .hero-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; }
+  .btn { padding: 10px 22px; border-radius: 6px; font-weight: 700; font-size: 0.9rem; text-decoration: none; display: inline-block; transition: opacity 0.2s; }
+  .btn:hover { opacity: 0.85; }
+  .btn-green { background: #2ecc71; color: #0b0c10; }
+  .btn-discord { background: #5865F2; color: #fff; }
+  .hero-sub { font-size: 0.85rem; color: #6b7785; }
+
+  .container { max-width: 900px; margin: 36px auto; padding: 0 20px; display: flex; gap: 28px; flex-wrap: wrap; }
+  .main-col { flex: 2; min-width: 320px; }
+  .side-col { flex: 1; min-width: 260px; }
+
+  h2 { color: #fff; font-size: 1.1rem; font-weight: 700; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid #1e2530; }
+
+  .player-card {
+    background: #161b22; border: 1px solid #1e2530; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 10px; display: flex;
+    align-items: center; justify-content: space-between;
+    text-decoration: none; transition: border-color 0.2s, transform 0.15s;
+    gap: 12px; flex-wrap: wrap;
+  }
+  .player-card:hover { border-color: #45a29e; transform: translateY(-1px); }
+
+  .p-left { display: flex; flex-direction: column; gap: 3px; }
+  .p-name { font-size: 1rem; font-weight: 700; color: #fff; }
+  .p-role { font-size: 0.75rem; color: #6b7785; }
+
+  .p-right { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+  .p-trophies { font-size: 1rem; font-weight: 700; color: #f1c40f; }
+  .p-stats-row { display: flex; gap: 12px; font-size: 0.75rem; color: #6b7785; }
+  .p-stats-row span { color: #a0aab5; }
+
+  .hof-card { background: #161b22; border: 1px solid #1e2530; border-left: 3px solid var(--hof-color, #45a29e); border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }
+  .hof-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #6b7785; margin-bottom: 4px; font-weight: 700; }
+  .hof-name { font-size: 1rem; color: #fff; font-weight: 700; margin-bottom: 2px; }
+  .hof-stat { font-size: 0.85rem; color: var(--hof-color, #45a29e); font-weight: 600; }
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>🛡️ Graveyard Clan Roster</h1>
-        {% if session.get('is_admin_user') %}
-            <a href="/admin" class="btn-discord" style="background: #2ecc71; margin-right: 10px;">💀 Go to HQ Control Panel</a>
-        {% endif %}
-        <a href="/login" class="btn-discord">Log in with Discord</a>
-        <p class="subtitle">{{ members | length }} members · Click a name to view their profile</p>
-        {% for m in members %}
-            <a href="/player/{{ m.tag[1:] }}" class="member-card">
-                <div class="member-left">
-                    <span class="member-name">{{ m.name }}</span>
-                    <span class="member-role">{{ m.role }}</span>
-                </div>
-                <span class="trophies">🏆 {{ m.trophies }}</span>
-            </a>
-        {% endfor %}
+
+<header class="hero">
+  <h1>🛡️ <span>Graveyard</span> Clan Roster</h1>
+  <div class="hero-btns">
+    {% if session.get('is_admin_user') %}
+      <a href="/admin" class="btn btn-green">💀 Go to HQ Control Panel</a>
+    {% endif %}
+    <a href="/login" class="btn btn-discord">Log in with Discord</a>
+  </div>
+  <div class="hero-sub">{{ players | length }} members &middot; Click a name to view their profile</div>
+</header>
+
+<div class="container">
+  <div class="main-col">
+    {% for p in players %}
+    <a href="/player/{{ p.tag[1:] if p.tag.startswith('#') else p.tag }}" class="player-card">
+      <div class="p-left">
+        <div class="p-name cr-name">{{ p.name }}</div>
+        <div class="p-role">
+          {% if p.role == 'leader' %}Leader
+          {% elif p.role == 'coLeader' %}CoLeader
+          {% elif p.role == 'elder' %}Elder
+          {% else %}Member{% endif %}
+        </div>
+      </div>
+      <div class="p-right">
+        <div class="p-trophies">🏆 {{ p.trophies }}</div>
+        <div class="p-stats-row">
+          <div>⭐ <span>{{ p.fame | default(0) }}</span></div>
+          <div>🔥 <span>{{ p.current_streak | default(0) }}</span></div>
+          <div>⚔️ <span>{{ p.warDayWins | default(0) }}</span></div>
+        </div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+
+  <div class="side-col">
+    <h2>Hall of Fame</h2>
+    <div class="hof-card" style="--hof-color: #3498db;">
+      <div class="hof-label">Top Pusher</div>
+      <div class="hof-name cr-name">{{ top_pusher.name if top_pusher else 'N/A' }}</div>
+      <div class="hof-stat">🏆 {{ top_pusher.trophies if top_pusher else 0 }} Trophies</div>
     </div>
+    <div class="hof-card" style="--hof-color: #e74c3c;">
+      <div class="hof-label">Highest Win Streak</div>
+      <div class="hof-name cr-name">{{ top_streak.name if top_streak else 'N/A' }}</div>
+      <div class="hof-stat">🔥 {{ top_streak.current_streak if top_streak else 0 }} Wins</div>
+    </div>
+    <div class="hof-card" style="--hof-color: #f1c40f;">
+      <div class="hof-label">War Legend</div>
+      <div class="hof-name cr-name">{{ top_war.name if top_war else 'N/A' }}</div>
+      <div class="hof-stat">⚔️ {{ top_war.warDayWins if top_war else 0 }} Lifetime Wins</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.cr-name').forEach(el => {
+    el.innerHTML = el.innerHTML.replace(/<c\d+>|<\/c>/gi, '');
+  });
+</script>
 </body>
 </html>
 """
@@ -318,277 +449,709 @@ DEFAULT_PLAYER_HTML = """
 
 DEFAULT_ADMIN_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Graveyard Squad - HQ Control Center</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #0b0c10; color: #c5c6c7; font-family: 'Segoe UI', sans-serif; display: flex; min-height: 100vh; }
-        .sidebar { width: 260px; background: #1f2833; padding: 30px 20px; display: flex; flex-direction: column; gap: 20px; border-right: 1px solid #45a29e; }
-        .sidebar h2 { color: #66fcf1; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 1px; }
-        .sidebar a { color: #c5c6c7; text-decoration: none; padding: 12px; border-radius: 6px; transition: 0.2s; }
-        .sidebar a:hover, .sidebar a.active { background: #45a29e; color: #0b0c10; font-weight: bold; }
-        .main-content { flex: 1; padding: 30px; overflow-y: auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #1f2833; padding-bottom: 20px; margin-bottom: 30px; }
-        .header h1 { color: #66fcf1; }
-        .panel-section { background: #1f2833; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #252e3a; }
-        .panel-section h3 { margin-bottom: 20px; color: #66fcf1; border-left: 4px solid #45a29e; padding-left: 10px; }
-        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
-        th, td { padding: 10px 12px; border-bottom: 1px solid #0b0c10; vertical-align: middle; }
-        th { background: #0b0c10; color: #45a29e; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; }
-        tr:hover { background: #252e3a; }
-        .btn { background: #45a29e; color: #0b0c10; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.2s; text-decoration: none; display: inline-block; font-size: 0.8rem; }
-        .btn:hover { background: #66fcf1; }
-        .btn-warn { background: #e74c3c; color: white; border: none; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer; display: inline-block; }
-        .btn-warn:hover { background: #c0392b; }
-        .form-group { margin-bottom: 15px; display: flex; flex-direction: column; gap: 5px; }
-        label { font-size: 0.9rem; color: #45a29e; font-weight: bold; }
-        input[type="text"], input[type="checkbox"] { background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 8px; border-radius: 4px; }
-        .checkbox-group { display: flex; align-items: center; gap: 10px; margin: 15px 0; }
-        
-        .modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; align-items:center; justify-content:center; }
-        .modal-content { background:#1f2833; padding:25px; border-radius:8px; border:1px solid #45a29e; width:450px; max-width:90%; position:relative; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graveyard HQ</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closetag.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-beautify/1.14.9/beautify-html.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0b0c10;
+    --surface:   #161b22;
+    --surface2:  #1f2833;
+    --border:    #2a3545;
+    --accent:    #45a29e;
+    --accent2:   #66fcf1;
+    --text:      #c5c6c7;
+    --text-dim:  #6b7785;
+    --danger:    #e74c3c;
+    --success:   #2ecc71;
+    --warn:      #f1c40f;
+    --info:      #5dade2;
+    --sidebar-w: 220px;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; display: flex; min-height: 100vh; overflow-x: hidden; }
+
+  .sidebar { width: var(--sidebar-w); background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; bottom: 0; z-index: 100; overflow-y: auto; transition: transform 0.3s ease; }
+  .sidebar-brand { padding: 20px 18px 16px; border-bottom: 1px solid var(--border); }
+  .sidebar-brand .skull { font-size: 22px; margin-bottom: 4px; }
+  .sidebar-brand h2 { font-size: 13px; font-weight: 700; color: var(--accent2); letter-spacing: 1.5px; text-transform: uppercase; }
+  .sidebar-brand p  { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .nav-section { padding: 12px 10px 4px; }
+  .nav-label { font-size: 10px; font-weight: 700; color: var(--text-dim); letter-spacing: 1.5px; text-transform: uppercase; padding: 0 8px; margin-bottom: 4px; }
+  .nav-item { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-dim); border: none; background: none; width: 100%; text-align: left; transition: background 0.15s, color 0.15s; text-decoration: none; }
+  .nav-item:hover  { background: rgba(69,162,158,0.12); color: var(--text); }
+  .nav-item.active { background: rgba(69,162,158,0.18); color: var(--accent2); }
+  .nav-item .icon  { font-size: 16px; flex-shrink: 0; }
+  .nav-item .badge { margin-left: auto; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; border-radius: 10px; padding: 1px 6px; min-width: 18px; text-align: center; }
+  .sidebar-footer { margin-top: auto; padding: 14px 18px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-dim); }
+  .sidebar-footer strong { color: var(--accent); }
+  .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 90; }
+
+  .main { margin-left: var(--sidebar-w); flex: 1; padding: 28px 32px; min-height: 100vh; width: 100%; }
+  .mobile-header { display: none; background: var(--surface); border-bottom: 1px solid var(--border); padding: 15px 20px; align-items: center; justify-content: space-between; margin: -28px -32px 20px -32px; }
+  .mobile-header h2 { font-size: 16px; color: var(--accent2); margin: 0; }
+  .hamburger { background: none; border: none; color: var(--accent2); font-size: 24px; cursor: pointer; }
+
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 26px; padding-bottom: 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 12px; }
+  .page-header h1 { font-size: 20px; color: var(--accent2); font-weight: 700; }
+  .page-header p  { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+
+  .flash { padding: 12px 18px; border-radius: 8px; font-weight: 600; font-size: 13px; margin-bottom: 22px; }
+  .flash.ok  { background: rgba(46,204,113,0.15); border: 1px solid var(--success); color: var(--success); }
+  .flash.err { background: rgba(231,76,60,0.15);  border: 1px solid var(--danger);  color: var(--danger); }
+
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 28px; }
+  .stat-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .stat-card .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+  .stat-card .value { font-size: 26px; font-weight: 700; }
+  .stat-card .value.green { color: var(--success); }
+  .stat-card .value.red   { color: var(--danger); }
+  .stat-card .value.teal  { color: var(--accent2); }
+
+  .panel { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 22px 24px; margin-bottom: 24px; }
+  .panel h3 { font-size: 13px; font-weight: 700; color: var(--accent2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+
+  .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; width: 100%; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 600px; }
+  th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+  th { color: var(--accent); font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; background: rgba(0,0,0,0.2); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(69,162,158,0.05); }
+
+  .btn { display: inline-flex; align-items: center; gap: 5px; padding: 7px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; border: none; transition: opacity 0.15s, transform 0.1s; text-decoration: none; line-height: 1; white-space: nowrap; }
+  .btn:hover  { opacity: 0.85; }
+  .btn:active { transform: scale(0.97); }
+  .btn-teal  { background: var(--accent);  color: #0b0c10; }
+  .btn-cyan  { background: var(--accent2); color: #0b0c10; }
+  .btn-warn  { background: var(--danger);  color: #fff; }
+  .btn-green { background: var(--success); color: #0b0c10; }
+  .btn-gold  { background: var(--warn);    color: #0b0c10; }
+  .btn-blue  { background: var(--info);    color: #0b0c10; }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent2); }
+  .btn-sm { padding: 4px 10px; font-size: 11px; }
+
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
+  .form-group .hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+  input[type="text"], select, textarea { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 9px 12px; border-radius: 6px; font-size: 13px; width: 100%; font-family: inherit; transition: border-color 0.15s; }
+  input[type="text"]:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  input[type="checkbox"] { accent-color: var(--accent2); width: 15px; height: 15px; cursor: pointer; }
+  .checkbox-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .checkbox-row:last-of-type { border-bottom: none; }
+  .checkbox-row label { font-size: 13px; color: var(--text); font-weight: 400; text-transform: none; letter-spacing: 0; cursor: pointer; }
+  .checkbox-row .sub { font-size: 11px; color: var(--text-dim); }
+
+  .check-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .check-grid label { display: flex; align-items: center; gap: 7px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 12px; cursor: pointer; font-size: 12px; transition: border-color 0.15s; }
+  .check-grid label:hover { border-color: var(--accent); }
+  .check-grid input[type="checkbox"]:checked + span { color: var(--accent2); }
+
+  .decks-pill { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+  .decks-pill.full    { background: rgba(46,204,113,0.15); color: var(--success); }
+  .decks-pill.partial { background: rgba(241,196,15,0.15); color: var(--warn); }
+  .decks-pill.empty   { background: rgba(231,76,60,0.15);  color: var(--danger); }
+
+  .CodeMirror { height: 480px; border-radius: 0 0 8px 8px; font-size: 13px; font-family: 'Consolas', 'JetBrains Mono', monospace; border: 1px solid var(--border); border-top: none; max-width: 100%; }
+  .editor-toolbar { display: flex; align-items: center; justify-content: space-between; background: #1a1f2e; border: 1px solid var(--border); border-bottom: none; border-radius: 8px 8px 0 0; padding: 8px 14px; gap: 10px; flex-wrap: wrap; }
+  .editor-toolbar select { width: auto; padding: 5px 10px; font-size: 12px; }
+  .editor-toolbar .actions { display: flex; gap: 8px; align-items: center; }
+
+  .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 500; align-items: center; justify-content: center; }
+  .modal-backdrop.open { display: flex; }
+  .modal { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 26px; width: 420px; max-width: 90vw; }
+  .modal h3 { color: var(--accent2); font-size: 18px; margin-bottom: 4px; }
+  .modal .tag { color: var(--text-dim); font-size: 13px; margin-bottom: 20px; }
+  .modal-actions { display: flex; flex-direction: column; gap: 10px; }
+  .modal-actions .btn { justify-content: center; padding: 11px; font-size: 13px; }
+  .modal hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+  .modal .manual-link-label { font-size: 12px; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+  .modal form { display: flex; flex-direction: column; gap: 8px; }
+
+  .cmd-add-row { display: flex; gap: 8px; margin-top: 16px; }
+  .cmd-add-row input { flex: 1; }
+  .cmd-add-row .cmd-trigger { max-width: 160px; }
+
+  /* Data viewer */
+  #data-output { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 16px; font-size: 11px; max-height: 500px; overflow: auto; color: #66fcf1; font-family: 'Consolas', monospace; white-space: pre; }
+  .btn-group { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+
+  /* Pages list */
+  .page-item { display: flex; align-items: center; justify-content: space-between; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+  .page-item-info strong { color: var(--accent2); }
+  .page-item-info span { font-size: 11px; color: var(--text-dim); margin-left: 10px; }
+  .page-item-actions { display: flex; gap: 8px; }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  @media (max-width: 768px) {
+    .sidebar { transform: translateX(-100%); }
+    .sidebar.open { transform: translateX(0); }
+    .sidebar-overlay.open { display: block; }
+    .main { margin-left: 0; padding: 20px 15px; }
+    .mobile-header { display: flex; }
+    .cmd-add-row { flex-direction: column; }
+    .cmd-add-row .cmd-trigger { max-width: 100%; }
+    .page-header { flex-direction: column; align-items: stretch; }
+    .page-header .btn { justify-content: center; width: 100%; }
+    .editor-toolbar { flex-direction: column; align-items: stretch; }
+    .editor-toolbar select { width: 100%; }
+    .editor-toolbar .actions { justify-content: space-between; margin-top: 5px; }
+    .btn-group { flex-direction: column; }
+    .page-item { flex-direction: column; align-items: flex-start; gap: 10px; }
+  }
+</style>
 </head>
 <body>
-    <div id="actionModal" class="modal-overlay">
-        <div class="modal-content">
-            <h3 id="modalName" style="color:#66fcf1; margin-bottom:5px; font-size:1.4rem;">Player Name</h3>
-            <p id="modalTag" style="color:#888; font-size:0.9rem; margin-bottom:20px;">#TAG</p>
-            
-            <div style="display:flex; flex-direction:column; gap:12px;">
-                <a id="btnProfile" href="#" class="btn" style="text-align:center; background:#5dade2; padding:10px; font-size:0.9rem;">📊 View Player Analytics</a>
-                <a id="btnAdmin" href="#" class="btn" style="text-align:center; background:#f1c40f; color:#121212; padding:10px; font-size:0.9rem;">🔑 Grant HQ Dashboard Access</a>
-                
-                <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
-                
-                <h4 style="color:#45a29e; font-size:0.95rem; margin-bottom:5px;">🔗 Manually Map Discord Account</h4>
-                <form method="POST" action="/admin/manual-link" style="display:flex; flex-direction:column; gap:10px;">
-                    <input type="hidden" name="player_tag" id="modalInputTag">
-                    <input type="text" name="discord_id" placeholder="Paste 18-digit Discord ID..." required style="background:#0b0c10; border:1px solid #45a29e; color:white; padding:10px; border-radius:4px;">
-                    <button type="submit" class="btn" style="background:#2ecc71; color:#0b0c10; padding:10px;">Link Account Database</button>
-                </form>
-                
-                <button onclick="closeModal()" class="btn-warn" style="margin-top:10px; width:100%; padding:10px;">Cancel & Close</button>
-            </div>
-        </div>
+
+<div id="actionModal" class="modal-backdrop">
+  <div class="modal">
+    <h3 id="modalName">Player Name</h3>
+    <p class="tag" id="modalTag">#TAG</p>
+    <div class="modal-actions">
+      <a id="btnProfile" href="#" class="btn btn-blue">📊 View Player Analytics</a>
+      <a id="btnAdmin"   href="#" class="btn btn-gold">🔑 Grant HQ Dashboard Access</a>
+      <hr>
+      <p class="manual-link-label">🔗 Manually Map Discord Account</p>
+      <form method="POST" action="/admin/manual-link">
+        <input type="hidden" name="player_tag" id="modalInputTag">
+        <input type="text" name="discord_id" placeholder="Paste 18-digit Discord ID..." required>
+        <button type="submit" class="btn btn-green" style="width:100%; justify-content:center; padding:11px;">Link Account</button>
+      </form>
+      <button onclick="closeModal()" class="btn btn-ghost" style="justify-content:center;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="toggleSidebar()"></div>
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="skull">💀</div>
+    <h2>Graveyard HQ</h2>
+    <p>Control Panel</p>
+  </div>
+
+  <div class="nav-section">
+    <p class="nav-label">Dashboard</p>
+    <button class="nav-item active" onclick="showTab('war')" id="nav-war">
+      <span class="icon">⚔️</span> War Monitor
+      <span class="badge" id="badge-decks">{{ total_decks_left }}</span>
+    </button>
+    <button class="nav-item" onclick="showTab('commands')" id="nav-commands">
+      <span class="icon">💬</span> Custom Commands
+    </button>
+  </div>
+
+  <div class="nav-section">
+    <p class="nav-label">Tools</p>
+    <button class="nav-item" onclick="showTab('data')" id="nav-data">
+      <span class="icon">🗄️</span> Data & API
+    </button>
+    <button class="nav-item" onclick="showTab('export')" id="nav-export">
+      <span class="icon">📥</span> CSV Export
+    </button>
+    <button class="nav-item" onclick="showTab('editor')" id="nav-editor">
+      <span class="icon">🎨</span> UI Editor
+    </button>
+    <button class="nav-item" onclick="showTab('pages')" id="nav-pages">
+      <span class="icon">📄</span> Custom Pages
+    </button>
+    <button class="nav-item" onclick="showTab('config')" id="nav-config">
+      <span class="icon">🛠️</span> System Config
+    </button>
+  </div>
+
+  <div class="nav-section">
+    <p class="nav-label">Site</p>
+    <a class="nav-item" href="/">
+      <span class="icon">👥</span> Clan Roster
+    </a>
+  </div>
+
+  <div class="sidebar-footer">
+    Logged in as<br><strong>@{{ session['discord_name'] }}</strong>
+  </div>
+</aside>
+
+<main class="main">
+
+  <div class="mobile-header">
+    <h2>💀 Graveyard HQ</h2>
+    <button class="hamburger" onclick="toggleSidebar()">☰</button>
+  </div>
+
+  {% if success or error %}
+  <div class="flash {{ 'ok' if success else 'err' }}">
+    {{ '✅ ' + success if success else '❌ ' + error }}
+  </div>
+  {% endif %}
+
+  <!-- WAR MONITOR TAB -->
+  <div class="tab-pane active" id="tab-war">
+    <div class="page-header">
+      <div>
+        <h1>⚔️ War Monitor</h1>
+        <p>Live river race deck tracking for {{ war_players | length }} participants</p>
+      </div>
+      <a href="/admin/mass-ping" class="btn btn-warn">🚨 Broadcast Mass War Alarm</a>
+    </div>
+    <div class="stat-row">
+      <div class="stat-card"><div class="label">Active Members</div><div class="value teal">{{ war_players | length }}</div></div>
+      <div class="stat-card"><div class="label">Unused Decks Today</div><div class="value {{ 'red' if total_decks_left > 0 else 'green' }}">{{ total_decks_left }}</div></div>
+      <div class="stat-card"><div class="label">Discord Mappings</div><div class="value green">{{ linked_count }}</div></div>
+    </div>
+    <div class="panel">
+      <h3>Operational Deck Monitor</h3>
+      <div class="table-responsive">
+        <table>
+          <thead><tr><th>Member</th><th>Role</th><th>Fame</th><th>Decks Used</th><th>Decks Left</th><th>Action</th></tr></thead>
+          <tbody>
+            {% for p in war_players %}
+            <tr>
+              <td>
+                <a href="#" onclick="openModal('{{ p.name | e }}', '{{ p.tag }}'); return false;" style="color: var(--accent2); font-weight: 600; text-decoration: none; border-bottom: 1px dashed var(--accent);">{{ p.name }}</a>
+                <div style="font-size: 11px; color: var(--text-dim);">#{{ p.tag }}</div>
+              </td>
+              <td style="color: var(--text-dim);">{{ p.role }}</td>
+              <td style="color: var(--success); font-weight: 600;">⚡ {{ p.fame }}</td>
+              <td>{{ p.decksUsedToday }} / 4</td>
+              <td>
+                {% if p.decksRemaining == 0 %}<span class="decks-pill full">✓ Done</span>
+                {% elif p.decksRemaining <= 2 %}<span class="decks-pill partial">{{ p.decksRemaining }} left</span>
+                {% else %}<span class="decks-pill empty">{{ p.decksRemaining }} left</span>{% endif %}
+              </td>
+              <td>
+                {% if p.decksRemaining > 0 %}<a href="/admin/ping/{{ p.name }}/{{ p.decksRemaining }}" class="btn btn-teal btn-sm">Nudge</a>
+                {% else %}<span style="color: var(--text-dim); font-size: 11px;">—</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- CUSTOM COMMANDS TAB -->
+  <div class="tab-pane" id="tab-commands">
+    <div class="page-header"><div><h1>💬 Custom Commands</h1><p>Auto-responder rules for the Discord bot</p></div></div>
+    <div class="panel">
+      <h3>Active Commands</h3>
+      <div class="table-responsive">
+        <table>
+          <thead><tr><th style="width:200px;">Trigger</th><th>Response</th><th style="width:80px;">Action</th></tr></thead>
+          <tbody>
+            {% for cmd in custom_commands %}
+            <tr>
+              <td style="font-weight: 700; color: var(--accent2);">{{ sys_config.command_prefix or '!' }}{{ cmd._id }}</td>
+              <td style="color: var(--text);">{{ cmd.response }}</td>
+              <td><a href="/admin/delete-command/{{ cmd._id }}" class="btn btn-warn btn-sm" onclick="return confirm('Delete {{ cmd._id }}?')">Delete</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 24px;">No custom commands yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <form method="POST" action="/admin/add-command" class="cmd-add-row">
+        <input type="text" name="trigger" placeholder="Trigger (e.g. rules)" class="cmd-trigger" required>
+        <input type="text" name="response" placeholder="Bot response text..." required>
+        <button type="submit" class="btn btn-green">+ Add</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- DATA & API TAB -->
+  <div class="tab-pane" id="tab-data">
+    <div class="page-header">
+      <div><h1>🗄️ Data & API Control</h1><p>Manual fetch triggers, cache control, and raw data viewer</p></div>
     </div>
 
-    <div class="sidebar">
-        <h2>💀 GY HQ</h2>
-        <a href="/">Roster Monitor</a>
-        <a href="/admin" class="active">War Dashboard</a>
-        <p style="margin-top:auto; font-size:0.75rem; color:#45a29e;">User: @{{ session['discord_name'] }}</p>
+    <div class="panel">
+      <h3>⚡ Manual API Triggers</h3>
+      <div class="btn-group">
+        <a href="/admin/fetch/clan" class="btn btn-teal">🏰 Refresh Clan Data</a>
+        <a href="/admin/fetch/riverrace" class="btn btn-teal">⚔️ Refresh River Race</a>
+        <a href="/admin/fetch/all-profiles" class="btn btn-gold" onclick="return confirm('This will fetch all 50 player profiles one by one. It takes ~30 seconds. Continue?')">👥 Scrape All Profiles</a>
+        <a href="/admin/clear-cache" class="btn btn-ghost">🗑️ Clear All Caches</a>
+        <a href="/admin/reload-cog" class="btn btn-blue">🔄 Reload Bot Commands</a>
+      </div>
     </div>
 
-    <div class="main-content">
-        <div class="header">
-            <h1>Graveyard Squad Control Rig</h1>
-            <a href="/admin/mass-ping" class="btn btn-warn">🚨 Broadcast Mass War Alarm</a>
-        </div>
-
-        {% if success or error %}
-            <div style="padding: 15px; margin-bottom: 20px; border-radius: 5px; font-weight: bold; background: {{ '#27ae60' if success else '#c0392b' }}; color: white;">
-                {{ success if success else error }}
-            </div>
-        {% endif %}
-
-        <div class="metrics">
-            <div class="metric-card" style="background: #1f2833; border: 1px solid #45a29e; border-radius: 8px; padding: 20px; display:inline-block; margin-right:15px;">
-                <h5>Active War Logs</h5><p style="color: #86c232; font-size: 1.8rem; font-weight: bold;">{{ war_players | length }} Members</p>
-            </div>
-            <div class="metric-card" style="background: #1f2833; border: 1px solid #45a29e; border-radius: 8px; padding: 20px; display:inline-block; margin-right:15px;">
-                <h5>Unused Decks (Today)</h5><p style="color:#e74c3c; font-size: 1.8rem; font-weight: bold;">{{ total_decks_left }}</p>
-            </div>
-            <div class="metric-card" style="background: #1f2833; border: 1px solid #45a29e; border-radius: 8px; padding: 20px; display:inline-block;">
-                <h5>Database Mappings</h5><p style="color: #86c232; font-size: 1.8rem; font-weight: bold;">{{ linked_count }}</p>
-            </div>
-        </div>
-
-        <div class="panel-section">
-            <h3>⚔️ Operational War Deck Monitor</h3>
-            <table style="margin-bottom: 20px;">
-                <thead>
-                    <tr>
-                        <th>Member Name</th>
-                        <th>Role</th>
-                        <th>War Fame</th>
-                        <th>Decks Used</th>
-                        <th>Decks Left</th>
-                        <th>Action Trigger</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for p in war_players %}
-                    <tr>
-                        <td>
-                            <a href="#" onclick="openModal('{{ p.name | escape }}', '{{ p.tag }}'); return false;" style="color: #66fcf1; font-weight: bold; text-decoration: none; border-bottom: 1px dashed #45a29e;" title="Click for action menu">
-                                {{ p.name }}
-                            </a>
-                            <div style="font-size: 0.7rem; color: #888;">#{{ p.tag }}</div>
-                        </td>
-                        <td>{{ p.role }}</td>
-                        <td style="color: #2ecc71; font-weight: bold;">⚡ {{ p.fame }}</td>
-                        <td>{{ p.decksUsedToday }} / 4</td>
-                        <td style="font-weight: bold; color: {{ '#e74c3c' if p.decksRemaining > 0 else '#2ecc71' }};">
-                            {{ p.decksRemaining }}
-                        </td>
-                        <td>
-                            {% if p.decksRemaining > 0 %}
-                                <a href="/admin/ping/{{ p.name }}/{{ p.decksRemaining }}" class="btn">Nudge</a>
-                            {% else %}
-                                <span style="color:#2ecc71; font-size:0.8rem;">✓ Clear</span>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-
-        <div class="panel-section">
-            <h3>📥 Custom Report Builder (CSV/Excel)</h3>
-            <p style="font-size:0.85rem; color:#888; margin-bottom:15px;">Select the exact data points you want to export. The engine will dynamically build your spreadsheet.</p>
-            <form method="POST" action="/admin/export/custom" style="background:#0b0c10; padding:15px; border-radius:5px; border:1px solid #45a29e;">
-                <h4 style="color:#66fcf1; margin-bottom:10px;">Player Identity</h4>
-                <div style="display:flex; gap:15px; margin-bottom:15px;">
-                    <label><input type="checkbox" name="fields" value="name" checked> Player Name</label>
-                    <label><input type="checkbox" name="fields" value="tag" checked> Player Tag</label>
-                    <label><input type="checkbox" name="fields" value="role"> Clan Role</label>
-                    <label><input type="checkbox" name="fields" value="expLevel"> XP Level</label>
-                </div>
-                <h4 style="color:#66fcf1; margin-bottom:10px;">Progression & Social</h4>
-                <div style="display:flex; gap:15px; margin-bottom:15px;">
-                    <label><input type="checkbox" name="fields" value="trophies"> Current Trophies</label>
-                    <label><input type="checkbox" name="fields" value="donations"> Donations Given</label>
-                    <label><input type="checkbox" name="fields" value="donationsReceived"> Donations Received</label>
-                </div>
-                <h4 style="color:#66fcf1; margin-bottom:10px;">Live River Race Data</h4>
-                <div style="display:flex; gap:15px; margin-bottom:20px;">
-                    <label><input type="checkbox" name="fields" value="fame" checked> War Fame</label>
-                    <label><input type="checkbox" name="fields" value="decksUsedToday"> Decks Used</label>
-                    <label><input type="checkbox" name="fields" value="decksRemaining" checked> Decks Remaining</label>
-                </div>
-                <button type="submit" class="btn" style="background:#f1c40f; color:#0b0c10;">Generate Custom Excel File</button>
-            </form>
-        </div>
-        
-        <div class="panel-section">
-            <h3>💬 Dynamic Custom Commands (Auto-Responder)</h3>
-            <table style="margin-bottom: 20px;">
-                <thead>
-                    <tr>
-                        <th>Command Trigger</th>
-                        <th>Bot Response</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for cmd in custom_commands %}
-                    <tr>
-                        <td style="font-weight: bold; color: #66fcf1;">{{ sys_config.command_prefix or '!' }}{{ cmd._id }}</td>
-                        <td>{{ cmd.response }}</td>
-                        <td>
-                            <a href="/admin/delete-command/{{ cmd._id }}" class="btn-warn" style="padding: 4px 8px; font-size: 0.75rem;">Delete</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            
-            <form method="POST" action="/admin/add-command" style="display: flex; gap: 10px;">
-                <input type="text" name="trigger" placeholder="Trigger (e.g. rules)" required style="width: 20%; background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 10px; border-radius: 4px;">
-                <input type="text" name="response" placeholder="Bot Response..." required style="width: 60%; background: #0b0c10; border: 1px solid #45a29e; color: white; padding: 10px; border-radius: 4px;">
-                <button type="submit" class="btn" style="background: #2ecc71; color: #0b0c10;">+ Add Command</button>
-            </form>
-        </div>
-        
-        <div class="panel-section">
-            <h3>🎨 Live Web UI Studio (HTML/CSS Code Editor)</h3>
-            <p style="font-size:0.85rem; margin-bottom:15px; color:#aaa;">Select a page below to live-edit its source code. <br>⚠️ <strong>Warning:</strong> Be careful with <code>{% raw %}{{{% endraw %} ... {% raw %}}}{% endraw %}</code> brackets—breaking Jinja syntax will crash the page! If you ever get locked out by a crash, navigate to <strong>/admin/reset-html</strong> to factory reset.</p>
-            
-            <form method="POST" action="/admin/update-html">
-                <div class="form-group" style="display:flex; justify-content:space-between; align-items:center;">
-                    <select id="template_selector" name="template_name" onchange="switchTemplate()" style="max-width: 300px; padding:8px; font-weight:bold; cursor:pointer;">
-                        <option value="roster">Public Roster Page (ROSTER_HTML)</option>
-                        <option value="player">Player Profile Page (PLAYER_HTML)</option>
-                        <option value="link">Link Account Page (LINK_HTML)</option>
-                        <option value="admin">Control Panel (ADMIN_HTML)</option>
-                        <option value="custom_csv">CSV Export Engine (CUSTOM_CSV)</option>
-                    </select>
-                    <a href="/admin/reset-html" class="btn-warn" style="font-size:0.75rem; background:#c0392b; padding:6px 10px;" onclick="return confirm('Are you sure? This permanently deletes all your custom UI code and restores the factory templates.')">Factory Reset All Templates</a>
-                </div>
-                
-                <div class="form-group">
-                    <textarea id="html_editor" name="html_content" rows="25" style="font-family: 'Courier New', monospace; background:#1e1e1e; color:#a6e22e; width:100%; padding:15px; border:1px solid #45a29e; border-radius:5px; line-height:1.4; resize:vertical;"></textarea>
-                </div>
-                <button type="submit" class="btn" style="background:#f1c40f; color:#0b0c10; font-size:1rem; padding:10px 20px;">💾 Deploy Code Live</button>
-            </form>
-        </div>
-
-        <div class="panel-section">
-            <h3>🛠️ Live System File Configurations</h3>
-            <form method="POST" action="/admin/update-system-config">
-                <div class="form-group">
-                    <label>Bot Command Prefix</label>
-                    <input type="text" name="command_prefix" value="{{ sys_config.command_prefix or '!' }}" max_length="3" style="max-width: 400px;">
-                </div>
-                <div class="checkbox-group">
-                    <input type="checkbox" name="maintenance_mode" id="maintenance_mode" {% if sys_config.maintenance_mode %}checked{% endif %}>
-                    <label for="maintenance_mode">Enable Global Maintenance Mode (Disable Bot Commands)</label>
-                </div>
-                <div class="checkbox-group">
-                    <input type="checkbox" name="feature_auto_pings" id="feature_auto_pings" {% if sys_config.feature_auto_pings %}checked{% endif %}>
-                    <label for="feature_auto_pings">Enable Automated War Pings (Feature Flag)</label>
-                </div>
-                <div class="form-group">
-                    <label>Discord War Nudge Channel ID</label>
-                    <input type="text" name="war_channel_id" value="{{ sys_config.war_channel_id or '' }}" style="max-width: 400px;">
-                </div>
-                <div class="form-group">
-                    <label>Authorized Admin Role IDs (Comma-separated)</label>
-                    <input type="text" name="admin_role_ids" value="{{ sys_config.admin_role_ids | join(', ') if sys_config.admin_role_ids else '' }}" style="max-width: 600px;">
-                </div>
-                <div class="form-group">
-                    <label>Authorized Admin User IDs (Comma-separated)</label>
-                    <div style="font-size: 0.8rem; color: #888; margin-top:-5px; margin-bottom:5px;">Discord IDs granted via the roster table. Delete an ID here to revoke access.</div>
-                    <input type="text" name="admin_user_ids" value="{{ sys_config.admin_user_ids | join(', ') if sys_config.admin_user_ids else '' }}" style="max-width: 600px;">
-                </div>
-                <div class="form-group">
-                    <label>Ignored/Muted Discord Channels (Comma-separated)</label>
-                    <input type="text" name="ignored_channels" value="{{ sys_config.ignored_channels | join(', ') if sys_config.ignored_channels else '' }}" style="max-width: 600px;">
-                </div>
-                <button type="submit" class="btn" style="background:#66fcf1; color:#0b0c10; margin-top: 10px;">Save System Variables</button>
-            </form>
-        </div>
+    <div class="panel">
+      <h3>🔍 Raw Data Viewer</h3>
+      <div class="btn-group">
+        <button onclick="loadData('users')" class="btn btn-blue">👤 Users</button>
+        <button onclick="loadData('player_profiles')" class="btn btn-blue">🎮 Player Profiles</button>
+        <button onclick="loadData('custom_commands')" class="btn btn-blue">💬 Commands</button>
+        <button onclick="loadSnapshot('clan')" class="btn btn-ghost">🏰 Clan Snapshot</button>
+        <button onclick="loadSnapshot('riverrace')" class="btn btn-ghost">⚔️ War Snapshot</button>
+      </div>
+      <div id="data-output">Select a collection above to view raw data.</div>
     </div>
-    
-    <div style="display:none;">
-        <textarea id="raw_roster">{{ raw_roster }}</textarea>
-        <textarea id="raw_player">{{ raw_player }}</textarea>
-        <textarea id="raw_link">{{ raw_link }}</textarea>
-        <textarea id="raw_admin">{{ raw_admin }}</textarea>
-        <textarea id="raw_custom_csv">{{ raw_custom_csv }}</textarea>
+  </div>
+
+  <!-- CSV EXPORT TAB -->
+  <div class="tab-pane" id="tab-export">
+    <div class="page-header"><div><h1>📥 Advanced Export Builder</h1><p>Build custom reports and filter data for external tracking</p></div></div>
+    <div class="panel">
+      <h3>Build Your Report</h3>
+      <form method="POST" action="/admin/export/custom" id="exportForm" onsubmit="handleExportSubmit()">
+        <div class="form-group" style="max-width: 250px; margin-bottom: 24px;">
+          <label>Export Format</label>
+          <select name="export_format">
+            <option value="csv">Raw Comma Separated (.csv)</option>
+            <option value="xlsx">Excel Spreadsheet (.xlsx)</option>
+            <option value="json">JSON Data (.json)</option>
+          </select>
+        </div>
+        <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">Select the data points to include:</p>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; max-width:500px; margin-bottom:10px;">
+          <p style="font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.8px; margin:0;">Player Identity</p>
+          <label style="font-size:11px; color:var(--text-dim); cursor:pointer;"><input type="checkbox" onchange="toggleGroup(this,'grp-identity')" checked> Select All</label>
+        </div>
+        <div class="check-grid grp-identity">
+          <label><input type="checkbox" name="fields" value="name" checked><span>Player Name</span></label>
+          <label><input type="checkbox" name="fields" value="tag"  checked><span>Player Tag</span></label>
+          <label><input type="checkbox" name="fields" value="role" checked><span>Clan Role</span></label>
+          <label><input type="checkbox" name="fields" value="expLevel"><span>XP Level</span></label>
+          <label><input type="checkbox" name="fields" value="favoriteCard"><span>Favorite Card</span></label>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; max-width:500px; margin-top:18px; margin-bottom:10px;">
+          <p style="font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.8px; margin:0;">Progression & Social</p>
+          <label style="font-size:11px; color:var(--text-dim); cursor:pointer;"><input type="checkbox" onchange="toggleGroup(this,'grp-social')"> Select All</label>
+        </div>
+        <div class="check-grid grp-social">
+          <label><input type="checkbox" name="fields" value="trophies"><span>Current Trophies</span></label>
+          <label><input type="checkbox" name="fields" value="donations"><span>Donations Given</span></label>
+          <label><input type="checkbox" name="fields" value="donationsReceived"><span>Donations Received</span></label>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; max-width:500px; margin-top:18px; margin-bottom:10px;">
+          <p style="font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.8px; margin:0;">Combat Analytics</p>
+          <label style="font-size:11px; color:var(--text-dim); cursor:pointer;"><input type="checkbox" onchange="toggleGroup(this,'grp-combat')"> Select All</label>
+        </div>
+        <div class="check-grid grp-combat">
+          <label><input type="checkbox" name="fields" value="totalWins"><span>Total Wins</span></label>
+          <label><input type="checkbox" name="fields" value="totalLosses"><span>Total Losses</span></label>
+          <label><input type="checkbox" name="fields" value="current_streak"><span>Current Win Streak</span></label>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; max-width:500px; margin-top:18px; margin-bottom:10px;">
+          <p style="font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.8px; margin:0;">Live River Race Data</p>
+          <label style="font-size:11px; color:var(--text-dim); cursor:pointer;"><input type="checkbox" onchange="toggleGroup(this,'grp-war')" checked> Select All</label>
+        </div>
+        <div class="check-grid grp-war">
+          <label><input type="checkbox" name="fields" value="fame"           checked><span>War Fame</span></label>
+          <label><input type="checkbox" name="fields" value="decksUsedToday" checked><span>Decks Used</span></label>
+          <label><input type="checkbox" name="fields" value="decksRemaining" checked><span>Decks Remaining</span></label>
+          <label><input type="checkbox" name="fields" value="warDayWins"><span>Lifetime War Wins</span></label>
+        </div>
+
+        <button type="submit" id="exportBtn" class="btn btn-gold" style="margin-top:24px; padding:10px 20px; font-size:14px;">⬇️ Generate File</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- UI EDITOR TAB -->
+  <div class="tab-pane" id="tab-editor">
+    <div class="page-header">
+      <div><h1>🎨 Live UI Editor</h1><p>Edit page templates with live HTML/CSS. Changes deploy after validation.</p></div>
+      <a href="/admin/reset-html" class="btn btn-warn btn-sm" onclick="return confirm('Factory reset ALL templates? This cannot be undone.')">⚠️ Reset All Templates</a>
+    </div>
+    <div id="deploy-status" style="display:none;" class="flash"></div>
+    <div class="panel">
+      <h3>Code Editor</h3>
+      <p style="font-size:12px; color:var(--text-dim); margin-bottom:16px;">Templates are <strong>validated before saving</strong> — broken Jinja syntax will be caught and rejected.</p>
+      <div class="editor-toolbar">
+        <select id="template_selector" onchange="switchTemplate()">
+          <option value="roster">Public Roster Page</option>
+          <option value="player">Player Profile Page</option>
+          <option value="link">Link Account Page</option>
+          <option value="admin">Control Panel (this page)</option>
+          <option value="custom_csv">CSV Export Engine</option>
+        </select>
+        <div class="actions">
+          <button type="button" onclick="formatCode()" class="btn btn-ghost btn-sm">✨ Beautify</button>
+          <button type="button" onclick="validateOnly()" class="btn btn-blue btn-sm">🔍 Validate Only</button>
+          <button type="button" onclick="safeDeployTemplate()" class="btn btn-gold">💾 Deploy Live</button>
+        </div>
+      </div>
+      <div id="codemirror_container"></div>
+    </div>
+  </div>
+
+  <!-- CUSTOM PAGES TAB -->
+  <div class="tab-pane" id="tab-pages">
+    <div class="page-header">
+      <div><h1>📄 Custom Pages</h1><p>Create pages available at <strong>/p/your-slug</strong>. Full Jinja2 and HTML/CSS supported.</p></div>
     </div>
 
-    <script>
-        function switchTemplate() {
-            var sel = document.getElementById("template_selector").value;
-            document.getElementById("html_editor").value = document.getElementById("raw_" + sel).value;
-        }
-        function openModal(name, tag) {
-            document.getElementById('modalName').innerText = name;
-            document.getElementById('modalTag').innerText = '#' + tag;
-            document.getElementById('btnProfile').href = '/player/' + tag;
-            document.getElementById('btnAdmin').href = '/admin/grant-role/' + tag;
-            document.getElementById('modalInputTag').value = tag;
-            document.getElementById('actionModal').style.display = 'flex';
-        }
-        function closeModal() {
-            document.getElementById('actionModal').style.display = 'none';
-        }
-        window.onload = switchTemplate;
-    </script>
+    <div class="panel">
+      <h3>Existing Pages</h3>
+      {% for page in custom_pages %}
+      <div class="page-item">
+        <div class="page-item-info">
+          <strong>/p/{{ page._id }}</strong>
+          <span>Updated: {{ page.updated }}</span>
+        </div>
+        <div class="page-item-actions">
+          <a href="/p/{{ page._id }}" target="_blank" class="btn btn-ghost btn-sm">View</a>
+          <button onclick="loadPageForEdit('{{ page._id }}')" class="btn btn-blue btn-sm">Edit</button>
+          <a href="/admin/pages/delete/{{ page._id }}" class="btn btn-warn btn-sm" onclick="return confirm('Delete /p/{{ page._id }}?')">Delete</a>
+        </div>
+      </div>
+      {% else %}
+      <p style="color:var(--text-dim); font-size:13px; margin-bottom:16px;">No custom pages yet. Create one below.</p>
+      {% endfor %}
+    </div>
+
+    <div class="panel">
+      <h3>Create / Edit Page</h3>
+      <div id="page-deploy-status" style="display:none;" class="flash"></div>
+      <div class="form-group" style="max-width:300px;">
+        <label>Page Slug</label>
+        <input type="text" id="page-slug-input" placeholder="e.g. rules → available at /p/rules">
+        <div class="hint">Lowercase, no spaces. Use hyphens.</div>
+      </div>
+      <div class="editor-toolbar">
+        <span style="font-size:12px; color:var(--text-dim);">Page HTML Editor</span>
+        <div class="actions">
+          <button type="button" onclick="formatPageCode()" class="btn btn-ghost btn-sm">✨ Beautify</button>
+          <button type="button" onclick="deployPage()" class="btn btn-gold">🚀 Deploy Page</button>
+        </div>
+      </div>
+      <div id="page-editor-container"></div>
+    </div>
+  </div>
+
+  <!-- SYSTEM CONFIG TAB -->
+  <div class="tab-pane" id="tab-config">
+    <div class="page-header"><div><h1>🛠️ System Configuration</h1><p>Bot settings, feature flags, and access control</p></div></div>
+    <form method="POST" action="/admin/update-system-config">
+      <div class="panel">
+        <h3>Bot Settings</h3>
+        <div class="form-group" style="max-width:200px;">
+          <label>Command Prefix</label>
+          <input type="text" name="command_prefix" value="{{ sys_config.command_prefix or '!' }}" maxlength="3">
+        </div>
+        <div class="form-group" style="max-width:400px;">
+          <label>War Nudge Channel ID</label>
+          <input type="text" name="war_channel_id" value="{{ sys_config.war_channel_id or '' }}" placeholder="Discord channel snowflake ID">
+        </div>
+        <div class="form-group" style="max-width:700px;">
+          <label>Ignored / Muted Channels</label>
+          <input type="text" name="ignored_channels" value="{{ sys_config.ignored_channels | join(', ') if sys_config.ignored_channels else '' }}" placeholder="Channel IDs, comma-separated">
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Feature Flags</h3>
+        <div class="checkbox-row">
+          <input type="checkbox" name="maintenance_mode" id="maintenance_mode" {% if sys_config.maintenance_mode %}checked{% endif %}>
+          <div><label for="maintenance_mode">Enable Global Maintenance Mode</label><div class="sub">Disables all bot commands.</div></div>
+        </div>
+        <div class="checkbox-row">
+          <input type="checkbox" name="feature_auto_pings" id="feature_auto_pings" {% if sys_config.feature_auto_pings %}checked{% endif %}>
+          <div><label for="feature_auto_pings">Enable Automated War Pings</label><div class="sub">Sends scheduled reminders.</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Access Control</h3>
+        <div class="form-group">
+          <label>Authorized Admin Role IDs</label>
+          <input type="text" name="admin_role_ids" value="{{ sys_config.admin_role_ids | join(', ') if sys_config.admin_role_ids else '' }}" placeholder="Role IDs, comma-separated">
+        </div>
+        <div class="form-group">
+          <label>Authorized Admin User IDs</label>
+          <input type="text" name="admin_user_ids" value="{{ sys_config.admin_user_ids | join(', ') if sys_config.admin_user_ids else '' }}" placeholder="User IDs, comma-separated">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-cyan">💾 Save All Settings</button>
+    </form>
+  </div>
+
+</main>
+
+<div style="display:none;">
+  <textarea id="raw_roster">{{ raw_roster }}</textarea>
+  <textarea id="raw_player">{{ raw_player }}</textarea>
+  <textarea id="raw_link">{{ raw_link }}</textarea>
+  <textarea id="raw_admin">{{ raw_admin }}</textarea>
+  <textarea id="raw_custom_csv">{{ raw_custom_csv }}</textarea>
+</div>
+
+<script>
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+}
+function showTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('nav-' + name).classList.add('active');
+  if (name === 'editor' && !window._cmReady) initCodeMirror();
+  if (name === 'pages' && !window._pageCmReady) initPageEditor();
+  if (window.innerWidth <= 768) {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('open');
+  }
+}
+function openModal(name, tag) {
+  document.getElementById('modalName').innerText = name;
+  document.getElementById('modalTag').innerText = '#' + tag;
+  document.getElementById('btnProfile').href = '/player/' + tag;
+  document.getElementById('btnAdmin').href = '/admin/grant-role/' + tag;
+  document.getElementById('modalInputTag').value = tag;
+  document.getElementById('actionModal').classList.add('open');
+}
+function closeModal() { document.getElementById('actionModal').classList.remove('open'); }
+document.getElementById('actionModal').addEventListener('click', function(e) { if (e.target === this) closeModal(); });
+
+function toggleGroup(masterCheckbox, groupClass) {
+  document.querySelectorAll('.' + groupClass + ' input[type="checkbox"]').forEach(cb => cb.checked = masterCheckbox.checked);
+}
+function handleExportSubmit() {
+  const btn = document.getElementById('exportBtn');
+  btn.disabled = true; btn.style.opacity = '0.7'; btn.innerHTML = '⏳ Compiling Data...';
+  setTimeout(() => { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = '⬇️ Generate File'; }, 3000);
+}
+
+// ── TEMPLATE EDITOR ──
+var _cm = null;
+window._cmReady = false;
+function initCodeMirror() {
+  _cm = CodeMirror(document.getElementById('codemirror_container'), {
+    mode: 'htmlmixed', theme: 'dracula', lineNumbers: true, matchBrackets: true,
+    autoCloseTags: true, lineWrapping: true, tabSize: 2, indentWithTabs: false,
+    value: document.getElementById('raw_roster').value
+  });
+  window._cmReady = true;
+}
+function switchTemplate() {
+  var sel = document.getElementById('template_selector').value;
+  if (_cm) { _cm.setValue(document.getElementById('raw_' + sel).value); _cm.refresh(); }
+}
+function formatCode() {
+  if (!_cm) return;
+  if (typeof html_beautify !== 'undefined') { _cm.setValue(html_beautify(_cm.getValue(), { indent_size: 2, wrap_line_length: 0, preserve_newlines: true })); }
+  else { alert('Beautifier not loaded yet.'); }
+}
+function setStatus(ok, message) {
+  var el = document.getElementById('deploy-status');
+  el.style.display = 'block'; el.className = 'flash ' + (ok ? 'ok' : 'err');
+  el.textContent = (ok ? '✅ ' : '❌ ') + message;
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function jumpToLine(line) { if (_cm && line) { _cm.setCursor({ line: line - 1, ch: 0 }); _cm.focus(); } }
+async function validateOnly() {
+  if (!_cm) return;
+  setStatus(true, 'Validating...');
+  try {
+    var res = await fetch('/admin/validate-template', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ template_name: document.getElementById('template_selector').value, html: _cm.getValue() }) });
+    var data = await res.json();
+    setStatus(data.ok, data.message);
+    if (!data.ok) jumpToLine(data.line);
+  } catch(e) { setStatus(false, 'Network error: ' + e.message); }
+}
+async function safeDeployTemplate() {
+  if (!_cm) return;
+  var templateName = document.getElementById('template_selector').value;
+  setStatus(true, 'Validating before save...');
+  try {
+    var res = await fetch('/admin/save-template-safe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ template_name: templateName, html: _cm.getValue() }) });
+    var data = await res.json();
+    setStatus(data.ok, data.message);
+    if (!data.ok) { jumpToLine(data.line); }
+    else if (templateName === 'admin') { document.getElementById('deploy-status').textContent += ' Reloading in 2s...'; setTimeout(() => location.reload(), 2000); }
+  } catch(e) { setStatus(false, 'Network error: ' + e.message); }
+}
+
+// ── PAGE EDITOR ──
+var _pageCm = null;
+window._pageCmReady = false;
+function initPageEditor() {
+  _pageCm = CodeMirror(document.getElementById('page-editor-container'), {
+    mode: 'htmlmixed', theme: 'dracula', lineNumbers: true, matchBrackets: true,
+    autoCloseTags: true, lineWrapping: true, tabSize: 2, indentWithTabs: false,
+    value: '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n<title>My Page</title>\n</head>\n<body>\n\n</body>\n</html>'
+  });
+  window._pageCmReady = true;
+}
+function formatPageCode() {
+  if (_pageCm && typeof html_beautify !== 'undefined') { _pageCm.setValue(html_beautify(_pageCm.getValue(), { indent_size: 2 })); }
+}
+function setPageStatus(ok, message) {
+  var el = document.getElementById('page-deploy-status');
+  el.style.display = 'block'; el.className = 'flash ' + (ok ? 'ok' : 'err');
+  el.textContent = (ok ? '✅ ' : '❌ ') + message;
+}
+async function deployPage() {
+  if (!_pageCm) return;
+  var slug = document.getElementById('page-slug-input').value.trim();
+  if (!slug) { setPageStatus(false, 'Please enter a slug.'); return; }
+  try {
+    var res = await fetch('/admin/pages/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ slug: slug, html: _pageCm.getValue() }) });
+    var data = await res.json();
+    setPageStatus(data.ok, data.message);
+  } catch(e) { setPageStatus(false, 'Network error: ' + e.message); }
+}
+async function loadPageForEdit(slug) {
+  showTab('pages');
+  document.getElementById('page-slug-input').value = slug;
+  try {
+    var res = await fetch('/admin/pages/get/' + slug);
+    var data = await res.json();
+    if (_pageCm && data.html) { _pageCm.setValue(data.html); }
+  } catch(e) { setPageStatus(false, 'Could not load page: ' + e.message); }
+}
+
+// ── DATA VIEWER ──
+async function loadData(collection) {
+  document.getElementById('data-output').textContent = 'Loading ' + collection + '...';
+  try {
+    var res = await fetch('/admin/data/' + collection);
+    var data = await res.json();
+    document.getElementById('data-output').textContent = JSON.stringify(data, null, 2);
+  } catch(e) { document.getElementById('data-output').textContent = 'Error: ' + e.message; }
+}
+async function loadSnapshot(name) {
+  document.getElementById('data-output').textContent = 'Loading ' + name + ' snapshot...';
+  try {
+    var res = await fetch('/admin/snapshot/' + name);
+    var data = await res.json();
+    document.getElementById('data-output').textContent = JSON.stringify(data, null, 2);
+  } catch(e) { document.getElementById('data-output').textContent = 'Error: ' + e.message; }
+}
+
+// ── HASH ROUTING ──
+(function() {
+  var hash = window.location.hash.replace('#', '');
+  var valid = ['war', 'commands', 'data', 'export', 'editor', 'pages', 'config'];
+  if (valid.indexOf(hash) > -1) showTab(hash);
+})();
+</script>
 </body>
 </html>
 """
@@ -598,6 +1161,7 @@ DEFAULT_CUSTOM_CSV_HTML = """{%- if selected_fields -%}
 {% for m in members %}
 {% set tag = m.tag | replace('#', '') %}
 {% set p = profiles.get(tag, {}) %}
+{% set wp = war_participants.get(tag, {}) %}
 {% set row = [] %}
 {% for field in selected_fields %}
     {% if field == 'name' %}{% set _ = row.append(m.name) %}
@@ -606,7 +1170,15 @@ DEFAULT_CUSTOM_CSV_HTML = """{%- if selected_fields -%}
     {% elif field == 'expLevel' %}{% set _ = row.append(m.expLevel | string) %}
     {% elif field == 'trophies' %}{% set _ = row.append(m.trophies | string) %}
     {% elif field == 'donations' %}{% set _ = row.append(m.donations | string) %}
+    {% elif field == 'donationsReceived' %}{% set _ = row.append(m.donationsReceived | string) %}
+    {% elif field == 'fame' %}{% set _ = row.append(wp.get('fame', 0) | string) %}
+    {% elif field == 'decksUsedToday' %}{% set _ = row.append(wp.get('decksUsedToday', 0) | string) %}
+    {% elif field == 'decksRemaining' %}{% set _ = row.append(wp.get('decksRemaining', 4) | string) %}
+    {% elif field == 'totalWins' %}{% set _ = row.append(p.get('wins', 0) | string) %}
+    {% elif field == 'totalLosses' %}{% set _ = row.append(p.get('losses', 0) | string) %}
     {% elif field == 'current_streak' %}{% set _ = row.append(p.get('current_streak', 0) | string) %}
+    {% elif field == 'warDayWins' %}{% set _ = row.append(p.get('warDayWins', 0) | string) %}
+    {% elif field == 'favoriteCard' %}{% set _ = row.append(p.get('currentFavouriteCard', {}).get('name', 'N/A') | string) %}
     {% else %}{% set _ = row.append('N/A') %}
     {% endif %}
 {% endfor %}
@@ -621,44 +1193,102 @@ Name,Tag,Trophies,Current Win Streak
 {% endfor %}
 {%- endif -%}"""
 
-# ── FLASK ROUTE CONTROLLERS ──────────────────────────────────────────────── #
+
+# ---------------------------------------------------------------------------
+# INDEX ROUTE HELPERS (HARDENED AGAINST EMPTY API PAYLOADS)
+# ---------------------------------------------------------------------------
+def _build_war_participants(war_data: dict | None) -> dict:
+    if not war_data or not isinstance(war_data, dict):
+        return {}
+    if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
+        return {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
+    for clan in war_data.get("clans", []):
+        if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
+            return {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
+    return {}
+
+
+def _enrich_members(raw_members: list, profile_map: dict, war_participants: dict) -> list:
+    players = []
+    for m in raw_members:
+        if not m or "tag" not in m:
+            continue
+        tag = clean_tag(m["tag"])
+        p_data = profile_map.get(tag, {})
+        wp_data = war_participants.get(tag, {})
+        
+        m["current_streak"] = p_data.get("current_streak", 0)
+        m["warDayWins"] = p_data.get("warDayWins", 0)
+        m["fame"] = wp_data.get("fame", 0)
+        m["clean_tag"] = tag
+        players.append(m)
+    return sorted(players, key=lambda x: x.get("trophies", 0), reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# FLASK ROUTE CONTROLLERS
+# ---------------------------------------------------------------------------
 @app.route("/")
 def index():
-    data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
-    if not data:
-        return "<h1>Clan not found or API down.</h1>", 500
-        
-    members = data.get("memberList", [])
-    
-    # 1. Get a list of all 50 player tags
-    member_tags = [m["tag"].replace("#", "") for m in members]
-    
-    # 2. Do a single, lightning-fast bulk query to MongoDB to get their saved profiles
-    profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
-    profile_map = {p["_id"]: p for p in profiles}
-    
-    # 3. Attach the database metrics to the live roster
-    for m in members:
-        tag = m["tag"].replace("#", "")
-        # If the harvester ran last night, grab the streak. If not, default to 0.
-        m["current_streak"] = profile_map.get(tag, {}).get("current_streak", 0)
-        
-    return render_template_string(get_template("roster"), members=members)
+    if "discord_id" in session:
+        session["is_admin_user"] = is_admin()
+
+    data = fetch_cr_api(f"clans/%23{clean_tag(CLAN_TAG)}")
+    if not data or "memberList" not in data:
+        log.error(f"❌ Roster load failed! API payload response context: {data}")
+        return "<h1>Clan data missing from API response. Check your deployment logs.</h1>", 500
+
+    raw_members = data.get("memberList", [])
+    member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
+
+    try:
+        profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+        profile_map = {p["_id"]: p for p in profiles if "_id" in p}
+    except Exception as e:
+        log.error(f"Database tracking profiles lookup failure: {e}")
+        profile_map = {}
+
+    # Gracefully handle missing or malformed war snapshots without stalling the player roster array
+    war_data = fetch_cr_api(f"clans/%23{clean_tag(CLAN_TAG)}/currentriverrace")
+    war_participants = _build_war_participants(war_data)
+
+    players = _enrich_members(raw_members, profile_map, war_participants)
+
+    top_pusher = max(players, key=lambda x: x.get("trophies", 0), default=None)
+    top_streak = max(players, key=lambda x: x.get("current_streak", 0), default=None)
+    top_war    = max(players, key=lambda x: x.get("warDayWins", 0), default=None)
+
+    return render_template_string(
+        get_template("roster"),
+        players=players,
+        top_pusher=top_pusher,
+        top_streak=top_streak,
+        top_war=top_war,
+    )
+
 
 @app.route("/player/<tag>")
 def web_profile(tag):
+    tag = clean_tag(tag)
     data = fetch_cr_api(f"players/%23{tag}")
     if not data:
         return "<h1>Player data not found.</h1>", 404
     return render_template_string(get_template("player"), data=data, max_lvl=MAX_CARD_LEVEL)
 
+
+@app.route("/p/<slug>")
+def custom_page(slug):
+    doc = db_sync["pages"].find_one({"_id": slug})
+    if not doc:
+        return "<h1>Page not found.</h1>", 404
+    return render_template_string(doc["html"])
+
+
 @app.route("/login")
 def login():
     if not DISCORD_CLIENT_ID:
         return "Discord Client ID not configured.", 500
-    scope = "identify"
-    if GUILD_ID:
-        scope = "identify guilds.members.read"
+    scope = "identify guilds.members.read" if GUILD_ID else "identify"
     url = (
         f"https://discord.com/api/oauth2/authorize"
         f"?client_id={DISCORD_CLIENT_ID}"
@@ -668,45 +1298,58 @@ def login():
     )
     return redirect(url)
 
+
 @app.route("/link", methods=["GET", "POST"])
 def web_link():
     if "discord_id" not in session:
         return redirect("/login")
     error_msg = None
     if request.method == "POST":
-        tag = request.form.get("tag", "").upper().replace("#", "")
+        tag = clean_tag(request.form.get("tag", ""))
         cr_data = fetch_cr_api(f"players/%23{tag}")
         if cr_data and "name" in cr_data:
             users_sync.update_one(
                 {"_id": session["discord_id"]},
                 {"$set": {"player_id": tag}},
-                upsert=True
+                upsert=True,
             )
             return redirect(f"/player/{tag}")
         else:
             error_msg = "Could not find a Clash Royale account with that tag."
-    return render_template_string(get_template("link"), name=session.get("discord_name", "Unknown"), error=error_msg)
+    return render_template_string(
+        get_template("link"),
+        name=session.get("discord_name", "Unknown"),
+        error=error_msg,
+    )
+
 
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
-    if not code: return "Authentication Failed.", 400
+    if not code:
+        return "Authentication Failed.", 400
 
-    data = {
-        "client_id": DISCORD_CLIENT_ID, "client_secret": DISCORD_CLIENT_SECRET,
-        "grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT_URI
-    }
-    r = requests.post(
-        "https://discord.com/api/oauth2/token", data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    token_response = requests.post(
+        "https://discord.com/api/oauth2/token",
+        data={
+            "client_id": DISCORD_CLIENT_ID,
+            "client_secret": DISCORD_CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": REDIRECT_URI,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
 
-    token_data = r.json()
+    token_data = token_response.json()
     if "access_token" not in token_data:
         return "OAuth token extraction failed. Please log in again.", 400
 
     token = token_data["access_token"]
-    user_data = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {token}"}).json()
+    user_data = requests.get(
+        "https://discord.com/api/users/@me",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
 
     if "id" not in user_data:
         return "Failed to fetch Discord user info.", 400
@@ -718,6 +1361,7 @@ def callback():
     session["is_admin_user"] = is_admin()
 
     return redirect("/admin" if session["is_admin_user"] else "/link")
+
 
 @app.route("/admin")
 def admin_panel():
@@ -731,7 +1375,7 @@ def admin_panel():
         raw_participants = war_data["clan"]["participants"]
     elif war_data and "clans" in war_data:
         for c in war_data["clans"]:
-            if c.get("tag", "").replace("#", "").upper() == CLAN_TAG.upper():
+            if clean_tag(c.get("tag", "")) == CLAN_TAG:
                 raw_participants = c.get("participants", [])
                 break
 
@@ -740,237 +1384,489 @@ def admin_panel():
     total_decks_left = 0
 
     for p in raw_participants:
-        p_tag = p.get("tag", "").replace("#", "").upper()
-        fame = p.get("fame", 0)
+        p_tag = clean_tag(p.get("tag", ""))
         decks_used_today = p.get("decksUsedToday", 0)
         decks_remaining = max(0, 4 - decks_used_today)
-
-        player_clean_meta = {
+        war_players.append({
             "tag": p_tag,
             "name": p.get("name", "Unknown"),
             "role": p.get("role", "Member").replace("_", " ").title(),
-            "fame": fame,
+            "fame": p.get("fame", 0),
             "decksUsedToday": decks_used_today,
             "decksRemaining": decks_remaining,
-        }
+        })
         total_decks_left += decks_remaining
-        war_players.append(player_clean_meta)
 
-    war_players = sorted(war_players, key=lambda x: -x["decksRemaining"])
+    war_players.sort(key=lambda x: -x["decksRemaining"])
     linked_count = users_sync.count_documents({})
     all_custom_cmds = list(custom_cmds_sync.find())
+    custom_pages = list(db_sync["pages"].find())
 
     return render_template_string(
-        get_template("admin"), 
-        war_players=war_players, 
+        get_template("admin"),
+        war_players=war_players,
         total_decks_left=total_decks_left,
-        linked_count=linked_count, 
+        linked_count=linked_count,
         sys_config=sys_config_db,
         custom_commands=all_custom_cmds,
+        custom_pages=custom_pages,
         raw_roster=get_template("roster"),
         raw_player=get_template("player"),
         raw_link=get_template("link"),
         raw_admin=get_template("admin"),
         raw_custom_csv=get_template("custom_csv"),
-        success=request.args.get('success'), 
-        error=request.args.get('error')
+        success=request.args.get("success"),
+        error=request.args.get("error"),
     )
 
+
+# ---------------------------------------------------------------------------
+# ADMIN — TEMPLATE MANAGEMENT
+# ---------------------------------------------------------------------------
 @app.route("/admin/update-html", methods=["POST"])
 def update_html():
-    if not is_admin(): return "Unauthorized", 403
+    if not is_admin():
+        return "Unauthorized", 403
     template_name = request.form.get("template_name")
     html_content = request.form.get("html_content")
-    
     if template_name in ["roster", "player", "link", "admin", "custom_csv"]:
         db_sync["config"].update_one(
             {"_id": "html_templates"},
             {"$set": {template_name: html_content}},
-            upsert=True
+            upsert=True,
         )
-        _HTML_CACHE.clear() 
+        invalidate_template_cache()
         return redirect("/admin?success=UI+Code+Deployed+Live!")
     return redirect("/admin?error=Invalid+Template+Name")
 
+
 @app.route("/admin/reset-html")
 def reset_html():
-    if not is_admin(): return "Unauthorized", 403
+    if not is_admin():
+        return "Unauthorized", 403
     db_sync["config"].delete_one({"_id": "html_templates"})
-    _HTML_CACHE.clear() 
+    invalidate_template_cache()
     return redirect("/admin?success=All+UI+Templates+Reset+to+Factory+Defaults!")
 
-@app.route("/admin/grant-role/<player_tag>")
-def admin_grant_role(player_tag):
-    if not is_admin(): return "Unauthorized", 403
-    linked_user = users_sync.find_one({"player_id": player_tag.upper()})
-    if not linked_user:
-        return redirect("/admin?error=This+player+has+not+linked+their+Discord+account+yet.")
 
-    db_sync["config"].update_one(
-        {"_id": "system_config_file"},
-        {"$addToSet": {"admin_user_ids": str(linked_user["_id"])}},
-        upsert=True
-    )
-    try: redis_sync_client.publish("graveyard_bot_signals", json.dumps({"action": "RELOAD"}))
-    except Exception: pass
-    return redirect("/admin?success=Granted+dashboard+admin+privileges!")
-
-@app.route("/admin/manual-link", methods=["POST"])
-def admin_manual_link():
-    if not is_admin(): return "Unauthorized", 403
-    player_tag = request.form.get("player_tag", "").strip().upper().replace("#", "")
-    discord_id = request.form.get("discord_id", "").strip()
-    
-    if not player_tag or not discord_id:
-        return redirect("/admin?error=Missing+tag+or+Discord+ID")
-        
-    if not discord_id.isdigit() or len(discord_id) < 17:
-        return redirect("/admin?error=Invalid+Discord+ID+Format.+Must+be+17%2B+digits.")
-        
-    users_sync.update_one(
-        {"_id": discord_id}, 
-        {"$set": {"player_id": player_tag}},
-        upsert=True
-    )
-    return redirect(f"/admin?success=Successfully+Linked+Tag+to+Discord+ID!")
-
-@app.route("/admin/add-command", methods=["POST"])
-def admin_add_command():
-    if not is_admin(): return "Unauthorized", 403
-    trigger = request.form.get("trigger", "").strip().lower()
-    response_text = request.form.get("response", "").strip()
-    
-    if trigger.startswith("!") or trigger.startswith("?"):
-        trigger = trigger[1:] 
-        
-    if trigger and response_text:
-        custom_cmds_sync.update_one({"_id": trigger}, {"$set": {"response": response_text}}, upsert=True)
-        return redirect("/admin?success=Custom+Command+Added!")
-    return redirect("/admin?error=Trigger+and+Response+Required")
-
-@app.route("/admin/delete-command/<cmd_id>")
-def admin_delete_command(cmd_id):
-    if not is_admin(): return "Unauthorized", 403
-    custom_cmds_sync.delete_one({"_id": cmd_id})
-    return redirect("/admin?success=Command+Deleted!")
-
-@app.route("/admin/update-system-config", methods=["POST"])
-def update_system_config():
-    if not is_admin(): return "Unauthorized", 403
-    db_sync["config"].update_one(
-        {"_id": "system_config_file"},
-        {"$set": {
-            "command_prefix": request.form.get("command_prefix", "!"),
-            "maintenance_mode": bool(request.form.get("maintenance_mode")),
-            "feature_auto_pings": bool(request.form.get("feature_auto_pings")),
-            "war_channel_id": request.form.get("war_channel_id", "").strip(),
-            "ignored_channels": [c.strip() for c in request.form.get("ignored_channels", "").split(",") if c.strip()],
-            "admin_role_ids": [r.strip() for r in request.form.get("admin_role_ids", "").split(",") if r.strip()],
-            "admin_user_ids": [u.strip() for u in request.form.get("admin_user_ids", "").split(",") if u.strip()]
-        }},
-        upsert=True
-    )
-    try: redis_sync_client.publish("graveyard_bot_signals", json.dumps({"action": "RELOAD"}))
-    except Exception as e: log.warning(f"⚠️ Redis offline: {e}")
-    return redirect("/admin?success=System+configuration+updated+instantly!")
-
-@app.route("/admin/ping/<player_name>/<int:decks_left>")
-def admin_ping_player(player_name, decks_left):
-    if not is_admin(): return "Unauthorized", 403
-    try:
-        payload = json.dumps({"action": "SINGLE_PING", "player_name": player_name, "decks_left": decks_left})
-        redis_sync_client.publish("graveyard_bot_signals", payload)
-        return redirect("/admin?success=Sent+nudge+alert!")
-    except Exception:
-        return redirect("/admin?error=Redis+offline.+Instant+pings+currently+unavailable.")
-
-@app.route("/admin/mass-ping")
-def admin_mass_ping():
-    if not is_admin(): return "Unauthorized", 403
-    try:
-        redis_sync_client.publish("graveyard_bot_signals", json.dumps({"action": "MASS_PING"}))
-        return redirect("/admin?success=Mass+War+Alert+Broadcasted!")
-    except Exception:
-        return redirect("/admin?error=Redis+offline.+Mass+pings+unavailable.")
-
-@app.route("/admin/export/custom", methods=["POST"])
-def export_custom_csv():
-    if not is_admin(): return "Unauthorized", 403
-
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
-    members = clan_data.get("memberList", []) if clan_data else []
-
-    member_tags = [m["tag"].replace("#", "") for m in members]
-    db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
-    profiles_map = {p["_id"]: p for p in db_profiles}
-
-    csv_template = get_template("custom_csv")
-
-    rendered_csv = render_template_string(
-        csv_template,
-        members=members,
-        profiles=profiles_map,
-        selected_fields=request.form.getlist("fields")
-    )
-
-    return app.response_class(
-        rendered_csv,
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"}
-    )
-    
 @app.route("/admin/validate-template", methods=["POST"])
 def validate_template():
     if not is_admin():
         return {"error": "Unauthorized"}, 403
- 
     html = request.json.get("html", "")
     ok, message, line = validate_jinja_syntax(html)
     return {"ok": ok, "message": message, "line": line}
- 
- 
+
+
 @app.route("/admin/save-template-safe", methods=["POST"])
 def save_template_safe():
     if not is_admin():
         return {"error": "Unauthorized"}, 403
- 
     html = request.json.get("html", "")
     template_name = request.json.get("template_name", "")
- 
     if template_name not in ["roster", "player", "link", "admin", "custom_csv"]:
         return {"ok": False, "message": "Invalid template name."}, 400
- 
     ok, message, line = validate_jinja_syntax(html)
     if not ok:
-        return {
-            "ok": False,
-            "message": f"Validation failed — template NOT saved: {message}",
-            "line": line
-        }
- 
+        return {"ok": False, "message": f"Validation failed — template NOT saved: {message}", "line": line}
     db_sync["config"].update_one(
         {"_id": "html_templates"},
         {"$set": {template_name: html}},
-        upsert=True
+        upsert=True,
     )
-    _HTML_CACHE.clear()
+    invalidate_template_cache()
     return {"ok": True, "message": f"'{template_name}' validated and deployed successfully."}
-    
+
+
+# ---------------------------------------------------------------------------
+# ADMIN — CUSTOM PAGES
+# ---------------------------------------------------------------------------
+@app.route("/admin/pages/save", methods=["POST"])
+def admin_save_page():
+    if not is_admin():
+        return {"error": "Unauthorized"}, 403
+    data = request.json or {}
+    slug = data.get("slug", "").strip().lower().replace(" ", "-")
+    html = data.get("html", "")
+    if not slug:
+        return {"ok": False, "message": "Slug is required."}
+    ok, message, line = validate_jinja_syntax(html)
+    if not ok:
+        return {"ok": False, "message": f"Jinja error on line {line}: {message}"}
+    db_sync["pages"].update_one(
+        {"_id": slug},
+        {"$set": {"html": html, "updated": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}},
+        upsert=True,
+    )
+    return {"ok": True, "message": f"Page deployed at /p/{slug}"}
+
+
+@app.route("/admin/pages/get/<slug>")
+def admin_get_page(slug):
+    if not is_admin():
+        return {"error": "Unauthorized"}, 403
+    doc = db_sync["pages"].find_one({"_id": slug})
+    if not doc:
+        return {"ok": False, "message": "Page not found."}, 404
+    return {"ok": True, "html": doc.get("html", ""), "slug": slug}
+
+
+@app.route("/admin/pages/delete/<slug>")
+def admin_delete_page(slug):
+    if not is_admin():
+        return "Unauthorized", 403
+    db_sync["pages"].delete_one({"_id": slug})
+    return redirect("/admin?success=Page+deleted!#pages")
+
+
+# ---------------------------------------------------------------------------
+# ADMIN — DATA VIEWER
+# ---------------------------------------------------------------------------
+@app.route("/admin/data/<collection>")
+def admin_view_collection(collection):
+    if not is_admin():
+        return {"error": "Unauthorized"}, 403
+    allowed = ["users", "player_profiles", "custom_commands", "config"]
+    if collection not in allowed:
+        return {"error": "Forbidden"}, 403
+    docs = list(db_sync[collection].find().limit(100))
+    for d in docs:
+        d["_id"] = str(d["_id"])
+        # Convert any datetime objects to strings
+        for k, v in d.items():
+            if isinstance(v, datetime):
+                d[k] = v.isoformat()
+    return jsonify(docs)
+
+
+@app.route("/admin/snapshot/<name>")
+def admin_view_snapshot(name):
+    if not is_admin():
+        return {"error": "Unauthorized"}, 403
+    allowed = ["clan", "riverrace"]
+    if name not in allowed:
+        return {"error": "Forbidden"}, 403
+    doc = db_sync["snapshots"].find_one({"_id": name})
+    if not doc:
+        return jsonify({"error": "No snapshot yet. Hit the fetch button first."})
+    doc["_id"] = str(doc["_id"])
+    if "fetched_at" in doc and isinstance(doc["fetched_at"], datetime):
+        doc["fetched_at"] = doc["fetched_at"].isoformat()
+    return jsonify(doc)
+
+
+# ---------------------------------------------------------------------------
+# ADMIN — MANUAL API FETCH TRIGGERS
+# ---------------------------------------------------------------------------
+@app.route("/admin/fetch/clan")
+def admin_fetch_clan():
+    if not is_admin():
+        return "Unauthorized", 403
+    data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    if not data:
+        return redirect("/admin?error=Clan+API+call+failed#data")
+    db_sync["snapshots"].update_one(
+        {"_id": "clan"},
+        {"$set": {"data": data, "fetched_at": datetime.utcnow()}},
+        upsert=True,
+    )
+    return redirect("/admin?success=Clan+data+refreshed+and+stored!#data")
+
+
+@app.route("/admin/fetch/riverrace")
+def admin_fetch_riverrace():
+    if not is_admin():
+        return "Unauthorized", 403
+    data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    if not data:
+        return redirect("/admin?error=River+race+API+call+failed#data")
+    db_sync["snapshots"].update_one(
+        {"_id": "riverrace"},
+        {"$set": {"data": data, "fetched_at": datetime.utcnow()}},
+        upsert=True,
+    )
+    return redirect("/admin?success=River+race+data+refreshed+and+stored!#data")
+
+
+@app.route("/admin/fetch/player/<tag>")
+def admin_fetch_player(tag):
+    if not is_admin():
+        return "Unauthorized", 403
+    tag = clean_tag(tag)
+    data = fetch_cr_api(f"players/%23{tag}")
+    if not data:
+        return redirect("/admin?error=Player+not+found#data")
+    db_sync["player_profiles"].update_one(
+        {"_id": tag},
+        {"$set": data},
+        upsert=True,
+    )
+    return redirect(f"/admin?success=Profile+for+{tag}+updated!#data")
+
+
+@app.route("/admin/fetch/all-profiles")
+def admin_fetch_all_profiles():
+    if not is_admin():
+        return "Unauthorized", 403
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    if not clan_data:
+        return redirect("/admin?error=Could+not+fetch+clan#data")
+    members = clan_data.get("memberList", [])
+    updated = 0
+    failed = 0
+    for m in members:
+        tag = clean_tag(m["tag"])
+        profile = fetch_cr_api(f"players/%23{tag}")
+        if profile:
+            db_sync["player_profiles"].update_one(
+                {"_id": tag},
+                {"$set": profile},
+                upsert=True,
+            )
+            updated += 1
+        else:
+            failed += 1
+        time.sleep(0.2)  # gentle rate limiting
+    return redirect(f"/admin?success=Updated+{updated}+profiles.+{failed}+failed.#data")
+
+
+# ---------------------------------------------------------------------------
+# ADMIN — CACHE & COG CONTROLS
+# ---------------------------------------------------------------------------
+@app.route("/admin/clear-cache")
+def admin_clear_cache():
+    if not is_admin():
+        return "Unauthorized", 403
+    invalidate_template_cache()
+    return redirect("/admin?success=All+template+caches+cleared!#data")
+
+
+@app.route("/admin/reload-cog")
+def admin_reload_cog():
+    if not is_admin():
+        return "Unauthorized", 403
+    _try_redis_publish({"action": "RELOAD_COG", "cog": "cogs.clash_cog"})
+    return redirect("/admin?success=Bot+command+cog+reload+signal+sent!#data")
+
+
+# ---------------------------------------------------------------------------
+# ADMIN — EXISTING ROUTES
+# ---------------------------------------------------------------------------
+@app.route("/admin/grant-role/<player_tag>")
+def admin_grant_role(player_tag):
+    if not is_admin():
+        return "Unauthorized", 403
+    linked_user = users_sync.find_one({"player_id": clean_tag(player_tag)})
+    if not linked_user:
+        return redirect("/admin?error=This+player+has+not+linked+their+Discord+account+yet.")
+    db_sync["config"].update_one(
+        {"_id": "system_config_file"},
+        {"$addToSet": {"admin_user_ids": str(linked_user["_id"])}},
+        upsert=True,
+    )
+    _try_redis_publish({"action": "RELOAD"})
+    return redirect("/admin?success=Granted+dashboard+admin+privileges!")
+
+
+@app.route("/admin/manual-link", methods=["POST"])
+def admin_manual_link():
+    if not is_admin():
+        return "Unauthorized", 403
+    player_tag = clean_tag(request.form.get("player_tag", ""))
+    discord_id = request.form.get("discord_id", "").strip()
+    if not player_tag or not discord_id:
+        return redirect("/admin?error=Missing+tag+or+Discord+ID")
+    if not discord_id.isdigit() or len(discord_id) < 17:
+        return redirect("/admin?error=Invalid+Discord+ID+Format.+Must+be+17%2B+digits.")
+    users_sync.update_one(
+        {"_id": discord_id},
+        {"$set": {"player_id": player_tag}},
+        upsert=True,
+    )
+    return redirect("/admin?success=Successfully+Linked+Tag+to+Discord+ID!")
+
+
+@app.route("/admin/add-command", methods=["POST"])
+def admin_add_command():
+    if not is_admin():
+        return "Unauthorized", 403
+    trigger = request.form.get("trigger", "").strip().lower().lstrip("!?")
+    response_text = request.form.get("response", "").strip()
+    if trigger and response_text:
+        custom_cmds_sync.update_one(
+            {"_id": trigger},
+            {"$set": {"response": response_text}},
+            upsert=True,
+        )
+        return redirect("/admin?success=Custom+Command+Added!")
+    return redirect("/admin?error=Trigger+and+Response+Required")
+
+
+@app.route("/admin/delete-command/<cmd_id>")
+def admin_delete_command(cmd_id):
+    if not is_admin():
+        return "Unauthorized", 403
+    custom_cmds_sync.delete_one({"_id": cmd_id})
+    return redirect("/admin?success=Command+Deleted!")
+
+
+@app.route("/admin/update-system-config", methods=["POST"])
+def update_system_config():
+    if not is_admin():
+        return "Unauthorized", 403
+
+    def split_ids(field: str) -> list[str]:
+        return [v.strip() for v in request.form.get(field, "").split(",") if v.strip()]
+
+    db_sync["config"].update_one(
+        {"_id": "system_config_file"},
+        {
+            "$set": {
+                "command_prefix": request.form.get("command_prefix", "!"),
+                "maintenance_mode": bool(request.form.get("maintenance_mode")),
+                "feature_auto_pings": bool(request.form.get("feature_auto_pings")),
+                "war_channel_id": request.form.get("war_channel_id", "").strip(),
+                "ignored_channels": split_ids("ignored_channels"),
+                "admin_role_ids": split_ids("admin_role_ids"),
+                "admin_user_ids": split_ids("admin_user_ids"),
+            }
+        },
+        upsert=True,
+    )
+    _try_redis_publish({"action": "RELOAD"})
+    return redirect("/admin?success=System+configuration+updated+instantly!")
+
+
+@app.route("/admin/ping/<player_name>/<int:decks_left>")
+def admin_ping_player(player_name, decks_left):
+    if not is_admin():
+        return "Unauthorized", 403
+    ok = _try_redis_publish({"action": "SINGLE_PING", "player_name": player_name, "decks_left": decks_left})
+    if ok:
+        return redirect("/admin?success=Sent+nudge+alert!")
+    return redirect("/admin?error=Redis+offline.+Instant+pings+currently+unavailable.")
+
+
+@app.route("/admin/mass-ping")
+def admin_mass_ping():
+    if not is_admin():
+        return "Unauthorized", 403
+    ok = _try_redis_publish({"action": "MASS_PING"})
+    if ok:
+        return redirect("/admin?success=Mass+War+Alert+Broadcasted!")
+    return redirect("/admin?error=Redis+offline.+Mass+pings+unavailable.")
+
+
+@app.route("/admin/export/custom", methods=["POST"])
+def export_custom_csv():
+    if not is_admin():
+        return "Unauthorized", 403
+
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    members = clan_data.get("memberList", []) if clan_data else []
+    member_tags = [clean_tag(m["tag"]) for m in members]
+
+    db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+    profiles_map = {p["_id"]: p for p in db_profiles}
+
+    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    war_participants = _build_war_participants(war_data)
+
+    export_format = request.form.get("export_format", "csv")
+    selected_fields = request.form.getlist("fields")
+
+    if export_format == "json":
+        export_data = _build_export_rows(members, profiles_map, war_participants, selected_fields)
+        return jsonify(export_data)
+
+    rendered_csv = render_template_string(
+        get_template("custom_csv"),
+        members=members,
+        profiles=profiles_map,
+        war_participants=war_participants,
+        selected_fields=selected_fields,
+    )
+    return app.response_class(
+        rendered_csv,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"},
+    )
+
+
+def _build_export_rows(members, profiles_map, war_participants, selected_fields):
+    field_extractors = {
+        "name":             lambda m, p, wp: m.get("name"),
+        "tag":              lambda m, p, wp: clean_tag(m["tag"]),
+        "role":             lambda m, p, wp: m.get("role"),
+        "expLevel":         lambda m, p, wp: m.get("expLevel"),
+        "trophies":         lambda m, p, wp: m.get("trophies"),
+        "donations":        lambda m, p, wp: m.get("donations"),
+        "donationsReceived":lambda m, p, wp: m.get("donationsReceived"),
+        "fame":             lambda m, p, wp: wp.get("fame", 0),
+        "decksUsedToday":   lambda m, p, wp: wp.get("decksUsedToday", 0),
+        "decksRemaining":   lambda m, p, wp: wp.get("decksRemaining", 4),
+        "totalWins":        lambda m, p, wp: p.get("wins", 0),
+        "totalLosses":      lambda m, p, wp: p.get("losses", 0),
+        "current_streak":   lambda m, p, wp: p.get("current_streak", 0),
+        "warDayWins":       lambda m, p, wp: p.get("warDayWins", 0),
+        "favoriteCard":     lambda m, p, wp: p.get("currentFavouriteCard", {}).get("name", "N/A"),
+    }
+    rows = []
+    for m in members:
+        tag = clean_tag(m["tag"])
+        p = profiles_map.get(tag, {})
+        wp = war_participants.get(tag, {})
+        row = {f: field_extractors[f](m, p, wp) for f in selected_fields if f in field_extractors}
+        rows.append(row)
+    return rows
+
+
 @app.route("/health")
 def health():
     return {"status": "ok"}, 200
 
-# --- 4. FLASK SERVER MANAGER RUNNER ---
+
+# ---------------------------------------------------------------------------
+# REDIS HELPER
+# ---------------------------------------------------------------------------
+def _try_redis_publish(payload: dict) -> bool:
+    try:
+        redis_sync_client.publish("graveyard_bot_signals", json.dumps(payload))
+        return True
+    except Exception as e:
+        log.warning(f"Redis publish failed: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 4. FLASK SERVER MANAGER RUNNER
+# ---------------------------------------------------------------------------
 def run_flask():
     port = int(os.getenv("PORT", 5000))
+    # Startup self-test
+    try:
+        test = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+        if test and "memberList" in test:
+            log.info(f"✅ CR API OK — {len(test['memberList'])} members found")
+        else:
+            log.warning(f"⚠️ CR API returned unexpected data on startup: {test}")
+    except Exception as e:
+        log.error(f"❌ CR API startup test failed: {e}")
+
     log.info(f"🌐 Flask dashboard running on port {port}")
     serve(app, host="0.0.0.0", port=port)
 
-# --- 5. DYNAMIC PREFIX CALLABLE LINK ---
+
+# ---------------------------------------------------------------------------
+# 5. DYNAMIC PREFIX CALLABLE
+# ---------------------------------------------------------------------------
 def get_dynamic_prefix(bot_instance, message):
     return bot_instance.active_prefix
 
-# --- 6. DISCORD BOT ENGINE SETUP ---
+
+# ---------------------------------------------------------------------------
+# 6. DISCORD BOT ENGINE
+# ---------------------------------------------------------------------------
 class GraveyardBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -978,50 +1874,58 @@ class GraveyardBot(commands.Bot):
         intents.members = True
 
         super().__init__(command_prefix=get_dynamic_prefix, intents=intents)
-        self.http_session = None
+        self.http_session: aiohttp.ClientSession | None = None
         self.redis_available = False
 
         self.active_prefix = "!"
         self.maintenance_mode = False
-        self.feature_auto_pings = False 
-        self.ignored_channels = []
+        self.feature_auto_pings = False
+        self.ignored_channels: list[str] = []
         self.war_channel_id = 0
-        self._last_config_load = 0
+        self._last_config_load = 0.0
 
         self.mongo_client = AsyncIOMotorClient(mongo_url)
         self.db = self.mongo_client["graveyardbot"]
         self.db_users = self.db["users"]
         self.custom_cmds = self.db["custom_commands"]
 
-    # ── ASYNC API HOOK TO PREVENT EVENT LOOP FREEZING ──
-    def _cr_headers(self):
-        return {"Authorization": f"Bearer {os.getenv('CR_TOKEN')}", "Accept": "application/json"}
+    def _cr_headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {os.getenv('CR_TOKEN')}",
+            "Accept": "application/json",
+        }
 
-    async def async_fetch_cr_api(self, endpoint: str) -> dict | None:
+    async def async_fetch_cr_api(self, endpoint: str, retries: int = 3) -> dict | None:
         url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
-        try:
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with self.http_session.get(url, headers=self._cr_headers(), timeout=timeout) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if isinstance(data, dict):
-                        if "cards" in data:
-                            for c in data["cards"]:
-                                c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
-                        if "currentDeck" in data:
-                            for c in data["currentDeck"]:
-                                c["level"] = MAX_CARD_LEVEL - c.get("maxLevel", MAX_CARD_LEVEL) + c.get("level", 1)
-                    return data
-                return None
-        except Exception as e:
-            log.error(f"Async API Request failed: {e}")
-            return None
+        timeout = aiohttp.ClientTimeout(total=10)
+
+        for attempt in range(retries):
+            try:
+                async with self.http_session.get(url, headers=self._cr_headers(), timeout=timeout) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if isinstance(data, dict):
+                            _normalize_card_levels(data)
+                        return data
+                    elif response.status == 429:
+                        wait = 2 ** attempt
+                        log.warning(f"Bot API rate-limited (429) on {endpoint}. Retrying in {wait}s…")
+                        await asyncio.sleep(wait)
+                    else:
+                        log.error(f"Async API request failed [{response.status}] on {endpoint}")
+                        return None
+            except aiohttp.ClientError as e:
+                wait = 2 ** attempt
+                log.error(f"Async API exception: {e}. Retrying in {wait}s…")
+                await asyncio.sleep(wait)
+
+        return None
 
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
-        redis_url = os.getenv("REDIS_URL")
         await self.load_system_config()
 
+        redis_url = os.getenv("REDIS_URL")
         if redis_url:
             try:
                 self.redis = redis.from_url(redis_url, decode_responses=True)
@@ -1029,15 +1933,16 @@ class GraveyardBot(commands.Bot):
                 self.redis_available = True
                 self.loop.create_task(self.listen_to_web_ui())
             except Exception as e:
-                log.warning(f"⚠️ Redis down: {e}")
+                log.warning(f"⚠️ Redis unavailable at startup: {e}")
                 self.redis_available = False
         else:
             self.redis_available = False
 
         await self.load_extension("cogs.clash_cog")
 
-    async def on_message(self, message):
-        if message.author.bot: return
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
 
         if not self.redis_available:
             now = time.time()
@@ -1046,32 +1951,30 @@ class GraveyardBot(commands.Bot):
                     await self.load_system_config()
                     self._last_config_load = now
                 except Exception as e:
-                    log.error(f"Failed fallback config load: {e}")
+                    log.error(f"Fallback config reload failed: {e}")
 
         prefix = self.active_prefix
+
         if self.maintenance_mode and message.content.startswith(prefix):
-            await message.channel.send("⚠️ GraveyardBot is down for web configuration maintenance. Try again shortly.")
+            await message.channel.send("⚠️ GraveyardBot is down for maintenance. Try again shortly.")
             return
 
-        if str(message.channel.id) in self.ignored_channels: return
+        if str(message.channel.id) in self.ignored_channels:
+            return
 
         if message.content.startswith(prefix):
             cmd_name = message.content[len(prefix):].split()[0].lower()
             custom_cmd = await self.custom_cmds.find_one({"_id": cmd_name})
             if custom_cmd:
                 await message.channel.send(custom_cmd["response"])
-                return 
+                return
 
         await self.process_commands(message)
 
-    # ── GLOBAL ERROR HANDLER ──
     async def on_command_error(self, ctx, error):
-        # Silently ignore user typos (like "!plivewire" instead of "!p livewire")
         if isinstance(error, commands.CommandNotFound):
             return
-            
-        # Optional: You can handle other global errors here, or just let them log naturally
-        log.error(f"Global Command Error: {error}")
+        log.error(f"Global command error: {error}")
 
     async def load_system_config(self):
         config_doc = await self.db["config"].find_one({"_id": "system_config_file"})
@@ -1089,49 +1992,85 @@ class GraveyardBot(commands.Bot):
             self.war_channel_id = 0
 
     async def listen_to_web_ui(self):
+        backoff = 5
+        max_backoff = 60
+
         while not self.is_closed():
             pubsub = None
             try:
                 pubsub = self.redis.pubsub()
                 await pubsub.subscribe("graveyard_bot_signals")
                 log.info("📡 Redis PubSub listener active.")
-                
-                async for message in pubsub.listen():
-                    if message['type'] == 'message':
-                        try:
-                            payload = json.loads(message['data'])
-                            action = payload.get("action")
-                            
-                            if action == "RELOAD":
-                                await self.load_system_config()
-                            elif action == "SINGLE_PING":
-                                channel = self.get_channel(self.war_channel_id)
-                                if channel:
-                                    player_name = payload.get("player_name")
-                                    decks_left = payload.get("decks_left")
-                                    matched_user = await self.db_users.find_one({"clan_name_cache": player_name})
-                                    mention_str = f"<@{matched_user['_id']}>" if matched_user else f"**{player_name}**"
-                                    embed = discord.Embed(title="⚔️ River Race Nudge Alert!", description=f"Yo {mention_str}, you still have **{decks_left} war decks** left! Lock it in.", color=0xe74c3c)
-                                    await channel.send(embed=embed)
-                            elif action == "MASS_PING":
-                                channel = self.get_channel(self.war_channel_id)
-                                if channel:
-                                    await channel.send("🚨 **SQUAD ATTENTION!** 🚨 Complete remaining battles immediately!")
-                        except json.JSONDecodeError:
-                            log.warning("Received malformed payload in Redis. Ignoring.")
+                backoff = 5
+
+                async for msg in pubsub.listen():
+                    if msg["type"] != "message":
+                        continue
+                    try:
+                        payload = json.loads(msg["data"])
+                        await self._handle_redis_action(payload)
+                    except json.JSONDecodeError:
+                        log.warning("Malformed Redis payload — ignoring.")
 
             except Exception as e:
-                log.error(f"Redis listener dropped: {e}. Reconnecting in 5 seconds...")
-                await asyncio.sleep(5)
+                log.error(f"Redis listener dropped: {e}. Reconnecting in {backoff}s…")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
             finally:
                 if pubsub:
-                    await pubsub.close()
+                    try:
+                        await pubsub.close()
+                    except Exception:
+                        pass
+
+    async def _handle_redis_action(self, payload: dict):
+        action = payload.get("action")
+
+        if action == "RELOAD":
+            await self.load_system_config()
+
+        elif action == "RELOAD_COG":
+            cog = payload.get("cog", "cogs.clash_cog")
+            try:
+                await self.reload_extension(cog)
+                log.info(f"✅ Reloaded cog: {cog}")
+            except Exception as e:
+                log.error(f"❌ Cog reload failed: {e}")
+
+        elif action == "SINGLE_PING":
+            channel = self.get_channel(self.war_channel_id)
+            if not channel:
+                return
+            player_name = payload.get("player_name")
+            decks_left = payload.get("decks_left")
+            matched_user = await self.db_users.find_one({"clan_name_cache": player_name})
+            mention = f"<@{matched_user['_id']}>" if matched_user else f"**{player_name}**"
+            embed = discord.Embed(
+                title="⚔️ River Race Nudge Alert!",
+                description=f"Yo {mention}, you still have **{decks_left} war deck(s)** left! Lock it in.",
+                color=0xE74C3C,
+            )
+            await channel.send(embed=embed)
+
+        elif action == "MASS_PING":
+            channel = self.get_channel(self.war_channel_id)
+            if channel:
+                await channel.send("🚨 **SQUAD ATTENTION!** 🚨 Complete remaining battles immediately!")
+
+        else:
+            log.warning(f"Unknown Redis action received: {action!r}")
 
     async def close(self):
-        if self.http_session: await self.http_session.close()
-        if self.redis_available: await self.redis.aclose()
+        if self.http_session:
+            await self.http_session.close()
+        if self.redis_available:
+            await self.redis.aclose()
         await super().close()
 
+
+# ---------------------------------------------------------------------------
+# ENTRYPOINT
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     bot = GraveyardBot()
