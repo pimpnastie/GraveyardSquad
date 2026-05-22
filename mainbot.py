@@ -957,6 +957,12 @@ DEFAULT_ADMIN_HTML = r"""
     <button class="nav-btn" onclick="showTab('harvest', this)">
       <span class="nav-icon">📡</span>Harvest Log
     </button>
+    
+    <!-- ADD THIS BUTTON -->
+    <button class="nav-btn" onclick="showTab('editor', this)">
+      <span class="nav-icon">🎨</span>UI Editor
+    </button>
+
     <div class="nav-section">Danger Zone</div>
     <button class="nav-btn" onclick="showTab('admin', this)">
       <span class="nav-icon">⚙️</span>Admin Tools
@@ -965,7 +971,26 @@ DEFAULT_ADMIN_HTML = r"""
  
   <!-- MAIN CONTENT -->
   <main class="main">
- 
+    <!-- ═══════════════════════ UI EDITOR TAB ═══════════════════════ -->
+    <div class="tab-pane" id="tab-editor">
+      <div class="page-header">
+        <div class="page-title">UI Editor</div>
+        <div class="page-sub">Live deploy custom HTML to MongoDB</div>
+      </div>
+      <div class="diag-card" style="padding: 24px; background: var(--panel);">
+        <form action="/admin/update-html" method="POST">
+          <label style="color: var(--dim); font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Target Template</label><br>
+          <input type="text" name="template_name" placeholder="e.g., roster, player, admin, link" style="margin-top: 8px; margin-bottom: 24px; padding: 10px; background: #050709; color: #fff; border: 1px solid var(--border); border-radius: 4px; width: 100%; max-width: 300px; font-family: var(--font-mono);"><br>
+          
+          <label style="color: var(--dim); font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">HTML Source Code</label><br>
+          <textarea name="html_content" rows="25" style="width: 100%; margin-top: 8px; margin-bottom: 24px; padding: 16px; background: #050709; color: var(--accent); font-family: var(--font-mono); font-size: 13px; border: 1px solid var(--border); border-radius: 4px; line-height: 1.5;"></textarea><br>
+          
+          <button type="submit" class="btn-refresh" style="display: inline-flex; border-color: var(--ok); color: var(--ok); background: rgba(0,224,150,0.08);">
+            🚀 Deploy Update Live
+          </button>
+        </form>
+      </div>
+    </div>
     <!-- ═══════════════════════ DIAGNOSTICS TAB ═══════════════════════ -->
     <div class="tab-pane active" id="tab-diag">
       <div class="page-header">
@@ -2580,5 +2605,6 @@ class GraveyardBot(commands.Bot):
 if __name__ == "__main__":
     app.config["RAW_CSV_TEMPLATE_FALLBACK"] = "Native field selector extraction logic active."
     bot = GraveyardBot()
+    _bot_instance = bot  # <-- ADD THIS LINE
     threading.Thread(target=run_flask, daemon=True).start()
     bot.run(os.getenv("DISCORD_TOKEN"))
