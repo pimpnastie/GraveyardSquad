@@ -11,6 +11,7 @@ import time
 import json
 import csv
 import io
+import re
 import zoneinfo
 from datetime import datetime, timedelta, time as dt_time
 import importlib.metadata
@@ -101,8 +102,38 @@ cr_api_session = requests.Session()
 # Threading lock and secure sandboxing configurations for global safety updates
 _cache_lock = threading.Lock()
 _HTML_CACHE: dict[str, str] = {}
-sandbox_env = SandboxedEnvironment()
 
+# 🔴 FIX: Enable autoescape so bracketed names don't render as invisible HTML tags
+sandbox_env = SandboxedEnvironment(autoescape=True)
+def _enrich_members(raw_members: list, profile_map: dict, war_participants: dict) -> list:
+    players = []
+    seen_tags = set()
+    
+    for m in raw_members:
+        if not m or "tag" not in m:
+            continue
+            
+        tag = clean_tag(m["tag"])
+        
+        # Prevent the API from returning ghost duplicate cards
+        if tag in seen_tags:
+            continue
+        seen_tags.add(tag)
+        
+        # Strip Clash Royale color codes (<c2>, </c>) safely on the backend
+        raw_name = m.get("name", "Unknown")
+        m["name"] = re.sub(r"<c\d?>|</c>", "", raw_name, flags=re.IGNORECASE)
+
+        p_data = profile_map.get(tag, {})
+        wp_data = war_participants.get(tag, {})
+        
+        m["current_streak"] = p_data.get("current_streak", 0)
+        m["warDayWins"] = p_data.get("warDayWins", 0)
+        m["fame"] = wp_data.get("fame", 0)
+        m["clean_tag"] = tag
+        players.append(m)
+        
+    return sorted(players, key=lambda x: x.get("trophies", 0), reverse=True)
 _CONFIG_CACHE = {}
 _CONFIG_CACHE_EXPIRE = 0.0
 
