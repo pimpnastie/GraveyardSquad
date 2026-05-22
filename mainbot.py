@@ -307,6 +307,29 @@ def api_get_template(name):
             return jsonify({"html": doc[name]})
         return jsonify({"html": globals().get(f"DEFAULT_{name.upper()}_HTML", "")})
 
+# ── /admin/api/snapshot/<date> ─────────────────────────────────────────────
+@app.route("/admin/api/snapshot/<date>")
+def api_get_snapshot(date):
+    if not is_admin():
+        return jsonify({"error": "unauthorized"}), 403
+
+    try:
+        # Fetch all records for the given date from MongoDB
+        records = list(db_sync["historical_snapshots"].find({"date": date}))
+        
+        # Flask cannot serialize MongoDB's ObjectId, so we remove it
+        for record in records:
+            if "_id" in record:
+                del record["_id"]
+
+        if not records:
+            return jsonify({"error": f"No records found for date: {date}"}), 404
+
+        return jsonify(records)
+    except Exception as e:
+        log.error(f"Error fetching snapshot for {date}: {e}")
+        return jsonify({"error": "Internal server error while fetching snapshot."}), 500
+        
 # ── /admin/preview ─────────────────────────────────────────────────────────
 @app.route("/admin/preview", methods=["POST"])
 def preview_template():
