@@ -65,93 +65,7 @@ def sync_environment():
 sync_environment()
 
 # ---------------------------------------------------------------------------
-# 2. STANDARD IMPORTS & SETUP
-# ---------------------------------------------------------------------------
-load_dotenv()
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)-10s %(message)s",
-)
-log = logging.getLogger("mainbot")
-
-# ---------------------------------------------------------------------------
-# 3. UNIFIED FLASK WEB INFRASTRUCTURE & SHARED CONFIGS
-# ---------------------------------------------------------------------------
-app = Flask(__name__)
-app.secret_key = os.environ["FLASK_SECRET"]
-app.permanent_session_lifetime = timedelta(days=30)
-
-CLAN_TAG = "9LVY89UP"
-MAX_CARD_LEVEL = 16
-
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-REDIRECT_URI = "https://graveyardbot.onrender.com/callback"
-GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-
-mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-mongo_client_sync = MongoClient(mongo_url)
-db_sync = mongo_client_sync["graveyardbot"]
-users_sync = db_sync["users"]
-custom_cmds_sync = db_sync["custom_commands"]
-
-redis_sync_client = sync_redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
-
-cr_api_session = requests.Session()
-
-# Threading lock and secure sandboxing configurations for global safety updates
-_cache_lock = threading.Lock()
-_HTML_CACHE: dict[str, str] = {}
-
-# 🔴 FIX: Enable autoescape so bracketed names don't render as invisible HTML tags
-sandbox_env = SandboxedEnvironment(autoescape=True)
-def _enrich_members(raw_members: list, profile_map: dict, war_participants: dict) -> list:
-    players = []
-    seen_tags = set()
-    
-    for m in raw_members:
-        if not m or "tag" not in m:
-            continue
-            
-        tag = clean_tag(m["tag"])
-        
-        # Prevent the API from returning ghost duplicate cards
-        if tag in seen_tags:
-            continue
-        seen_tags.add(tag)
-        
-        # Strip Clash Royale color codes (<c2>, </c>) safely on the backend
-        raw_name = m.get("name", "Unknown")
-        m["name"] = re.sub(r"<c\d?>|</c>", "", raw_name, flags=re.IGNORECASE)
-
-        p_data = profile_map.get(tag, {})
-        wp_data = war_participants.get(tag, {})
-        
-        m["current_streak"] = p_data.get("current_streak", 0)
-        m["warDayWins"] = p_data.get("warDayWins", 0)
-        m["fame"] = wp_data.get("fame", 0)
-        m["clean_tag"] = tag
-        players.append(m)
-        
-    return sorted(players, key=lambda x: x.get("trophies", 0), reverse=True)
-_CONFIG_CACHE = {}
-_CONFIG_CACHE_EXPIRE = 0.0
-
-def _get_cached_system_config():
-    global _CONFIG_CACHE, _CONFIG_CACHE_EXPIRE
-    now = time.time()
-    if now > _CONFIG_CACHE_EXPIRE:
-        try:
-            doc = db_sync["config"].find_one({"_id": "system_config_file"}) or {}
-            _CONFIG_CACHE = doc
-            _CONFIG_CACHE_EXPIRE = now + 60.0  # 60 Second TTL Cache
-        except Exception as e:
-            log.error(f"Error fetching system config for cache: {e}")
-            return _CONFIG_CACHE
-    return _CONFIG_CACHE
-
-# ---------------------------------------------------------------------------
-# UTILITY HELPERS
+# 2. UTILITY HELPERS  (must be defined before module-level calls that use them)
 # ---------------------------------------------------------------------------
 def clean_tag(tag: str) -> str:
     """Normalises Clash Royale tags to uppercase, stripping whitespace and '#'."""
@@ -168,15 +82,70 @@ def _normalize_card_levels(data: dict) -> dict:
             )
     return data
 
+# ---------------------------------------------------------------------------
+# 3. STANDARD SETUP  (clean_tag is now defined above, safe to call here)
+# ---------------------------------------------------------------------------
+load_dotenv()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)-10s %(message)s",
+)
+log = logging.getLogger("mainbot")
+
+app = Flask(__name__)
+app.secret_key = os.environ["FLASK_SECRET"]
+app.permanent_session_lifetime = timedelta(days=30)
+
+# CLAN_TAG is now an env var with the original tag as fallback
+CLAN_TAG = clean_tag(os.getenv("CLAN_TAG", "9LVY89UP"))
+MAX_CARD_LEVEL = 16
+
+DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
+REDIRECT_URI          = "https://graveyardbot.onrender.com/callback"
+GUILD_ID              = os.getenv("DISCORD_GUILD_ID")
+
+mongo_url        = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+mongo_client_sync = MongoClient(mongo_url)
+db_sync          = mongo_client_sync["graveyardbot"]
+users_sync       = db_sync["users"]
+custom_cmds_sync = db_sync["custom_commands"]
+
+redis_sync_client = sync_redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+cr_api_session    = requests.Session()
+
+_cache_lock = threading.Lock()
+_HTML_CACHE: dict[str, str] = {}
+
+sandbox_env = SandboxedEnvironment(autoescape=True)
+
+# ---------------------------------------------------------------------------
+# 4. CORE HELPERS
+# ---------------------------------------------------------------------------
+_CONFIG_CACHE        = {}
+_CONFIG_CACHE_EXPIRE = 0.0
+
+
+def _get_cached_system_config() -> dict:
+    global _CONFIG_CACHE, _CONFIG_CACHE_EXPIRE
+    now = time.time()
+    if now > _CONFIG_CACHE_EXPIRE:
+        try:
+            doc = db_sync["config"].find_one({"_id": "system_config_file"}) or {}
+            _CONFIG_CACHE        = doc
+            _CONFIG_CACHE_EXPIRE = now + 60.0
+        except Exception as e:
+            log.error(f"Error fetching system config for cache: {e}")
+    return _CONFIG_CACHE
+
 
 def fetch_cr_api(endpoint: str, retries: int = 3) -> dict | None:
     """Synchronous CR API fetcher with exponential back-off for rate limits."""
-    url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
+    url     = f"https://proxy.royaleapi.dev/v1/{endpoint}"
     headers = {
         "Authorization": f"Bearer {os.getenv('CR_TOKEN')}",
-        "Accept": "application/json",
+        "Accept":        "application/json",
     }
-
     for attempt in range(retries):
         try:
             response = cr_api_session.get(url, headers=headers, timeout=10)
@@ -196,12 +165,10 @@ def fetch_cr_api(endpoint: str, retries: int = 3) -> dict | None:
             wait = 2 ** attempt
             log.error(f"Flask API exception: {e}. Retrying in {wait}s…")
             time.sleep(wait)
-
     return None
 
 
 def validate_jinja_syntax(html: str) -> tuple[bool, str, int | None]:
-    import re
     try:
         sandbox_env.parse(html)
         return True, "Template syntax is valid.", None
@@ -212,7 +179,7 @@ def validate_jinja_syntax(html: str) -> tuple[bool, str, int | None]:
 
 
 def get_user_guild_roles(token: str) -> list:
-    url = f"https://discord.com/api/users/@me/guilds/{GUILD_ID}/member"
+    url     = f"https://discord.com/api/users/@me/guilds/{GUILD_ID}/member"
     headers = {"Authorization": f"Bearer {token}"}
     try:
         r = requests.get(url, headers=headers, timeout=5)
@@ -227,20 +194,20 @@ def get_user_guild_roles(token: str) -> list:
 def is_admin() -> bool:
     if "discord_id" not in session:
         return False
-
     discord_id = str(session.get("discord_id"))
 
-    # Hardcoded fallback override to bypass configuration lockout loops
-    if discord_id in ["751975709643112569"]: 
+    # Hardcoded break-glass override — move to env var if preferred
+    hardcoded_admins = [os.getenv("BREAK_GLASS_ADMIN_ID", "751975709643112569")]
+    if discord_id in hardcoded_admins:
         return True
 
     master_admin = os.getenv("MASTER_ADMIN_ID", "")
     if master_admin and discord_id == master_admin:
         return True
 
-    sys_config_db = _get_cached_system_config()
-    allowed_roles = sys_config_db.get("admin_role_ids", [])
-    allowed_users = sys_config_db.get("admin_user_ids", [])
+    sys_config_db  = _get_cached_system_config()
+    allowed_roles  = sys_config_db.get("admin_role_ids", [])
+    allowed_users  = sys_config_db.get("admin_user_ids", [])
 
     if discord_id in allowed_users:
         return True
@@ -255,12 +222,10 @@ def get_template(template_name: str) -> str:
             return _HTML_CACHE[template_name]
 
     doc = db_sync["config"].find_one({"_id": "html_templates"})
-    
     with _cache_lock:
         if doc and template_name in doc:
             _HTML_CACHE[template_name] = doc[template_name]
             return doc[template_name]
-
         fallback = globals().get(f"DEFAULT_{template_name.upper()}_HTML", "")
         _HTML_CACHE[template_name] = fallback
         return fallback
@@ -273,18 +238,86 @@ def invalidate_template_cache() -> None:
 
 
 def render_sandboxed(template_str: str, **context) -> str:
-    """Safely renders HTML content, blocking remote server code injection vectors."""
-    template = sandbox_env.from_string(template_str)
-    
-    # 🔴 FIX: Inject Flask's session object into the sandbox context 
-    # so the HTML can check login and admin states without crashing.
+    """Safely renders HTML, injecting session so templates can check login/admin state."""
+    template        = sandbox_env.from_string(template_str)
     context["session"] = session
-    
     return template.render(**context)
 
 
 # ---------------------------------------------------------------------------
-# HTML TEMPLATE DEFAULTS
+# 5. ROSTER PIPELINE HELPERS
+# ---------------------------------------------------------------------------
+def _build_war_participants(war_data: dict | None) -> dict:
+    if not war_data or not isinstance(war_data, dict):
+        return {}
+    if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
+        return {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
+    for clan in war_data.get("clans", []):
+        if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
+            return {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
+    return {}
+
+
+def _enrich_members(raw_members: list, profile_map: dict, war_participants: dict) -> list:
+    """
+    Single canonical enricher:
+    - Deduplicates by tag
+    - Strips CR color codes server-side
+    - Merges profile & war data
+    """
+    players   = []
+    seen_tags = set()
+
+    for m in raw_members:
+        if not m or "tag" not in m:
+            continue
+        tag = clean_tag(m["tag"])
+        if not tag or tag in seen_tags:
+            continue
+        seen_tags.add(tag)
+
+        m["name"]      = re.sub(r"<c\d?>|</c>", "", m.get("name", "Unknown"), flags=re.IGNORECASE)
+        m["clean_tag"] = tag
+
+        p = profile_map.get(tag, {})
+        m["current_streak"] = p.get("current_streak", 0)
+        m["warDayWins"]     = p.get("warDayWins", 0)
+        m["fame"]           = war_participants.get(tag, {}).get("fame", 0)
+        players.append(m)
+
+    return sorted(players, key=lambda x: x.get("trophies", 0), reverse=True)
+
+
+def _process_roster_changes(current_member_tags: list, profile_map: dict, raw_members: list):
+    """
+    Audits roster changes by tag (not name) for reliable alerting.
+    Passes tag through the Redis payload so the bot can do a reliable DB lookup.
+    """
+    changes  = {"new_joins": [], "standard_returns": [], "kicked_returns": []}
+    name_map = {clean_tag(m["tag"]): m.get("name", "Unknown") for m in raw_members if "tag" in m}
+
+    for tag in current_member_tags:
+        player_name = name_map.get(tag, "Unknown")
+
+        if tag not in profile_map:
+            changes["new_joins"].append({"tag": tag, "name": player_name})
+            continue
+
+        profile = profile_map[tag]
+        if profile.get("in_clan_last_seen") is False:
+            entry = {"tag": tag, "name": player_name}
+            if profile.get("last_departure_status") == "kicked":
+                changes["kicked_returns"].append(entry)
+            else:
+                changes["standard_returns"].append(entry)
+
+    if any(changes.values()):
+        changes["action"] = "ROSTER_JOIN_ALERTS"
+        _try_redis_publish(changes)
+
+
+# ---------------------------------------------------------------------------
+# 6. HTML TEMPLATE DEFAULTS
 # ---------------------------------------------------------------------------
 DEFAULT_ROSTER_HTML = r"""
 <!DOCTYPE html>
@@ -355,7 +388,7 @@ DEFAULT_ROSTER_HTML = r"""
     {% for p in players %}
     <a href="/player/{{ p.clean_tag }}" class="player-card">
       <div class="p-left">
-        <div class="p-name cr-name">{{ p.name }}</div>
+        <div class="p-name">{{ p.name }}</div>
         <div class="p-role">
           {% if p.role == 'leader' %}Leader
           {% elif p.role == 'coLeader' %}CoLeader
@@ -379,27 +412,21 @@ DEFAULT_ROSTER_HTML = r"""
     <h2>Hall of Fame</h2>
     <div class="hof-card" style="--hof-color: #3498db;">
       <div class="hof-label">Top Pusher</div>
-      <div class="hof-name cr-name">{{ top_pusher.name if top_pusher else 'N/A' }}</div>
+      <div class="hof-name">{{ top_pusher.name if top_pusher else 'N/A' }}</div>
       <div class="hof-stat">🏆 {{ top_pusher.trophies if top_pusher else 0 }} Trophies</div>
     </div>
     <div class="hof-card" style="--hof-color: #e74c3c;">
       <div class="hof-label">Highest Win Streak</div>
-      <div class="hof-name cr-name">{{ top_streak.name if top_streak else 'N/A' }}</div>
+      <div class="hof-name">{{ top_streak.name if top_streak else 'N/A' }}</div>
       <div class="hof-stat">🔥 {{ top_streak.current_streak if top_streak else 0 }} Wins</div>
     </div>
     <div class="hof-card" style="--hof-color: #f1c40f;">
       <div class="hof-label">War Legend</div>
-      <div class="hof-name cr-name">{{ top_war.name if top_war else 'N/A' }}</div>
+      <div class="hof-name">{{ top_war.name if top_war else 'N/A' }}</div>
       <div class="hof-stat">⚔️ {{ top_war.warDayWins if top_war else 0 }} Lifetime Wins</div>
     </div>
   </div>
 </div>
-
-<script>
-  document.querySelectorAll('.cr-name').forEach(el => {
-    el.innerHTML = el.innerHTML.replace(/<c\d+>|<\/c>/gi, '');
-  });
-</script>
 </body>
 </html>
 """
@@ -585,137 +612,44 @@ function showTab(name) {
 """
 
 # ---------------------------------------------------------------------------
-# INDEX ROUTE HELPERS & JOIN MONITOR TRAFFIC PIPELINE
-# ---------------------------------------------------------------------------
-def _build_war_participants(war_data: dict | None) -> dict:
-    if not war_data or not isinstance(war_data, dict):
-        return {}
-    if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
-        return {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
-    for clan in war_data.get("clans", []):
-        if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
-            return {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
-    return {}
-
-
-def _enrich_members(raw_members: list, profile_map: dict, war_participants: dict) -> list:
-    players = []
-    for m in raw_members:
-        if not m or "tag" not in m:
-            continue
-        tag = clean_tag(m["tag"])
-        p_data = profile_map.get(tag, {})
-        wp_data = war_participants.get(tag, {})
-        
-        m["current_streak"] = p_data.get("current_streak", 0)
-        m["warDayWins"] = p_data.get("warDayWins", 0)
-        m["fame"] = wp_data.get("fame", 0)
-        m["clean_tag"] = tag
-        players.append(m)
-    return sorted(players, key=lambda x: x.get("trophies", 0), reverse=True)
-
-
-def _process_roster_changes(current_member_tags: list, profile_map: dict, raw_members: list):
-    """Audits the clan roster to detect New Joins, Returns, and Kicked Returns."""
-    new_joins = []
-    standard_returns = []
-    kicked_returns = []
-
-    name_map = {clean_tag(m["tag"]): m.get("name", "Unknown Member") for m in raw_members if "tag" in m}
-
-    for tag in current_member_tags:
-        player_name = name_map.get(tag, "Unknown Member")
-
-        if tag not in profile_map:
-            new_joins.append(player_name)
-            continue
-
-        profile = profile_map[tag]
-        if profile.get("in_clan_last_seen") is False:
-            if profile.get("last_departure_status") == "kicked":
-                kicked_returns.append(player_name)
-            else:
-                standard_returns.append(player_name)
-
-    if new_joins or standard_returns or kicked_returns:
-        _try_redis_publish({
-            "action": "ROSTER_JOIN_ALERTS",
-            "new_joins": new_joins,
-            "standard_returns": standard_returns,
-            "kicked_returns": kicked_returns
-        })
-
-
-# ---------------------------------------------------------------------------
-# FLASK ROUTE CONTROLLERS
+# 7. FLASK ROUTE CONTROLLERS
 # ---------------------------------------------------------------------------
 @app.route("/")
 def index():
     if "discord_id" in session:
         session["is_admin_user"] = is_admin()
 
-    data = fetch_cr_api(f"clans/%23{clean_tag(CLAN_TAG)}")
+    data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
     if not data or "memberList" not in data:
-        log.error(f"❌ Roster load failed! API response context: {data}")
-        return "<h1>Clan data missing from API response. Check your deployment logs.</h1>", 500
+        log.error(f"Roster load failed. API response: {data}")
+        return "<h1>Clan data missing from API response. Check logs.</h1>", 500
 
-    raw_members = data.get("memberList", [])
-    member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
+    raw_members  = data.get("memberList", [])
+    member_tags  = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
 
-    try:
-        profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
-        profile_map = {p["_id"]: p for p in profiles if "_id" in p}
-    except Exception as e:
-        log.error(f"Database tracking profiles failure: {e}")
-        profile_map = {}
+    # Optimized: only fetch profiles that are actually in the current roster
+    profiles     = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+    profile_map  = {p["_id"]: p for p in profiles}
 
-    # Run the change auditor tracking checks before updating current session flags
+    war_data         = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    war_participants  = _build_war_participants(war_data)
+
     _process_roster_changes(member_tags, profile_map, raw_members)
 
-    db_sync["player_profiles"].update_many(
-        {"_id": {"$in": member_tags}},
-        {"$set": {"in_clan_last_seen": True}}
-    )
-
-    left_members = list(db_sync["player_profiles"].find({
-        "_id": {"$nin": member_tags, "$in": list(profile_map.keys())},
-        "in_clan_last_seen": True
-    }))
-    
-    if left_members:
-        left_tags = [p["_id"] for p in left_members]
-        db_sync["player_profiles"].update_many(
-            {"_id": {"$in": left_tags}},
-            {"$set": {"in_clan_last_seen": False}}
-        )
-        for p in left_members:
-            if p.get("last_departure_status") != "kicked":
-                db_sync["player_profiles"].update_one(
-                    {"_id": p["_id"]},
-                    {"$set": {"last_departure_status": "left"}}
-                )
-
-    war_data = fetch_cr_api(f"clans/%23{clean_tag(CLAN_TAG)}/currentriverrace")
-    war_participants = _build_war_participants(war_data)
-
     players = _enrich_members(raw_members, profile_map, war_participants)
-
-    top_pusher = max(players, key=lambda x: x.get("trophies", 0), default=None)
-    top_streak = max(players, key=lambda x: x.get("current_streak", 0), default=None)
-    top_war    = max(players, key=lambda x: x.get("warDayWins", 0), default=None)
 
     return render_sandboxed(
         get_template("roster"),
         players=players,
-        top_pusher=top_pusher,
-        top_streak=top_streak,
-        top_war=top_war,
+        top_pusher=max(players, key=lambda x: x.get("trophies", 0),       default=None),
+        top_streak=max(players, key=lambda x: x.get("current_streak", 0), default=None),
+        top_war   =max(players, key=lambda x: x.get("warDayWins", 0),     default=None),
     )
 
 
 @app.route("/player/<tag>")
 def web_profile(tag):
-    tag = clean_tag(tag)
+    tag  = clean_tag(tag)
     data = fetch_cr_api(f"players/%23{tag}")
     if not data:
         return "<h1>Player data not found.</h1>", 404
@@ -751,7 +685,7 @@ def web_link():
         return redirect("/login")
     error_msg = None
     if request.method == "POST":
-        tag = clean_tag(request.form.get("tag", ""))
+        tag     = clean_tag(request.form.get("tag", ""))
         cr_data = fetch_cr_api(f"players/%23{tag}")
         if cr_data and "name" in cr_data:
             users_sync.update_one(
@@ -778,11 +712,11 @@ def callback():
     token_response = requests.post(
         "https://discord.com/api/oauth2/token",
         data={
-            "client_id": DISCORD_CLIENT_ID,
+            "client_id":     DISCORD_CLIENT_ID,
             "client_secret": DISCORD_CLIENT_SECRET,
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": REDIRECT_URI,
+            "grant_type":    "authorization_code",
+            "code":          code,
+            "redirect_uri":  REDIRECT_URI,
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
@@ -791,7 +725,7 @@ def callback():
     if "access_token" not in token_data:
         return "OAuth token extraction failed. Please log in again.", 400
 
-    token = token_data["access_token"]
+    token     = token_data["access_token"]
     user_data = requests.get(
         "https://discord.com/api/users/@me",
         headers={"Authorization": f"Bearer {token}"},
@@ -800,10 +734,10 @@ def callback():
     if "id" not in user_data:
         return "Failed to fetch Discord user info.", 400
 
-    session.permanent = True
-    session["discord_id"] = user_data["id"]
-    session["discord_name"] = user_data["username"]
-    session["user_roles"] = get_user_guild_roles(token)
+    session.permanent        = True
+    session["discord_id"]    = user_data["id"]
+    session["discord_name"]  = user_data["username"]
+    session["user_roles"]    = get_user_guild_roles(token)
     session["is_admin_user"] = is_admin()
 
     return redirect("/admin" if session["is_admin_user"] else "/link")
@@ -814,7 +748,7 @@ def admin_panel():
     if not is_admin():
         return "<h1>Unauthorized Access Denied.</h1>", 403
 
-    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    war_data         = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
     raw_participants = []
 
     if war_data and "clan" in war_data and "participants" in war_data["clan"]:
@@ -825,28 +759,29 @@ def admin_panel():
                 raw_participants = c.get("participants", [])
                 break
 
-    sys_config_db = _get_cached_system_config()
-    war_players = []
+    sys_config_db    = _get_cached_system_config()
+    war_players      = []
     total_decks_left = 0
 
     for p in raw_participants:
-        p_tag = clean_tag(p.get("tag", ""))
-        decks_used_today = p.get("decksUsedToday", 0)
-        decks_remaining = max(0, 4 - decks_used_today)
+        p_tag          = clean_tag(p.get("tag", ""))
+        decks_used     = p.get("decksUsedToday", 0)
+        decks_remaining = max(0, 4 - decks_used)
         war_players.append({
-            "tag": p_tag,
-            "name": p.get("name", "Unknown"),
-            "role": p.get("role", "Member").replace("_", " ").title(),
-            "fame": p.get("fame", 0),
-            "decksUsedToday": decks_used_today,
+            "tag":            p_tag,
+            "name":           p.get("name", "Unknown"),
+            "role":           p.get("role", "Member").replace("_", " ").title(),
+            "fame":           p.get("fame", 0),
+            "decksUsedToday": decks_used,
             "decksRemaining": decks_remaining,
         })
         total_decks_left += decks_remaining
 
     war_players.sort(key=lambda x: -x["decksRemaining"])
-    linked_count = users_sync.count_documents({})
-    all_custom_cmds = list(custom_cmds_sync.find())
-    custom_pages = list(db_sync["pages"].find())
+
+    linked_count     = users_sync.count_documents({})
+    all_custom_cmds  = list(custom_cmds_sync.find())
+    custom_pages     = list(db_sync["pages"].find())
 
     return render_sandboxed(
         get_template("admin"),
@@ -867,14 +802,14 @@ def admin_panel():
 
 
 # ---------------------------------------------------------------------------
-# ADMIN — TEMPLATE MANAGEMENT
+# 8. ADMIN — TEMPLATE MANAGEMENT
 # ---------------------------------------------------------------------------
 @app.route("/admin/update-html", methods=["POST"])
 def update_html():
     if not is_admin():
         return "Unauthorized", 403
     template_name = request.form.get("template_name")
-    html_content = request.form.get("html_content")
+    html_content  = request.form.get("html_content")
     if template_name in ["roster", "player", "link", "admin"]:
         db_sync["config"].update_one(
             {"_id": "html_templates"},
@@ -899,7 +834,7 @@ def reset_html():
 def validate_template():
     if not is_admin():
         return {"error": "Unauthorized"}, 403
-    html = request.json.get("html", "")
+    html       = request.json.get("html", "")
     ok, message, line = validate_jinja_syntax(html)
     return {"ok": ok, "message": message, "line": line}
 
@@ -908,7 +843,7 @@ def validate_template():
 def save_template_safe():
     if not is_admin():
         return {"error": "Unauthorized"}, 403
-    html = request.json.get("html", "")
+    html          = request.json.get("html", "")
     template_name = request.json.get("template_name", "")
     if template_name not in ["roster", "player", "link", "admin"]:
         return {"ok": False, "message": "Invalid template name."}, 400
@@ -925,7 +860,7 @@ def save_template_safe():
 
 
 # ---------------------------------------------------------------------------
-# ADMIN — CUSTOM PAGES
+# 9. ADMIN — CUSTOM PAGES
 # ---------------------------------------------------------------------------
 @app.route("/admin/pages/save", methods=["POST"])
 def admin_save_page():
@@ -939,7 +874,6 @@ def admin_save_page():
     ok, message, line = validate_jinja_syntax(html)
     if not ok:
         return {"ok": False, "message": f"Jinja error on line {line}: {message}"}
-    
     now_str = datetime.now(zoneinfo.ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
     db_sync["pages"].update_one(
         {"_id": slug},
@@ -968,7 +902,7 @@ def admin_delete_page(slug):
 
 
 # ---------------------------------------------------------------------------
-# ADMIN — DATA VIEWER
+# 10. ADMIN — DATA VIEWER
 # ---------------------------------------------------------------------------
 @app.route("/admin/data/<collection>")
 def admin_view_collection(collection):
@@ -1003,7 +937,7 @@ def admin_view_snapshot(name):
 
 
 # ---------------------------------------------------------------------------
-# ADMIN — MANUAL API FETCH TRIGGERS
+# 11. ADMIN — MANUAL API FETCH TRIGGERS
 # ---------------------------------------------------------------------------
 @app.route("/admin/fetch/clan")
 def admin_fetch_clan():
@@ -1039,7 +973,7 @@ def admin_fetch_riverrace():
 def admin_fetch_player(tag):
     if not is_admin():
         return "Unauthorized", 403
-    tag = clean_tag(tag)
+    tag  = clean_tag(tag)
     data = fetch_cr_api(f"players/%23{tag}")
     if not data:
         return redirect("/admin?error=Player+not+found#data")
@@ -1052,11 +986,10 @@ def admin_fetch_player(tag):
 
 
 # ---------------------------------------------------------------------------
-# ADMIN — ASYNC PROFILE SCRAPER ENGINE (Addresses Waitress thread freezing)
+# 12. ADMIN — ASYNC BACKGROUND PROFILE SCRAPER
 # ---------------------------------------------------------------------------
 async def _bg_scrape_task(member_tags: list):
-    """Background async wrapper that runs safely outside active web server thread pool blocks."""
-    log.info(f"Starting background async scraper loop for {len(member_tags)} entries.")
+    log.info(f"Background scraper started for {len(member_tags)} members.")
     global bot
     updated, failed = 0, 0
     for tag in member_tags:
@@ -1067,7 +1000,7 @@ async def _bg_scrape_task(member_tags: list):
         else:
             failed += 1
         await asyncio.sleep(0.5)
-    log.info(f"🎯 Background profile scraping task finished: {updated} success, {failed} failure entries.")
+    log.info(f"Scraper finished: {updated} updated, {failed} failed.")
 
 
 @app.route("/admin/fetch/all-profiles")
@@ -1077,16 +1010,15 @@ def admin_fetch_all_profiles():
     clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
     if not clan_data:
         return redirect("/admin?error=Could+not+contact+Clash+Royale+API#data")
-    members = clan_data.get("memberList", [])
+    members     = clan_data.get("memberList", [])
     member_tags = [clean_tag(m["tag"]) for m in members if "tag" in m]
-    
     global bot
     asyncio.run_coroutine_threadsafe(_bg_scrape_task(member_tags), bot.loop)
-    return redirect("/admin?success=Profile+scraping+task+started+safely+in+the+background!#data")
+    return redirect("/admin?success=Profile+scraping+started+in+background!#data")
 
 
 # ---------------------------------------------------------------------------
-# ADMIN — CACHE & COG CONTROLS
+# 13. ADMIN — CACHE & COG CONTROLS
 # ---------------------------------------------------------------------------
 @app.route("/admin/clear-cache")
 def admin_clear_cache():
@@ -1105,7 +1037,7 @@ def admin_reload_cog():
 
 
 # ---------------------------------------------------------------------------
-# ADMIN — ACCESS CONTROLS & MANAGEMENT
+# 14. ADMIN — ACCESS CONTROLS
 # ---------------------------------------------------------------------------
 @app.route("/admin/grant-role/<player_tag>")
 def admin_grant_role(player_tag):
@@ -1145,7 +1077,7 @@ def admin_manual_link():
 def admin_add_command():
     if not is_admin():
         return "Unauthorized", 403
-    trigger = request.form.get("trigger", "").strip().lower().lstrip("!?")
+    trigger       = request.form.get("trigger", "").strip().lower().lstrip("!?")
     response_text = request.form.get("response", "").strip()
     if trigger and response_text:
         custom_cmds_sync.update_one(
@@ -1177,19 +1109,19 @@ def update_system_config():
         {"_id": "system_config_file"},
         {
             "$set": {
-                "command_prefix": request.form.get("command_prefix", "!"),
-                "maintenance_mode": bool(request.form.get("maintenance_mode")),
+                "command_prefix":    request.form.get("command_prefix", "!"),
+                "maintenance_mode":  bool(request.form.get("maintenance_mode")),
                 "feature_auto_pings": bool(request.form.get("feature_auto_pings")),
-                "war_channel_id": request.form.get("war_channel_id", "").strip(),
-                "ignored_channels": split_ids("ignored_channels"),
-                "admin_role_ids": split_ids("admin_role_ids"),
-                "admin_user_ids": split_ids("admin_user_ids"),
+                "war_channel_id":    request.form.get("war_channel_id", "").strip(),
+                "ignored_channels":  split_ids("ignored_channels"),
+                "admin_role_ids":    split_ids("admin_role_ids"),
+                "admin_user_ids":    split_ids("admin_user_ids"),
             }
         },
         upsert=True,
     )
     global _CONFIG_CACHE_EXPIRE
-    _CONFIG_CACHE_EXPIRE = 0.0  # Reset caching pipeline triggers immediately
+    _CONFIG_CACHE_EXPIRE = 0.0
     _try_redis_publish({"action": "RELOAD"})
     return redirect("/admin?success=System+configuration+updated+instantly!")
 
@@ -1215,24 +1147,24 @@ def admin_mass_ping():
 
 
 # ---------------------------------------------------------------------------
-# OVERHAULED NATIVE EXPORT ENGINE (Addresses bad Jinja CSV formatting)
+# 15. EXPORT ENGINE
 # ---------------------------------------------------------------------------
 @app.route("/admin/export/custom", methods=["POST"])
 def export_custom_csv():
     if not is_admin():
         return "Unauthorized", 403
 
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
-    members = clan_data.get("memberList", []) if clan_data else []
+    clan_data   = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    members     = clan_data.get("memberList", []) if clan_data else []
     member_tags = [clean_tag(m["tag"]) for m in members]
 
-    db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+    db_profiles  = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
     profiles_map = {p["_id"]: p for p in db_profiles}
 
-    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
-    war_participants = _build_war_participants(war_data)
+    war_data         = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    war_participants  = _build_war_participants(war_data)
 
-    export_format = request.form.get("export_format", "csv")
+    export_format   = request.form.get("export_format", "csv")
     selected_fields = request.form.getlist("fields")
 
     if export_format == "json":
@@ -1241,7 +1173,7 @@ def export_custom_csv():
 
     si = io.StringIO()
     cw = csv.writer(si)
-    
+
     if selected_fields:
         cw.writerow(selected_fields)
         rows = _build_export_rows(members, profiles_map, war_participants, selected_fields)
@@ -1251,7 +1183,7 @@ def export_custom_csv():
         cw.writerow(["Name", "Tag", "Trophies", "Current Win Streak"])
         for m in members:
             tag = clean_tag(m["tag"])
-            p = profiles_map.get(tag, {})
+            p   = profiles_map.get(tag, {})
             cw.writerow([m.get("name"), tag, m.get("trophies"), p.get("current_streak", 0)])
 
     output = si.getvalue()
@@ -1283,8 +1215,8 @@ def _build_export_rows(members, profiles_map, war_participants, selected_fields)
     rows = []
     for m in members:
         tag = clean_tag(m["tag"])
-        p = profiles_map.get(tag, {})
-        wp = war_participants.get(tag, {})
+        p   = profiles_map.get(tag, {})
+        wp  = war_participants.get(tag, {})
         row = {f: field_extractors[f](m, p, wp) for f in selected_fields if f in field_extractors}
         rows.append(row)
     return rows
@@ -1296,7 +1228,7 @@ def health():
 
 
 # ---------------------------------------------------------------------------
-# REDIS SYNCHRONOUS ROUTE PUBLISHER HELPER
+# 16. REDIS SYNC PUBLISHER
 # ---------------------------------------------------------------------------
 def _try_redis_publish(payload: dict) -> bool:
     try:
@@ -1308,7 +1240,7 @@ def _try_redis_publish(payload: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 4. FLASK SERVER MANAGER RUNNER
+# 17. FLASK SERVER RUNNER
 # ---------------------------------------------------------------------------
 def run_flask():
     port = int(os.getenv("PORT", 5000))
@@ -1326,15 +1258,12 @@ def run_flask():
 
 
 # ---------------------------------------------------------------------------
-# 5. DYNAMIC PREFIX CALLABLE LINK
+# 18. DISCORD BOT
 # ---------------------------------------------------------------------------
 def get_dynamic_prefix(bot_instance, message):
     return bot_instance.active_prefix
 
 
-# ---------------------------------------------------------------------------
-# 6. DISCORD BOT ENGINE SETUP
-# ---------------------------------------------------------------------------
 class GraveyardBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -1342,29 +1271,28 @@ class GraveyardBot(commands.Bot):
         intents.members = True
 
         super().__init__(command_prefix=get_dynamic_prefix, intents=intents)
-        self.http_session = None
-        self.redis_available = False
-
-        self.active_prefix = "!"
-        self.maintenance_mode = False
+        self.http_session      = None
+        self.redis_available   = False
+        self.active_prefix     = "!"
+        self.maintenance_mode  = False
         self.feature_auto_pings = False
-        self.ignored_channels = []
-        self.war_channel_id = 0
+        self.ignored_channels  = []
+        self.war_channel_id    = 0
         self._last_config_load = 0.0
 
         self.mongo_client = AsyncIOMotorClient(mongo_url)
-        self.db = self.mongo_client["graveyardbot"]
-        self.db_users = self.db["users"]
-        self.custom_cmds = self.db["custom_commands"]
+        self.db           = self.mongo_client["graveyardbot"]
+        self.db_users     = self.db["users"]
+        self.custom_cmds  = self.db["custom_commands"]
 
     def _cr_headers(self) -> dict:
         return {
             "Authorization": f"Bearer {os.getenv('CR_TOKEN')}",
-            "Accept": "application/json",
+            "Accept":        "application/json",
         }
 
     async def async_fetch_cr_api(self, endpoint: str, retries: int = 3) -> dict | None:
-        url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
+        url     = f"https://proxy.royaleapi.dev/v1/{endpoint}"
         timeout = aiohttp.ClientTimeout(total=10)
 
         for attempt in range(retries):
@@ -1386,7 +1314,6 @@ class GraveyardBot(commands.Bot):
                 wait = 2 ** attempt
                 log.error(f"Async API exception: {e}. Retrying in {wait}s…")
                 await asyncio.sleep(wait)
-
         return None
 
     async def setup_hook(self):
@@ -1396,7 +1323,7 @@ class GraveyardBot(commands.Bot):
         redis_url = os.getenv("REDIS_URL")
         if redis_url:
             try:
-                self.redis = redis.from_url(redis_url, decode_responses=True)
+                self.redis         = redis.from_url(redis_url, decode_responses=True)
                 await self.redis.ping()
                 self.redis_available = True
                 self.loop.create_task(self.listen_to_web_ui())
@@ -1431,7 +1358,7 @@ class GraveyardBot(commands.Bot):
             return
 
         if message.content.startswith(prefix):
-            cmd_name = message.content[len(prefix):].split()[0].lower()
+            cmd_name   = message.content[len(prefix):].split()[0].lower()
             custom_cmd = await self.custom_cmds.find_one({"_id": cmd_name})
             if custom_cmd:
                 await message.channel.send(custom_cmd["response"])
@@ -1447,20 +1374,20 @@ class GraveyardBot(commands.Bot):
     async def load_system_config(self):
         config_doc = await self.db["config"].find_one({"_id": "system_config_file"})
         if config_doc:
-            self.active_prefix = config_doc.get("command_prefix", "!")
-            self.maintenance_mode = config_doc.get("maintenance_mode", False)
+            self.active_prefix      = config_doc.get("command_prefix", "!")
+            self.maintenance_mode   = config_doc.get("maintenance_mode", False)
             self.feature_auto_pings = config_doc.get("feature_auto_pings", False)
-            self.ignored_channels = config_doc.get("ignored_channels", [])
-            self.war_channel_id = int(config_doc.get("war_channel_id") or 0)
+            self.ignored_channels   = config_doc.get("ignored_channels", [])
+            self.war_channel_id     = int(config_doc.get("war_channel_id") or 0)
         else:
-            self.active_prefix = "!"
-            self.maintenance_mode = False
+            self.active_prefix      = "!"
+            self.maintenance_mode   = False
             self.feature_auto_pings = False
-            self.ignored_channels = []
-            self.war_channel_id = 0
+            self.ignored_channels   = []
+            self.war_channel_id     = 0
 
     async def listen_to_web_ui(self):
-        backoff = 5
+        backoff     = 5
         max_backoff = 60
 
         while not self.is_closed():
@@ -1510,7 +1437,7 @@ class GraveyardBot(commands.Bot):
             if not channel:
                 return
             player_name = payload.get("player_name")
-            decks_left = payload.get("decks_left")
+            decks_left  = payload.get("decks_left")
             matched_user = await self.db_users.find_one({"clan_name_cache": player_name})
             mention = f"<@{matched_user['_id']}>" if matched_user else f"**{player_name}**"
             embed = discord.Embed(
@@ -1530,45 +1457,46 @@ class GraveyardBot(commands.Bot):
             if not channel:
                 return
 
-            # A. Process Brand New Recruits
-            new_joins = payload.get("new_joins", [])
-            for name in new_joins:
+            # A. New recruits
+            for entry in payload.get("new_joins", []):
+                name = entry.get("name", "Unknown")
                 embed = discord.Embed(
                     title="✨ Welcome New Recruit!",
                     description=f"**{name}** has just joined **Graveyard Squad** for the very first time! Raise your shields! 🛡️",
                     color=0x3498DB,
-                    timestamp=discord.utils.utcnow()
+                    timestamp=discord.utils.utcnow(),
                 )
                 await channel.send(embed=embed)
 
-            # B. Process Standard Returning Veterans
-            standard_returns = payload.get("standard_returns", [])
-            for name in standard_returns:
+            # B. Standard returns
+            for entry in payload.get("standard_returns", []):
+                name = entry.get("name", "Unknown")
                 embed = discord.Embed(
                     title="💀 Welcome Back!",
                     description=f"**{name}** has returned home to **Graveyard Squad**! Good to see you back in the trenches. ⚔️",
                     color=0x2ECC71,
-                    timestamp=discord.utils.utcnow()
+                    timestamp=discord.utils.utcnow(),
                 )
                 await channel.send(embed=embed)
 
-            # C. Process Probationary Returning Kicked Players
-            kicked_returns = payload.get("kicked_returns", [])
-            for name in kicked_returns:
+            # C. Probationary kicked returns — look up by tag, not name
+            for entry in payload.get("kicked_returns", []):
+                tag  = entry.get("tag", "")
+                name = entry.get("name", "Unknown")
                 embed = discord.Embed(
                     title="⚠️ Probationary Return Status",
                     description=f"**{name}** has rejoined the clan after previously being **kicked**. Leadership attention requested. 👁️",
                     color=0xE67E22,
-                    timestamp=discord.utils.utcnow()
+                    timestamp=discord.utils.utcnow(),
                 )
                 embed.set_footer(text="Historical Status: Prior Kicked State Reset Clean")
                 await channel.send(embed=embed)
-                
-                matched_user = await self.db["player_profiles"].find_one({"name": name})
-                if matched_user:
+
+                # Reset departure status using tag (reliable), not name (not unique)
+                if tag:
                     await self.db["player_profiles"].update_one(
-                        {"_id": matched_user["_id"]},
-                        {"$set": {"last_departure_status": "none"}}
+                        {"_id": tag},
+                        {"$set": {"last_departure_status": "none"}},
                     )
 
         else:
@@ -1583,7 +1511,7 @@ class GraveyardBot(commands.Bot):
 
 
 # ---------------------------------------------------------------------------
-# ENTRYPOINT RUNNER ENGINE
+# 19. ENTRYPOINT
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     app.config["RAW_CSV_TEMPLATE_FALLBACK"] = "Native field selector extraction logic active."
