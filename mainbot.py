@@ -153,7 +153,7 @@ def fetch_cr_api(endpoint: str, retries: int = 3) -> dict | None:
     """Synchronous CR API fetcher with exponential back-off for rate limits."""
     url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
     headers = {
-        "Authorization": f"Bearer {os.getenv('CR_TOKEN')}",
+        "Authorization": f"Bearer {os.getenv('CR_TOKEN', '').strip()}",
         "Accept": "application/json",
     }
 
@@ -1631,6 +1631,48 @@ def _process_roster_changes(current_member_tags: list, profile_map: dict, raw_me
 # ---------------------------------------------------------------------------
 # SECTION 4 — Replace /admin route + add /admin/diagnostics, /admin/flush-cache
 # ---------------------------------------------------------------------------
+ # ---------------------------------------------------------------------------
+# PUBLIC FRONTEND ROUTES
+# ---------------------------------------------------------------------------
+@app.route("/")
+def index():
+    # 1. Fetch Clan Roster
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    if not clan_data:
+        return "Could not load clan data from API.", 500
+        
+    raw_members = clan_data.get("memberList", [])
+    member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
+    
+    # 2. Grab Database Profiles for Streaks/Stats
+    db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+    profiles_map = {p["_id"]: p for p in db_profiles}
+    
+    # 3. Fetch War Data
+    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    war_participants = _build_war_participants(war_data)
+    
+    # 4. Enrich & Sort
+    players = _enrich_members(raw_members, profiles_map, war_participants)
+    
+    # 5. Calculate Hall of Fame
+    top_pusher = max(players, key=lambda x: x.get("trophies", 0)) if players else None
+    top_streak = max(players, key=lambda x: x.get("current_streak", 0)) if players else None
+    top_war = max(players, key=lambda x: x.get("warDayWins", 0)) if players else None
+
+    return render_sandboxed(
+        get_template("roster"),
+        players=players,
+        top_pusher=top_pusher,
+        top_streak=top_streak,
+        top_war=top_war
+    )
+
+@app.route("/favicon.ico")
+def favicon():
+    # Returns an empty 204 No Content response to stop the 404 console errors
+    return "", 204
+ 
  
 # ── /admin ────────────────────────────────────────────────────────────────
 @app.route("/admin")
@@ -1692,7 +1734,14 @@ def admin_diagnostics():
     try:
         endpoint = f"https://proxy.royaleapi.dev/v1/clans/%23{CLAN_TAG}"
         t0 = _time.monotonic()
-        resp = cr_api_session.get(endpoint, timeout=5)
+        
+        # FIX: Add the missing authentication headers to the health check
+        auth_headers = {
+            "Authorization": f"Bearer {os.getenv('CR_TOKEN', '').strip()}",
+            "Accept": "application/json"
+        }
+        
+        resp = cr_api_session.get(endpoint, headers=auth_headers, timeout=5)
         latency_ms = round((_time.monotonic() - t0) * 1000, 1)
         if resp.status_code == 200:
             api_status = "ok"
@@ -2376,7 +2425,7 @@ class GraveyardBot(commands.Bot):
 
     def _cr_headers(self) -> dict:
         return {
-            "Authorization": f"Bearer {os.getenv('CR_TOKEN')}",
+            "Authorization": f"Bearer {os.getenv('CR_TOKEN', '').strip()}",
             "Accept": "application/json",
         }
 
