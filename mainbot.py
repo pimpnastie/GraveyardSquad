@@ -244,6 +244,11 @@ def invalidate_template_cache() -> None:
 def render_sandboxed(template_str: str, **context) -> str:
     """Safely renders HTML content, blocking remote server code injection vectors."""
     template = sandbox_env.from_string(template_str)
+    
+    # 🔴 FIX: Inject Flask's session object into the sandbox context 
+    # so the HTML can check login and admin states without crashing.
+    context["session"] = session
+    
     return template.render(**context)
 
 
