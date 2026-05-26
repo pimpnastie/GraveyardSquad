@@ -272,6 +272,37 @@ def index():
 @app.route("/favicon.ico")
 def favicon():
     return "", 204
+
+################################Roster Pages
+# ── /player/<tag> ────────────────────────────────────────────────────────
+@app.route("/player/<tag>")
+def player_profile(tag):
+    clean_t = clean_tag(tag)
+    
+    # 1. Fetch live data from the Clash Royale API
+    player_data = fetch_cr_api(f"players/%23{clean_t}")
+    
+    if not player_data:
+        # If the API fails or the tag is invalid, return a friendly error
+        return render_sandboxed(
+            get_template("player"), 
+            player=None, 
+            error=f"Could not find player with tag #{clean_t}"
+        ), 404
+
+    # 2. Grab Database Profile to calculate the Win Streak
+    db_profile = db_sync["player_profiles"].find_one({"_id": clean_t})
+    if db_profile and "battles" in db_profile:
+        player_data["current_streak"] = calculate_streak(db_profile.get("battles", []))
+    else:
+        player_data["current_streak"] = 0
+
+    # 3. Render your custom 'player' UI Template
+    return render_sandboxed(
+        get_template("player"),
+        player=player_data,
+        clan_tag=CLAN_TAG
+    )
  
 # ── /admin ────────────────────────────────────────────────────────────────
 @app.route("/admin")
