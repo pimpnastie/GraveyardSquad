@@ -81,15 +81,13 @@ class ClashRoyale(commands.Cog):
         self.users = bot.db_users
         self.guilds = self.db["guilds"]
         self.mongo_cache = self.db["api_cache"]
-        
-        # Restored Variables
+
         self.api_base = "https://proxy.royaleapi.dev/v1"
         self.role_id = int(os.getenv("BADGE_ROLE_ID", 1464091054960803893))
         self.clan_tag = "9LVY89UP"
-        self.max_card_level = 16
         self.all_cards = []
         self.active_warmups = set()
-        
+
         self.reminder_loop.start()
         self.daily_snapshot_loop.start()
 
@@ -191,16 +189,47 @@ class ClashRoyale(commands.Cog):
         return data
 
     async def _fetch_members_concurrent(self, member_list: list) -> list:
+        if not member_list:
+            log.warning("_fetch_members_concurrent called with empty member list.")
+            return []
         sem = asyncio.Semaphore(CONCURRENT_REQUESTS)
         async def fetch_one(member):
             async with sem:
                 return await self._get_player_data(member["tag"])
         results = await asyncio.gather(*[fetch_one(m) for m in member_list])
-        return [r for r in results if r is not None]
+        fetched = [r for r in results if r is not None]
+        failed = len(results) - len(fetched)
+        if failed:
+            log.warning(f"_fetch_members_concurrent: {failed}/{len(results)} member(s) failed to fetch.")
+        return fetched
 
     def _is_maxed(self, card: dict) -> bool:
-    # This is more robust than a hardcoded 16
-    return card.get("level", 1) >= card.get("maxLevel", 16)
+        """
+        Returns True if a card is at its max level.
+        Uses the API-provided maxLevel field so this stays correct
+        regardless of rarity or future level cap increases.
+        Falls back to >= comparison in case maxLevel is missing.
+        """
+        level = card.get("level")
+        max_level = card.get("maxLevel")
+        if level is None:
+            return False
+        if max_level is not None:
+            return level >= max_level
+        # Fallback: derive max from rarity if the API omits maxLevel
+        rarity = card.get("rarity", "").lower()
+        rarity_max = {
+            "common": 14,
+            "rare": 12,
+            "epic": 10,
+            "legendary": 9,
+            "champion": 9,
+        }
+        fallback = rarity_max.get(rarity)
+        if fallback is None:
+            log.warning(f"_is_maxed: unknown rarity '{rarity}' for card '{card.get('name')}', skipping.")
+            return False
+        return level >= fallback
 
     async def _cache_cards(self):
         cache_key = "cards:all"
@@ -217,7 +246,7 @@ class ClashRoyale(commands.Cog):
     async def run_harvest_logic(self):
         mainbot._harvest_meta["status"] = "running"
         mainbot._harvest_meta["last_run"] = datetime.now().isoformat()
-        
+
         clan_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}")
         war_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
         if not clan_data: return
@@ -239,7 +268,7 @@ class ClashRoyale(commands.Cog):
             return tag, member, profile, blog
 
         results = await asyncio.gather(*(harvest_member(m) for m in members))
-        
+
         for tag, m, profile, blog in results:
             flat_data = {"date": snapshot_date, "name": m.get("name", ""), "tag": tag, "trophies": m.get("trophies", 0)}
             if tag in war_participants:
@@ -247,7 +276,7 @@ class ClashRoyale(commands.Cog):
             snapshot_ops.append(UpdateOne({"tag": tag, "date": snapshot_date}, {"$set": flat_data}, upsert=True))
 
             if profile: profile_ops.append(UpdateOne({"_id": tag}, {"$set": profile}, upsert=True))
-            
+
             if blog and isinstance(blog, list):
                 for battle in blog:
                     if not battle.get("battleTime"): continue
@@ -535,6 +564,15 @@ class ClashRoyale(commands.Cog):
 
         members = clan_data.get("memberList", [])
         profiles = await self._fetch_members_concurrent(members)
+        valid_profiles = [p for p in profiles if p and "cards" in p]
+
+        # Warn if some members couldn't be fetched
+        failed = len(members) - len(valid_profiles)
+        if failed:
+            await ctx.send(f"⚠️ {failed} member profile(s) could not be fetched and were excluded from results.")
+
+        if not valid_profiles:
+            return await ctx.send("❌ No member profiles could be loaded.")
 
         if card_name:
             if not self.all_cards:
@@ -544,30 +582,26 @@ class ClashRoyale(commands.Cog):
                 return await ctx.send(f"❓ Card match low for '{card_name}'.")
             target_card = match
         else:
+            # Find the most commonly maxed card across all profiles
             counts = Counter(
                 card["name"]
-                for p in profiles
-                for card in p.get("cards", []):
-        # ADD THIS LOG LINE
-        if "name" in card and card.get("level", 0) >= 14: # Lower threshold to see if anything shows
-            log.info(f"DEBUG: {card['name']} found at level {card.get('level')}")
-
-        if self._is_maxed(card):
-            card_to_members.setdefault(card["name"], []).append(p.get("name", "Unknown"))
+                for p in valid_profiles
+                for card in p.get("cards", [])
+                if self._is_maxed(card)
             )
             if not counts:
-                return await ctx.send("❌ No maxed cards tracked inside database logs.")
+                return await ctx.send("❌ No maxed cards found across any profiles.")
             target_card = counts.most_common(1)[0][0]
 
         name_by_tag = {m["tag"].replace("#", "").upper(): m["name"] for m in members}
         hits = [
             f"• **{name_by_tag.get(p.get('tag', '').replace('#', '').upper(), p.get('name'))}**"
-            for p in profiles
+            for p in valid_profiles
             for card in p.get("cards", [])
             if card["name"] == target_card and self._is_maxed(card)
         ]
 
-        header = f"📊 **Owners of {target_card} (Lvl {self.max_card_level}+):**"
+        header = f"📊 **Owners of {target_card} (maxed):**"
         response = f"{header}\n" + "\n".join(hits) if hits else f"❌ Nobody has **{target_card}** maxed."
         if len(response) > 1900:
             response = response[:1900] + "\n… and more."
@@ -582,32 +616,47 @@ class ClashRoyale(commands.Cog):
         if not clan_data:
             return await msg.edit(content="❌ Could not fetch clan data.")
 
-        profiles = await self._fetch_members_concurrent(clan_data.get("memberList", []))
-        # Filter out any failed API responses
+        member_list = clan_data.get("memberList", [])
+        if not member_list:
+            return await msg.edit(content="❌ Clan has no members.")
+
+        profiles = await self._fetch_members_concurrent(member_list)
         valid_profiles = [p for p in profiles if p and "cards" in p]
-        
+
         if not valid_profiles:
             return await msg.edit(content="❌ Fetched profiles, but no card data was found. API might be returning partial data.")
 
-        card_to_members = {}
+        # Warn in the channel if some members were silently dropped
+        failed = len(member_list) - len(valid_profiles)
+        if failed:
+            await ctx.send(f"⚠️ {failed} member profile(s) could not be fetched and are excluded from this report.")
+
+        # Log a sample card so we can verify the API shape looks right
+        sample_card = valid_profiles[0].get("cards", [{}])[0]
+        log.info(f"[cardstats] Sample card from API: {sample_card}")
+
+        card_to_members: dict[str, list[str]] = {}
         for p in valid_profiles:
             for card in p.get("cards", []):
                 if self._is_maxed(card):
                     card_to_members.setdefault(card["name"], []).append(p.get("name", "Unknown"))
+
+        log.info(f"[cardstats] {len(card_to_members)} unique maxed cards found across {len(valid_profiles)} profiles.")
 
         if not card_to_members:
             return await msg.edit(content="❌ No maxed cards found in any profiles.")
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Card Name", "Members"])
+        # Separate Count into its own column for easier programmatic use
+        writer.writerow(["Card Name", "Count", "Members"])
         for card_name, card_members in sorted(card_to_members.items(), key=lambda x: len(x[1]), reverse=True):
-            writer.writerow([f"{card_name} ({len(card_members)})", ", ".join(sorted(card_members))])
+            writer.writerow([card_name, len(card_members), ", ".join(sorted(card_members))])
         output.seek(0)
 
         await msg.delete()
         await ctx.send(
-            content="✅ Card stats successfully compiled!",
+            content=f"✅ Card stats compiled! ({len(card_to_members)} maxed cards found)",
             file=discord.File(fp=output, filename="Card_Report.csv"),
         )
 
@@ -736,6 +785,7 @@ class ClashRoyale(commands.Cog):
             upsert=True,
         )
         await ctx.send(f"✅ Reminders successfully targeted on {channel.mention}.")
+
 
 async def setup(bot):
     await bot.add_cog(ClashRoyale(bot))
