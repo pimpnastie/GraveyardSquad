@@ -243,17 +243,17 @@ class ClashRoyale(commands.Cog):
             await self._cache_set(cache_key, self.all_cards, TTL_CARDS)
 
     async def run_harvest_logic(self):
-    harvest_start = time.monotonic()
-    mainbot._harvest_meta["status"] = "running"
-    mainbot._harvest_meta["last_run"] = datetime.now().isoformat()
+        harvest_start = time.monotonic()
+        mainbot._harvest_meta["status"] = "running"
+        mainbot._harvest_meta["last_run"] = datetime.now().isoformat()
 
-    # 1. Fetch clan and war data
-    clan_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}")
-    war_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
-    
-    if not clan_data:
-        mainbot._harvest_meta["status"] = "failed: clan API returned nothing"
-        return
+        # 1. Fetch clan and war data
+        clan_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}")
+        war_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
+        
+        if not clan_data:
+            mainbot._harvest_meta["status"] = "failed: clan API returned nothing"
+            return
 
     snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     members = clan_data.get("memberList", [])
