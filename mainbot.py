@@ -108,6 +108,7 @@ def _enrich_members(raw_members, profiles, war_parts):
         m['name'] = re.sub(r"<c\d?>|</c>", "", m.get("name", "Unknown"), flags=re.IGNORECASE)
         p = profiles.get(tag, {})
         m['current_streak'] = calculate_streak(p.get('battles', []))
+        m['warDayWins'] = p.get('warDayWins', 0) # 👈 ADD THIS LINE
         m['fame'] = war_parts.get(tag, {}).get('fame', 0)
         m['clean_tag'] = tag
         players.append(m)
@@ -224,31 +225,57 @@ def render_sandboxed(template_str: str, **context) -> str:
 @app.route("/")
 def index():
     try:
-        # 1. Fetch Clan Roster
+        # 1. Try to Fetch Live Clan Roster
         clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+        is_fallback = False
+        error_msg = None
+        raw_members = []
         
-        # Graceful UI Fallback if the API returns None instead of throwing a 500 error
-        if not clan_data:
-            return render_sandboxed(get_template("roster"), players=[], error="Clash Royale API connection failed. Data currently unavailable.")
+        # Check if live data is valid
+        if clan_data and "memberList" in clan_data:
+            raw_members = clan_data["memberList"]
+        else:
+            # 🛑 FALLBACK LOGIC: Live API failed, pull from the latest DB snapshot
+            log.warning("Live CR API unreachable. Falling back to latest DB snapshot.")
+            is_fallback = True
+            error_msg = "Live API unreachable. Displaying cached data from the latest snapshot."
             
-        raw_members = clan_data.get("memberList", [])
+            # Find the most recent date we have a snapshot for
+            latest_snap = db_sync["historical_snapshots"].find_one(sort=[("date", -1)])
+            
+            if not latest_snap:
+                # If we have NO live data and NO backups, we have to bail out
+                return render_sandboxed(get_template("roster"), players=[], error="Clash Royale API connection failed and no database backups exist yet.")
+            
+            # Reconstruct the member list from the snapshot documents
+            backup_docs = list(db_sync["historical_snapshots"].find({"date": latest_snap["date"]}))
+            for doc in backup_docs:
+                raw_members.append({
+                    "tag": doc.get("tag"),
+                    "name": doc.get("name", "Unknown"),
+                    "trophies": doc.get("trophies", 0),
+                    # Snapshots might not store role, so we default to Member to avoid UI crashes
+                    "role": doc.get("role", "member") 
+                })
+        
         member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
         
         # 2. Grab Database Profiles for Streaks/Stats
         db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
         profiles_map = {p["_id"]: p for p in db_profiles}
         
-        # 3. Fetch War Data
-        war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+        # 3. Fetch War Data (Only if we aren't already in fallback mode)
         war_participants = {}
-        if war_data and isinstance(war_data, dict):
-            if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
-                war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
-            else:
-                for clan in war_data.get("clans", []):
-                    if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
-                        war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
-                        break
+        if not is_fallback:
+            war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+            if war_data and isinstance(war_data, dict):
+                if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
+                    war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
+                else:
+                    for clan in war_data.get("clans", []):
+                        if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
+                            war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
+                            break
         
         # 4. Enrich & Sort
         players = _enrich_members(raw_members, profiles_map, war_participants)
@@ -263,17 +290,53 @@ def index():
             players=players,
             top_pusher=top_pusher,
             top_streak=top_streak,
-            top_war=top_war
+            top_war=top_war,
+            error=error_msg # Will display the warning banner if fallback was triggered
         )
     except Exception as e:
         log.exception("Index route crash prevented gracefully.")
-        return render_sandboxed(get_template("roster"), players=[], error=str(e))
+        return render_sandboxed(get_template("roster"), players=[], error=f"Internal Server Error: {str(e)}")
 
 @app.route("/favicon.ico")
 def favicon():
     return "", 204
-
-################################Roster Pages
+    
+# ── /admin/api/battles ─────────────────────────────────────────────────────
+@app.route("/admin/api/battles")
+def api_get_battles():
+    if not is_admin():
+        return jsonify({"error": "unauthorized"}), 403
+    
+    try:
+        # Fetch the 100 most recent battles sorted by time descending
+        battles = list(db_sync["battle_history"].find().sort("battle_time", -1).limit(100))
+        
+        # Grab all profiles so we can match tags to player names
+        profiles = {p["_id"]: p.get("name", "Unknown") for p in db_sync["player_profiles"].find()}
+        
+        # Format for JSON serialization
+        for b in battles:
+            b["_id"] = str(b["_id"])
+            tag = b.get("player_tag", "")
+            b["player_name"] = profiles.get(tag, "Unknown")
+            
+        return jsonify(battles)
+    except Exception as e:
+        log.error(f"Error fetching battles: {e}")
+        return jsonify({"error": "Internal database error."}), 500
+#################################################WAR MONITOR
+# ── /admin/api/war ─────────────────────────────────────────────────────────
+@app.route("/admin/api/war")
+def api_get_war():
+    if not is_admin():
+        return jsonify({"error": "unauthorized"}), 403
+        
+    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    if not war_data:
+        return jsonify({"error": "Failed to fetch war data from CR API."}), 500
+        
+    return jsonify(war_data)
+###############################ROSTERLOGIC
 # ── /player/<tag> ────────────────────────────────────────────────────────
 @app.route("/player/<tag>")
 def player_profile(tag):
@@ -300,9 +363,13 @@ def player_profile(tag):
     # 3. Render your custom 'player' UI Template
     return render_sandboxed(
         get_template("player"),
-        player=player_data,
+        data=player_data,          # FIXED: 'player' -> 'data'
+        max_lvl=MAX_CARD_LEVEL,    # ADDED: Needed for max-level UI logic
         clan_tag=CLAN_TAG
     )
+
+
+
  
 # ── /admin ────────────────────────────────────────────────────────────────
 @app.route("/admin")
@@ -484,12 +551,24 @@ def admin_diagnostics():
         result["cache"] = {"error": str(e)}
  
     # Compile harvest metadata + history
+    # Compile harvest metadata + history
     harv = _harvest_meta.copy()
     try:
         history_dates = db_sync["historical_snapshots"].distinct("date")
-        harv["history_dates"] = sorted(history_dates, reverse=True)
-    except:
+        sorted_dates = sorted(history_dates, reverse=True)
+        harv["history_dates"] = sorted_dates
+        
+        # 🛑 RESTART FALLBACK: If RAM is wiped, pull the latest data from the database
+        if not harv.get("last_run") and sorted_dates:
+            latest_date = sorted_dates[0]
+            harv["last_run"] = f"{latest_date} (DB Restored)"
+            harv["status"] = "loaded_from_db"
+            harv["snapshots_saved"] = db_sync["historical_snapshots"].count_documents({"date": latest_date})
+            harv["battles_saved"] = "N/A (Memory reset)"
+    except Exception as e:
         harv["history_dates"] = []
+        log.error(f"Error compiling harvest history: {e}")
+        
     result["harvest"] = harv
  
     cog = bot_inst.cogs.get("ClashRoyale") if bot_inst else None

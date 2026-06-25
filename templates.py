@@ -44,10 +44,11 @@ DEFAULT_ROSTER_HTML = r"""
 <header class="hero">
   <h1>🛡️ <span>Graveyard</span> Clan Roster</h1>
   <div class="hero-btns">
-    {% if session.get('is_admin_user') %}
-      <a href="/admin" class="btn btn-green">💀 Go to HQ Control Panel</a>
+    {% if session.get('discord_id') %}
+      <a href="/logout" class="btn btn-discord">Logout (@{{ session.discord_name }})</a>
+    {% else %}
+      <a href="/login" class="btn btn-discord">Log in with Discord</a>
     {% endif %}
-    <a href="/login" class="btn btn-discord">Log in with Discord</a>
   </div>
   <div class="hero-sub">{{ players | length }} members &middot; Click a name to view their profile</div>
 </header>
@@ -197,14 +198,18 @@ DEFAULT_PLAYER_HTML = """
         <div class="stat-box"><div class="label">Losses</div><div class="value red">{{ data.losses }}</div></div>
         <div class="stat-box"><div class="label">3-Crown Wins</div><div class="value green">👑 {{ data.threeCrownWins }}</div></div>
         <div class="stat-box"><div class="label">Total Battles</div><div class="value white">{{ data.battleCount }}</div></div>
-        <div class="stat-box"><div class="label">Win Rate</div><div class="value {% if data.battleCount > 0 and (data.wins / data.battleCount * 100) >= 50 %}green{% else %}red{% endif %}">
-            {% if data.battleCount > 0 %}{{ "%.1f" | format(data.wins / data.battleCount * 100) }}%{% else %}—{% endif %}
-        </div></div>
+        <div class="stat-box">
+            <div class="label">Win Rate</div>
+            {% set total = data.wins + data.losses %}
+            <div class="value {% if total > 0 and (data.wins / total * 100) >= 50 %}green{% else %}red{% endif %}">
+                {% if total > 0 %}{{ "%.1f" | format(data.wins / total * 100) }}%{% else %}—{% endif %}
+            </div>
+        </div>
     </div>
 
     <h2>🎁 Social & Misc</h2>
     <div class="grid">
-        <div class="stat-box"><div class="label">Total Donations</div><div class="value white">{{ data.totalDonations }}</div></div>
+        <div class="stat-box"><div class="label">Donations (Season)</div><div class="value white">{{ data.donations }}</div></div>
         <div class="stat-box"><div class="label">War Day Wins</div><div class="value white">{{ data.warDayWins }}</div></div>
     </div>
 
@@ -353,6 +358,7 @@ DEFAULT_ADMIN_HTML = r"""
     <div class="nav-section">Navigation</div>
     <button class="nav-btn active" onclick="showTab('diag', this)"><span class="nav-icon">🔍</span>Diagnostics</button>
     <button class="nav-btn" onclick="showTab('war', this)"><span class="nav-icon">⚔️</span>War Monitor</button>
+    <button class="nav-btn" onclick="showTab('battles', this)"><span class="nav-icon">📜</span>Battle Logs</button>
     <button class="nav-btn" onclick="showTab('harvest', this)"><span class="nav-icon">📡</span>Harvest Log</button>
     <button class="nav-btn" onclick="showTab('csv', this)"><span class="nav-icon">📄</span>CSV Export</button>
     <button class="nav-btn" onclick="showTab('editor', this)"><span class="nav-icon">🎨</span>UI Editor</button>
@@ -436,17 +442,21 @@ DEFAULT_ADMIN_HTML = r"""
       <div class="diag-card" style="padding: 24px; background: var(--panel);">
         <form id="csv-export-form" onsubmit="handleCustomCSVExport(event)">
             <label style="color: var(--dim); font-family: var(--font-mono); font-size: 12px; text-transform: uppercase;">1. Select Base Database Fields</label><br>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0 24px; color: #fff; font-family: var(--font-mono); font-size: 13px;">
-                <label><input type="checkbox" name="fields" value="name" checked> Name</label>
-                <label><input type="checkbox" name="fields" value="tag" checked> Tag</label>
-                <label><input type="checkbox" name="fields" value="role" checked> Role</label>
-                <label><input type="checkbox" name="fields" value="trophies" checked> Trophies</label>
-                <label><input type="checkbox" name="fields" value="fame" checked> War Fame</label>
-                <label><input type="checkbox" name="fields" value="totalWins"> Total Wins</label>
-                <label><input type="checkbox" name="fields" value="totalLosses"> Total Losses</label>
-                <label><input type="checkbox" name="fields" value="current_streak"> Win Streak</label>
-                <label><input type="checkbox" name="fields" value="donations"> Donations</label>
-            </div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0 24px; color: #fff; font-family: var(--font-mono); font-size: 13px;">
+    <label><input type="checkbox" name="fields" value="name" checked> Name</label>
+    <label><input type="checkbox" name="fields" value="tag" checked> Tag</label>
+    <label><input type="checkbox" name="fields" value="role" checked> Role</label>
+    <label><input type="checkbox" name="fields" value="trophies" checked> Trophies</label>
+    <label><input type="checkbox" name="fields" value="fame" checked> War Fame</label>
+    <label><input type="checkbox" name="fields" value="totalWins"> Total Wins</label>
+    <label><input type="checkbox" name="fields" value="totalLosses"> Total Losses</label>
+    <label><input type="checkbox" name="fields" value="current_streak"> Win Streak</label>
+    <label><input type="checkbox" name="fields" value="donations"> Donations</label>
+    
+    <label><input type="checkbox" name="fields" value="warDayWins"> War Day Wins</label>
+    <label><input type="checkbox" name="fields" value="decksUsedToday" checked> Decks Used</label>
+    <label><input type="checkbox" name="fields" value="decksRemaining" checked> Decks Remaining</label>
+</div>
             
             <label style="color: var(--dim); font-family: var(--font-mono); font-size: 12px; text-transform: uppercase;">2. Auto-Computed Logic Formulas (JS Evaluated)</label><br>
             <div style="display: grid; grid-template-columns: 1fr; gap: 10px; margin: 12px 0 24px; color: #fff; font-family: var(--font-mono); font-size: 13px;">
@@ -510,6 +520,33 @@ DEFAULT_ADMIN_HTML = r"""
         </div>
       </div>
     </div>
+    <div class="tab-pane" id="tab-battles">
+      <div class="page-header">
+        <div class="page-title">Battle Logs</div>
+        <div class="page-sub">Raw Combat Feed from MongoDB</div>
+      </div>
+      <div class="toolbar">
+        <button class="btn-refresh" onclick="loadBattles()">↻ Fetch Latest Logs</button>
+      </div>
+      <div class="diag-card" style="padding: 0; overflow-x: auto;">
+        <table class="war-table" id="battles-table">
+          <thead>
+            <tr>
+              <th>Time (UTC)</th>
+              <th>Player</th>
+              <th>Tag</th>
+              <th>Type</th>
+              <th>Result</th>
+              <th>Score</th>
+              <th>Opponent</th>
+            </tr>
+          </thead>
+          <tbody id="battles-body">
+            <tr><td colspan="7" style="text-align: center; padding: 24px; color: var(--dim);">Click fetch to load the latest 100 database records.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
  
   </main>
 </div>
@@ -524,6 +561,34 @@ DEFAULT_ADMIN_HTML = r"""
 
 <script>
 // ─── TABS & UI ───────────────────────────────────────────────────────────
+async function loadBattles() {
+    const tbody = document.getElementById('battles-body');
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading...</td></tr>';
+    try {
+        const res = await fetch('/admin/api/battles');
+        const battles = await res.json();
+        if (!battles.length) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:24px; color:var(--dim);">No battles found in database.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = battles.map(b => {
+            const resultCls = b.result === 'win' ? 'ok' : b.result === 'loss' ? 'err' : '';
+            return `<tr>
+                <td>${escHtml(b.battle_time || '—')}</td>
+                <td>${escHtml(b.player_name || '—')}</td>
+                <td>${escHtml(b.player_tag || '—')}</td>
+                <td>${escHtml(b.type || '—')}</td>
+                <td class="diag-val ${resultCls}">${escHtml(b.result || '—')}</td>
+                <td>${b.team_crowns ?? '—'} – ${b.opp_crowns ?? '—'}</td>
+                <td>${escHtml(b.opp_name || '—')}</td>
+            </tr>`;
+        }).join('');
+        toast(`Loaded ${battles.length} battle records.`, 'ok');
+    } catch(e) {
+        tbody.innerHTML = `<tr><td colspan="7" style="color:var(--err); padding:24px;">${escHtml(e.message)}</td></tr>`;
+        toast('Failed to load battles: ' + e.message, 'err');
+    }
+}
 function showTab(name, btn) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
@@ -594,7 +659,38 @@ async function triggerManualHarvest() {
         appendLog('Manual harvest broadcast sent.', 'warn');
     } catch(e) { toast(e.message, 'err'); }
 }
-
+//------- Harvest View======================================
+// ─── WAR MONITOR ─────────────────────────────────────────────────────────
+async function loadWar() {
+    const content = document.getElementById('war-content');
+    const lastRef = document.getElementById('war-last-refresh');
+    
+    content.innerHTML = '<div style="color:var(--dim);"><span class="spin">↻</span> Fetching live war data...</div>';
+    
+    try {
+        const res = await fetch('/admin/api/war');
+        const data = await res.json();
+        
+        if (data.error) throw new Error(data.error);
+        
+        const state = data.state || 'Unknown';
+        const fame = data.clan ? data.clan.fame : 0;
+        const participants = data.clan && data.clan.participants ? data.clan.participants.length : 0;
+        
+        content.innerHTML = `
+            <div class="stat-row">
+                <div class="stat-card ok"><div class="stat-label">Race State</div><div class="stat-value" style="font-size: 18px;">${state.toUpperCase()}</div><div class="stat-note">Current Phase</div></div>
+                <div class="stat-card ok"><div class="stat-label">Clan Fame</div><div class="stat-value">⭐ ${fame}</div><div class="stat-note">Total Points</div></div>
+                <div class="stat-card ok"><div class="stat-label">Participants</div><div class="stat-value">👥 ${participants}</div><div class="stat-note">Active this week</div></div>
+            </div>
+        `;
+        lastRef.textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
+        toast('War data loaded successfully.', 'ok');
+    } catch(err) {
+        content.innerHTML = `<div style="color:var(--err); font-family:var(--font-mono);">Error: ${err.message}</div>`;
+        toast('Failed to load war data', 'err');
+    }
+}
 // ─── CSV CUSTOM EXPORT ───────────────────────────────────────────────────
 async function handleCustomCSVExport(e) {
     e.preventDefault();
@@ -714,7 +810,18 @@ function renderDiagnostics(d) {
     ['Snapshots Saved', harv.snapshots_saved ?? 'N/A'], ['Battles Saved', harv.battles_saved ?? 'N/A']
   ]);
   
-  const historyList = (harv.history_dates || []).map(date => `<div class="diag-row"><span class="diag-key">Snapshot Completed</span><span class="diag-val">${escHtml(date)}</span></div>`).join('');
+  const historyList = (harv.history_dates || []).map(date => `
+    <div class="diag-row" style="padding: 10px 0;">
+        <span class="diag-key" style="color: #fff;">${escHtml(date)}</span>
+        <span class="diag-val">
+            <button class="btn-refresh" 
+                    style="padding: 6px 12px; font-size: 11px; border-color: var(--accent);" 
+                    onclick="window.open('/admin/api/snapshot/${escHtml(date)}', '_blank')">
+                👀 View Snapshot
+            </button>
+        </span>
+    </div>
+`).join('');
   document.getElementById('harvest-history-body').innerHTML = historyList || 'No historical snapshots found in DB.';
  
   const tasks = d.tasks || {};

@@ -242,54 +242,149 @@ class ClashRoyale(commands.Cog):
             self.all_cards = [c["name"] for c in data.get("items", [])]
             await self._cache_set(cache_key, self.all_cards, TTL_CARDS)
 
-    # --- Harvest Logic ---
     async def run_harvest_logic(self):
-        mainbot._harvest_meta["status"] = "running"
-        mainbot._harvest_meta["last_run"] = datetime.now().isoformat()
+    harvest_start = time.monotonic()
+    mainbot._harvest_meta["status"] = "running"
+    mainbot._harvest_meta["last_run"] = datetime.now().isoformat()
 
-        clan_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}")
-        war_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
-        if not clan_data: return
+    # 1. Fetch clan and war data
+    clan_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}")
+    war_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
+    
+    if not clan_data:
+        mainbot._harvest_meta["status"] = "failed: clan API returned nothing"
+        return
 
-        snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-        members = clan_data.get("memberList", [])
-        war_participants = {p["tag"]: p for p in war_data.get("clan", {}).get("participants", [])} if war_data else {}
+    snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    members = clan_data.get("memberList", [])
+    
+    # 2. War participant lookup — handles both API response shapes
+    war_participants = {}
+    if war_data:
+        if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
+            war_participants = {
+                p["tag"].replace("#", "").upper(): p
+                for p in war_data["clan"]["participants"]
+            }
+        else:
+            for clan in war_data.get("clans", []):
+                if clan and clan.get("tag", "").replace("#", "").upper() == self.clan_tag.upper():
+                    war_participants = {
+                        p["tag"].replace("#", "").upper(): p
+                        for p in clan.get("participants", [])
+                    }
+                    break
 
-        snapshot_ops, profile_ops, battle_ops = [], [], []
-        sem = asyncio.Semaphore(5)
+    snapshot_ops, profile_ops, battle_ops = [], [], []
+    sem = asyncio.Semaphore(5)
 
-        async def harvest_member(member):
-            tag = member["tag"].replace("#", "")
-            async with sem:
-                profile, blog = await asyncio.gather(
-                    self.bot.async_fetch_cr_api(f"players/%23{tag}"),
-                    self.bot.async_fetch_cr_api(f"players/%23{tag}/battlelog"),
+    async def harvest_member(member):
+        tag = member["tag"].replace("#", "").upper()
+        async with sem:
+            profile, blog = await asyncio.gather(
+                self.bot.async_fetch_cr_api(f"players/%23{tag}"),
+                self.bot.async_fetch_cr_api(f"players/%23{tag}/battlelog"),
+            )
+        return tag, member, profile, blog
+
+    results = await asyncio.gather(*(harvest_member(m) for m in members))
+
+    for tag, m, profile, blog in results:
+        # 3. Snapshot document — include war data if available
+        flat_data = {
+            "date": snapshot_date,
+            "name": m.get("name", ""),
+            "tag": tag,
+            "trophies": m.get("trophies", 0),
+            "role": m.get("role", "member"),
+            "donations": m.get("donations", 0),
+            "donationsReceived": m.get("donationsReceived", 0),
+        }
+        if tag in war_participants:
+            wp = war_participants[tag]
+            flat_data.update({
+                "fame": wp.get("fame", 0),
+                "decksUsedToday": wp.get("decksUsedToday", 0),
+                "decksRemaining": wp.get("decksRemaining", 4),
+            })
+        snapshot_ops.append(
+            UpdateOne({"tag": tag, "date": snapshot_date}, {"$set": flat_data}, upsert=True)
+        )
+
+        # 4. Player profile — store the full API response
+        if profile:
+            profile_ops.append(
+                UpdateOne({"_id": tag}, {"$set": profile}, upsert=True)
+            )
+
+        # 5. Battle history — deduplicated by battle ID
+        if blog and isinstance(blog, list):
+            for battle in blog:
+                if not battle.get("battleTime"):
+                    continue
+                battle_id = f"{tag}_{battle['battleTime']}"
+                
+                team = battle.get("team", [{}])
+                opponent = battle.get("opponent", [{}])
+                team_data = team[0] if team else {}
+                opp_data = opponent[0] if opponent else {}
+                
+                crowns_team = team_data.get("crowns", 0)
+                crowns_opp = opp_data.get("crowns", 0)
+                
+                if crowns_team > crowns_opp:
+                    result_str = "win"
+                elif crowns_opp > crowns_team:
+                    result_str = "loss"
+                else:
+                    result_str = "draw"
+
+                battle_doc = {
+                    "player_tag": tag,
+                    "battle_time": battle["battleTime"],
+                    "type": battle.get("type", "unknown"),
+                    "result": result_str,
+                    "team_crowns": crowns_team,
+                    "opp_crowns": crowns_opp,
+                    "opp_name": opp_data.get("name", "Unknown"),
+                    "opp_tag": opp_data.get("tag", ""),
+                }
+                battle_ops.append(
+                    UpdateOne({"_id": battle_id}, {"$set": battle_doc}, upsert=True)
                 )
-            return tag, member, profile, blog
 
-        results = await asyncio.gather(*(harvest_member(m) for m in members))
+    # 6. Bulk write all operations
+    snap_count = prof_count = battle_count = 0
+    if snapshot_ops:
+        await self.db["historical_snapshots"].bulk_write(snapshot_ops, ordered=False)
+        snap_count = len(snapshot_ops)
+    if profile_ops:
+        await self.db["player_profiles"].bulk_write(profile_ops, ordered=False)
+        prof_count = len(profile_ops)
+    if battle_ops:
+        await self.db["battle_history"].bulk_write(battle_ops, ordered=False)
+        battle_count = len(battle_ops)
 
-        for tag, m, profile, blog in results:
-            flat_data = {"date": snapshot_date, "name": m.get("name", ""), "tag": tag, "trophies": m.get("trophies", 0)}
-            if tag in war_participants:
-                flat_data.update({"fame": war_participants[tag].get("fame", 0), "decksUsedToday": war_participants[tag].get("decksUsedToday", 0)})
-            snapshot_ops.append(UpdateOne({"tag": tag, "date": snapshot_date}, {"$set": flat_data}, upsert=True))
-
-            if profile: profile_ops.append(UpdateOne({"_id": tag}, {"$set": profile}, upsert=True))
-
-            if blog and isinstance(blog, list):
-                for battle in blog:
-                    if not battle.get("battleTime"): continue
-                    battle_id = f"{tag}_{battle.get('battleTime')}"
-                    team = battle.get("team", [{}])[0]
-                    battle_doc = {"player_tag": tag, "battle_time": battle.get("battleTime"), "team_crowns": team.get("crowns", 0)}
-                    battle_ops.append(UpdateOne({"_id": battle_id}, {"$set": battle_doc}, upsert=True))
-
-        if snapshot_ops: await self.db["historical_snapshots"].bulk_write(snapshot_ops)
-        if profile_ops: await self.db["player_profiles"].bulk_write(profile_ops)
-        if battle_ops: await self.db["battle_history"].bulk_write(battle_ops)
-
-        mainbot._harvest_meta.update({"status": "ok", "snapshots_saved": len(snapshot_ops), "profiles_saved": len(profile_ops), "battles_saved": len(battle_ops)})
+    # 7. Update in-memory metadata and persist to DB
+    mainbot._harvest_meta.update({
+        "status": "ok",
+        "last_run": datetime.now().isoformat(),
+        "snapshots_saved": snap_count,
+        "profiles_saved": prof_count,
+        "battles_saved": battle_count,
+        "duration_s": round(time.monotonic() - harvest_start, 1),
+        "member_count": len(members),
+        "war_participants_found": len(war_participants),
+    })
+    await self.db["config"].update_one(
+        {"_id": "harvest_meta"},
+        {"$set": {**mainbot._harvest_meta, "last_run": datetime.now().isoformat()}},
+        upsert=True,
+    )
+    log.info(
+        f"✅ Harvest complete — {snap_count} snapshots, {prof_count} profiles, "
+        f"{battle_count} battles in {mainbot._harvest_meta['duration_s']}s"
+    )
 
     # --- Loops ---
     @tasks.loop(hours=12)
@@ -315,6 +410,13 @@ class ClashRoyale(commands.Cog):
     @daily_snapshot_loop.before_loop
     async def before_daily_snapshot_loop(self):
         await self.bot.wait_until_ready()
+        
+    @daily_snapshot_loop.error
+    async def on_snapshot_error(error):
+        log.error(f"Snapshot loop crashed: {error}")
+        mainbot._harvest_meta["status"] = f"crashed: {error}"
+        await asyncio.sleep(60)
+        self.daily_snapshot_loop.restart()
 
     # --- Commands ---
     @commands.command(aliases=["profile", "analytics"])
