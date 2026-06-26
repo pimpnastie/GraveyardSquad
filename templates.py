@@ -21,275 +21,94 @@ DEFAULT_ROSTER_HTML = r"""
   .main-col { flex: 2; min-width: 320px; }
   .side-col { flex: 1; min-width: 260px; }
   h2 { color: #fff; font-size: 1.1rem; font-weight: 700; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid #1e2530; }
-  
-  .player-card { background: #161b22; border: 1px solid #1e2530; border-radius: 10px; padding: 14px 18px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; transition: border-color 0.2s, transform 0.15s; gap: 12px; flex-wrap: wrap; }
+  .player-card { background: #161b22; border: 1px solid #1e2530; border-radius: 10px; padding: 14px 18px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; text-decoration: none; transition: border-color 0.2s, transform 0.15s; gap: 12px; flex-wrap: wrap; }
   .player-card:hover { border-color: #45a29e; transform: translateY(-1px); }
-  .p-left { display: flex; flex-direction: column; gap: 3px; flex: 1; }
-  .p-name { font-size: 1rem; font-weight: 700; color: #fff; text-decoration: none; }
-  .p-name:hover { text-decoration: underline; color: #45a29e; }
-  
-  /* Role Styling */
-  .role-leader { color: #f1c40f; font-weight: 800; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
-  .role-coleader { color: #e67e22; font-weight: 700; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
-  .role-elder { color: #3498db; font-size: 0.75rem; font-weight: 600; }
-  .role-member { color: #6b7785; font-size: 0.75rem; }
-
-  .p-right { display: flex; align-items: center; gap: 20px; }
-  .p-stats-col { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+  .p-left { display: flex; flex-direction: column; gap: 3px; }
+  .p-name { font-size: 1rem; font-weight: 700; color: #fff; }
+  .p-role { font-size: 0.75rem; color: #6b7785; }
+  .p-right { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
   .p-trophies { font-size: 1rem; font-weight: 700; color: #f1c40f; }
   .p-stats-row { display: flex; gap: 12px; font-size: 0.75rem; color: #6b7785; }
   .p-stats-row span { color: #a0aab5; }
-  
-  .btn-action { background: #252d38; border: 1px solid #303a48; color: #fff; padding: 6px 12px; border-radius: 5px; font-size: 0.75rem; text-decoration: none; font-weight: bold; transition: background 0.2s; white-space: nowrap; }
-  .btn-action:hover { background: #45a29e; border-color: #45a29e; color: #000; }
-
   .hof-card { background: #161b22; border: 1px solid #1e2530; border-left: 3px solid var(--hof-color, #45a29e); border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }
   .hof-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #6b7785; margin-bottom: 4px; font-weight: 700; }
   .hof-name { font-size: 1rem; color: #fff; font-weight: 700; margin-bottom: 2px; }
   .hof-stat { font-size: 0.85rem; color: var(--hof-color, #45a29e); font-weight: 600; }
-  .error-banner { background: #e74c3c; color: white; padding: 10px; text-align: center; font-weight: bold; margin-bottom: 20px; border-radius: 5px; }
+  .error-banner { background: #e74c3c; color: white; padding: 10px; text-align: center; font-weight: bold; margin-bottom: 20px; border-radius: 5px;}
 </style>
 </head>
 <body>
+
 <header class="hero">
   <h1>🛡️ <span>Graveyard</span> Clan Roster</h1>
   <div class="hero-btns">
-      {% if session.get('discord_id') %}
-        {% if session.get('is_admin_user') %}
-          <a href="/admin" class="btn btn-green">💀 HQ Control Panel</a>
-        {% endif %}
-        <a href="/logout" class="btn btn-discord">Logout (@{{ session.discord_name }})</a>
-      {% else %}
-        <a href="/login" class="btn btn-discord">Log in with Discord</a>
+    {% if session.get('discord_id') %}
+      {% if session.get('discord_id') == '751975709643112569' %}
+        <a href="/admin" class="btn btn-green">💀 HQ Control Panel</a>
       {% endif %}
-    </div>
-  <div class="hero-sub">{{ players | length }} members &middot; Click a name for analytics or log for battles</div>
+      <a href="/logout" class="btn btn-discord">Logout (@{{ session.discord_name }})</a>
+    {% else %}
+      <a href="/login" class="btn btn-discord">Log in with Discord</a>
+    {% endif %}
+  </div>
+  <div class="hero-sub">{{ players | length }} members &middot; Click a name to view their profile</div>
 </header>
+
 <div class="container">
   <div class="main-col">
-    {% if error %}<div class="error-banner">⚠️ {{ error }}</div>{% endif %}
+    {% if error %}
+      <div class="error-banner">⚠️ Failed to load live API data: {{ error }}</div>
+    {% endif %}
+    
     {% for p in players %}
-    <div class="player-card">
+    <a href="/player/{{ p.clean_tag }}" class="player-card">
       <div class="p-left">
-        <a href="/player/{{ p.clean_tag }}" class="p-name cr-name">{{ p.name }}</a>
-        <div class="role-{{ p.role | lower }}">{{ p.role | replace('coLeader', 'Co-Leader') | title }}</div>
+        <div class="p-name cr-name">{{ p.name }}</div>
+        <div class="p-role">
+          {% if p.role == 'leader' %}Leader
+          {% elif p.role == 'coLeader' %}CoLeader
+          {% elif p.role == 'elder' %}Elder
+          {% else %}Member{% endif %}
+        </div>
       </div>
       <div class="p-right">
-        <div class="p-stats-col">
-          <div class="p-trophies">🏆 {{ p.trophies }}</div>
-          <div class="p-stats-row">
-            <div title="Fame">⭐ <span>{{ p.fame | default(0) }}</span></div>
-            <div title="Win Streak">🔥 <span>{{ p.current_streak | default(0) }}</span></div>
-            <div title="War Wins">⚔️ <span>{{ p.warDayWins | default(0) }}</span></div>
-          </div>
+        <div class="p-trophies">🏆 {{ p.trophies }}</div>
+        <div class="p-stats-row">
+          <div>⭐ <span>{{ p.fame | default(0) }}</span></div>
+          <div>🔥 <span>{{ p.current_streak | default(0) }}</span></div>
+          <div>⚔️ <span>{{ p.warDayWins | default(0) }}</span></div>
+          <div>🎁 <span>{{ p.donations | default(0) }}</span></div>
         </div>
-        <a href="/battles/{{ p.clean_tag }}" class="btn-action" title="View Battle Log">📜 Log</a>
       </div>
-    </div>
+    </a>
     {% endfor %}
   </div>
+
   <div class="side-col">
     <h2>Hall of Fame</h2>
-    <div class="hof-card" style="--hof-color: #f1c40f;">
+    <div class="hof-card" style="--hof-color: #3498db;">
       <div class="hof-label">Top Pusher</div>
       <div class="hof-name cr-name">{{ top_pusher.name if top_pusher else 'N/A' }}</div>
       <div class="hof-stat">🏆 {{ top_pusher.trophies if top_pusher else 0 }} Trophies</div>
     </div>
-    <div class="hof-card" style="--hof-color: #2ecc71;">
-      <div class="hof-label">Top Donator</div>
-      <div class="hof-name cr-name">{{ top_donator.name if top_donator else 'N/A' }}</div>
-      <div class="hof-stat">🎁 {{ top_donator.donations if top_donator else 0 }} Donations</div>
-    </div>
-    <div class="hof-card" style="--hof-color: #9b59b6;">
-      <div class="hof-label">War Hero</div>
-      <div class="hof-name cr-name">{{ war_hero.name if war_hero else 'N/A' }}</div>
-      <div class="hof-stat">⚔️ {{ war_hero.warDayWins if war_hero else 0 }} War Wins</div>
-    </div>
     <div class="hof-card" style="--hof-color: #e74c3c;">
-      <div class="hof-label">On Fire</div>
+      <div class="hof-label">Highest Win Streak</div>
       <div class="hof-name cr-name">{{ top_streak.name if top_streak else 'N/A' }}</div>
-      <div class="hof-stat">🔥 {{ top_streak.current_streak if top_streak else 0 }} Win Streak</div>
+      <div class="hof-stat">🔥 {{ top_streak.current_streak if top_streak else 0 }} Wins</div>
+    </div>
+    <div class="hof-card" style="--hof-color: #f1c40f;">
+      <div class="hof-label">War Legend</div>
+      <div class="hof-name cr-name">{{ top_war.name if top_war else 'N/A' }}</div>
+      <div class="hof-stat">⚔️ {{ top_war.warDayWins if top_war else 0 }} Lifetime Wins</div>
     </div>
   </div>
 </div>
-</body>
-</html>
-"""
 
-DEFAULT_PUBLIC_BATTLES_HTML = r"""
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Battle Log for #{{ tag }}</title>
-  <style>
-    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; }
-    .nav { margin-bottom: 20px; }
-    .nav a { color: #45a29e; text-decoration: none; font-weight: bold; background: #1a1a1a; padding: 8px 16px; border-radius: 5px; }
-    .nav a:hover { background: #222; }
-    .battle-row { background: #1a1a1a; padding: 20px; margin-bottom: 15px; border-radius: 8px; border-left: 5px solid #444; }
-    .win { border-left-color: #2ecc71; }
-    .loss { border-left-color: #e74c3c; }
-    .battle-header { display: flex; justify-content: space-between; margin-bottom: 15px; align-items: flex-start; }
-    .battle-title { font-size: 1.1rem; }
-    .deck-container { display: flex; gap: 30px; flex-wrap: wrap; }
-    .deck-side { display: flex; flex-direction: column; gap: 8px; }
-    .deck-label { font-size: 0.8rem; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
-    .deck-grid { display: flex; gap: 4px; }
-    .deck-grid img { width: 40px; height: 48px; object-fit: contain; background: #222; border-radius: 4px; border: 1px solid #333; }
-  </style>
-</head>
-<body>
-  <div class="nav"><a href="/">← Back to Roster</a></div>
-  <h1>Battle Log: #{{ tag }}</h1>
-  {% for b in battles %}
-    <div class="battle-row {{ b.result }}">
-      <div class="battle-header">
-        <div class="battle-title">
-          <strong class="{{ b.result }}" style="color: {% if b.result == 'win' %}#2ecc71{% elif b.result == 'loss' %}#e74c3c{% else %}#f1c40f{% endif %}">{{ b.result | upper }}</strong> 
-          vs {{ b.opp_name }} ({{ b.opp_clan | default('No Clan') }})
-        </div>
-        <div>
-          <small style="color: #888;">{{ b.battle_time.replace('T', ' ').substring(0, 16) }}</small><br>
-          <small style="color: #aaa;">Score: {{ b.team_crowns | default(0) }} - {{ b.opp_crowns | default(0) }}</small>
-        </div>
-      </div>
-      <div class="deck-container">
-        <div class="deck-side">
-          <div class="deck-label">Team Deck</div>
-          <div class="deck-grid">
-            {% for card in b.team_cards %}
-                <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
-            {% endfor %}
-          </div>
-        </div>
-        <div class="deck-side">
-          <div class="deck-label">Opponent Deck</div>
-          <div class="deck-grid">
-            {% for card in b.opponent_cards %}
-                <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-    </div>
-  {% else %}
-    <div style="background: #1a1a1a; padding: 20px; border-radius: 8px; text-align: center; color: #888;">No recent battles found.</div>
-  {% endfor %}
-</body>
-</html>
-"""
-
-DEFAULT_PLAYER_HTML = r"""
-<!DOCTYPE html>
-<html>
-<head>
-  <title>{{ data.name }} - Analytics</title>
-  <style>
-    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 40px; max-width: 1000px; margin: 0 auto; }
-    .nav { margin-bottom: 20px; }
-    .nav a { color: #45a29e; text-decoration: none; font-weight: bold; background: #1a1a1a; padding: 8px 16px; border-radius: 5px; }
-    .nav a:hover { background: #222; }
-    
-    .header-section { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 20px; }
-    
-    .stats-header { display: flex; gap: 20px; background: #1a1a1a; padding: 20px; border-radius: 8px; flex: 1; min-width: 300px; justify-content: space-around; }
-    .stat-box { text-align: center; display: flex; flex-direction: column; gap: 5px; }
-    .stat-val { font-size: 1.5rem; font-weight: bold; color: #fff; }
-    .stat-label { font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
-
-    .deck-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; background: #1a1a1a; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
-    .card-box { text-align: center; font-size: 0.8rem; color: #aaa; }
-    .card-box img { width: 100%; max-width: 70px; display: block; margin: 0 auto 5px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
-    
-    .battle-row { background: #1a1a1a; padding: 15px; margin-bottom: 10px; border-radius: 8px; display: flex; flex-direction: column; gap: 12px; border-left: 4px solid #444; }
-    .battle-row.win { border-left-color: #2ecc71; }
-    .battle-row.loss { border-left-color: #e74c3c; }
-    .battle-info { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 10px; }
-    .side-decks { display: flex; gap: 30px; flex-wrap: wrap; }
-    .deck-images { display: flex; gap: 3px; margin-top: 5px; }
-    .deck-images img { width: 35px; height: 42px; object-fit: contain; background: #222; border-radius: 4px; border: 1px solid #333; }
-  </style>
-</head>
-<body>
-  <div class="nav"><a href="/">← Back to Roster</a></div>
-  
-  <div class="header-section">
-    <div>
-      <h1 style="margin: 0;">{{ data.name }}</h1>
-      <small style="color: #888; font-size: 1.1rem;">{{ data.tag }}</small>
-    </div>
-    <a href="/battles/{{ data.tag | replace('#','') }}" style="background: #45a29e; color: white; padding: 12px 20px; border-radius: 5px; text-decoration: none; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">📜 View Full Public Battle Log</a>
-  </div>
-
-  <div class="stats-header">
-    <div class="stat-box"><span class="stat-val">🏆 {{ data.trophies | default(0) }}</span><span class="stat-label">Trophies</span></div>
-    <div class="stat-box"><span class="stat-val">⭐ {{ data.fame | default(0) }}</span><span class="stat-label">War Fame</span></div>
-    <div class="stat-box"><span class="stat-val">⚔️ {{ data.warDayWins | default(0) }}</span><span class="stat-label">War Wins</span></div>
-    <div class="stat-box"><span class="stat-val">🔥 {{ data.current_streak | default(0) }}</span><span class="stat-label">Win Streak</span></div>
-  </div>
-  
-  <h2>🃏 Current Battle Deck</h2>
-  <div class="deck-grid">
-    {% for card in data.currentDeck %}
-      <div class="card-box">
-        <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
-        <div>{{ card.name }}</div>
-      </div>
-    {% else %}
-      <div style="grid-column: span 8; text-align: center; color: #888;">No current deck data available.</div>
-    {% endfor %}
-  </div>
-
-  <h2>⚔️ Recent Battles</h2>
-  <div id="battles-section"><div style="color: #888;">Loading battle data...</div></div>
-  
-  <script>
-    async function loadPlayerBattles() {
-      const tag = '{{ data.tag }}'.replace('#', '');
-      try {
-        const res = await fetch('/api/player/' + tag + '/battles');
-        if (!res.ok) throw new Error('Failed to fetch');
-        const battles = await res.json();
-        
-        if (battles.length === 0) {
-            document.getElementById('battles-section').innerHTML = '<div style="background: #1a1a1a; padding: 20px; border-radius: 8px; color: #888; text-align: center;">No recent battles logged.</div>';
-            return;
-        }
-
-        document.getElementById('battles-section').innerHTML = battles.map(b => {
-          const resultColor = b.result === 'win' ? '#2ecc71' : b.result === 'loss' ? '#e74c3c' : '#f1c40f';
-          const oppCards = b.opponent_cards || [];
-          return `
-            <div class="battle-row ${b.result}">
-              <div class="battle-info">
-                <div>
-                  <strong style="color: ${resultColor}; text-transform: uppercase;">${b.result}</strong> vs ${b.opp_name || 'Unknown'} 
-                  <span style="color: #666; font-size: 0.8rem; margin-left: 10px;">${b.type || 'Battle'}</span>
-                </div>
-                <div style="text-align: right;">
-                  <small style="color: #aaa;">Score: ${b.team_crowns ?? '-'} - ${b.opp_crowns ?? '-'}</small><br>
-                  <small style="color: #666;">${b.battle_time ? b.battle_time.replace('T', ' ').substring(0, 16) : ''}</small>
-                </div>
-              </div>
-              <div class="side-decks">
-                <div>
-                  <small style="color: #888; text-transform: uppercase;">Your Deck</small>
-                  <div class="deck-images">${(b.team_cards || []).map(c => `<img src="${c.iconUrls.medium}" title="${c.name}">`).join('')}</div>
-                </div>
-                <div>
-                  <small style="color: #888; text-transform: uppercase;">Opponent Deck</small>
-                  <div class="deck-images">${oppCards.map(c => `<img src="${c.iconUrls.medium}" title="${c.name}">`).join('')}</div>
-                </div>
-              </div>
-            </div>
-          `;
-        }).join('');
-      } catch (err) {
-        document.getElementById('battles-section').innerHTML = '<div style="color: #e74c3c;">Failed to load battles.</div>';
-      }
-    }
-    loadPlayerBattles();
-  </script>
+<script>
+  document.querySelectorAll('.cr-name').forEach(el => {
+    el.innerHTML = el.innerHTML.replace(/<c\d+>|<\/c>/gi, '');
+  });
+</script>
 </body>
 </html>
 """
@@ -298,27 +117,179 @@ DEFAULT_LINK_HTML = r"""
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Link Account</title>
-  <style>
-    body { background: #121212; color: white; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 50px; }
-    .box { background: #1e1e1e; padding: 40px; border-radius: 10px; max-width: 400px; margin: auto; border: 1px solid #333; }
-    h2 { color: #f1c40f; margin-bottom: 10px; }
-    input { width: 100%; padding: 12px; margin: 15px 0; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 5px; font-size: 1rem; }
-    button { width: 100%; background: #5865F2; color: white; padding: 12px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 1rem; }
-    button:hover { background: #4752C4; }
-    .error { color: #e74c3c; margin-bottom: 15px; font-weight: bold; }
-  </style>
+    <title>Link Account</title>
+    <style>
+        body { background: #121212; color: white; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 50px; }
+        .box { background: #1e1e1e; padding: 40px; border-radius: 10px; max-width: 400px; margin: auto; border: 1px solid #333; }
+        h2 { color: #f1c40f; margin-bottom: 10px; }
+        input { width: 100%; padding: 12px; margin: 15px 0; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 5px; font-size: 1rem;}
+        button { width: 100%; background: #5865F2; color: white; padding: 12px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 1rem;}
+        button:hover { background: #4752C4; }
+        .error { color: #e74c3c; margin-bottom: 15px; font-weight: bold; }
+    </style>
 </head>
 <body>
-  <div class="box">
-    <h2>Link Clash Royale Tag</h2>
-    <p style="color: #aaa; margin-bottom: 20px;">Authenticated as <strong>@{{ name }}</strong></p>
-    {% if error %}<div class="error">{{ error }}</div>{% endif %}
-    <form method="POST">
-      <input type="text" name="tag" placeholder="e.g. #2Y8JLYPQ2" required>
-      <button type="submit">Link to Discord</button>
-    </form>
-  </div>
+    <div class="box">
+        <h2>Link Clash Royale Tag</h2>
+        <p style="color: #aaa; margin-bottom: 20px;">Authenticated as <strong>@{{ name }}</strong></p>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <form method="POST">
+            <input type="text" name="tag" placeholder="e.g. #2Y8JLYPQ2" required>
+            <button type="submit">Link to Discord</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+DEFAULT_PLAYER_HTML = r"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ data.name }} - Analytics</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #0f0f0f; color: #eee; font-family: 'Segoe UI', sans-serif; padding: 40px 30px; max-width: 1000px; margin: auto; }
+        a.back { color: #f1c40f; text-decoration: none; font-weight: bold; font-size: 0.9rem; }
+        a.back:hover { text-decoration: underline; }
+        .header { border-bottom: 2px solid #f1c40f; padding-bottom: 14px; margin: 20px 0 30px; display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
+        .header h1 { font-size: 1.8rem; }
+        .header .tag { color: #5dade2; font-size: 1rem; font-weight: normal; margin-left: 8px; }
+        .header .clan-badge { background: #1e1e1e; border: 1px solid #333; border-radius: 6px; padding: 6px 14px; font-size: 0.85rem; color: #ccc; }
+        .header .clan-badge strong { color: #f1c40f; }
+        h2 { color: #f1c40f; margin: 30px 0 14px; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 1px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+        .stat-box { background: #1a1a1a; padding: 18px 20px; border-radius: 10px; border: 1px solid #2a2a2a; }
+        .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .value { font-size: 1.6rem; font-weight: bold; color: #f1c40f; }
+        .value.blue  { color: #5dade2; }
+        .value.green { color: #2ecc71; }
+        .value.red   { color: #e74c3c; }
+        .value.white { color: #eee; }
+        .deck-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        @media (max-width: 600px) { .deck-grid { grid-template-columns: repeat(2, 1fr); } }
+        .card-box { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 14px 10px; text-align: center; }
+        .card-box .card-name { font-size: 0.82rem; font-weight: bold; margin-bottom: 5px; }
+        .card-box .card-level { display: inline-block; background: #2a2a2a; color: #aaa; font-size: 0.75rem; border-radius: 4px; padding: 2px 7px; }
+        .card-box.maxed { border-color: #f1c40f !important; }
+        .card-box.maxed .card-level { color: #f1c40f; }
+    </style>
+</head>
+<body>
+    <a class="back" href="/">← Back to Roster</a>
+    <div class="header">
+        <div><h1>{{ data.name }}<span class="tag">{{ data.tag }}</span></h1></div>
+        {% if data.clan %}
+            <div class="clan-badge">🛡️ <strong>{{ data.clan.name }}</strong> &nbsp;·&nbsp; {{ data.role | replace('_', ' ') | title }}</div>
+        {% else %}
+            <div class="clan-badge">No Clan</div>
+        {% endif %}
+    </div>
+
+    <h2>📈 Progression</h2>
+    <div class="grid">
+        <div class="stat-box"><div class="label">XP Level</div><div class="value white">⭐ {{ data.expLevel }}</div></div>
+        <div class="stat-box"><div class="label">Current Trophies</div><div class="value blue">🏆 {{ data.trophies }}</div></div>
+        <div class="stat-box"><div class="label">Best Trophies</div><div class="value blue">🏅 {{ data.bestTrophies }}</div></div>
+        <div class="stat-box"><div class="label">Arena</div><div class="value white" style="font-size:1rem; padding-top:4px;">{{ data.arena.name if data.arena else '—' }}</div></div>
+    </div>
+
+    <h2>⚔️ Battle Stats</h2>
+    <div class="grid">
+        <div class="stat-box"><div class="label">Total Wins</div><div class="value green">{{ data.wins }}</div></div>
+        <div class="stat-box"><div class="label">Losses</div><div class="value red">{{ data.losses }}</div></div>
+        <div class="stat-box"><div class="label">3-Crown Wins</div><div class="value green">👑 {{ data.threeCrownWins }}</div></div>
+        <div class="stat-box"><div class="label">Total Battles</div><div class="value white">{{ data.battleCount }}</div></div>
+        <div class="stat-box">
+            <div class="label">Current Win Streak</div>
+            <div class="value {% if data.current_streak > 4 %}green{% elif data.current_streak > 0 %}white{% else %}red{% endif %}">
+                🔥 {{ data.current_streak | default(0) }}
+            </div>
+        </div>
+        <div class="stat-box">
+            <div class="label">Win Rate</div>
+            {% set total = data.wins + data.losses %}
+            <div class="value {% if total > 0 and (data.wins / total * 100) >= 50 %}green{% else %}red{% endif %}">
+                {% if total > 0 %}{{ "%.1f" | format(data.wins / total * 100) }}%{% else %}—{% endif %}
+            </div>
+        </div>
+    </div>
+
+    <h2>🎁 Social & Misc</h2>
+    <div class="grid">
+        <div class="stat-box"><div class="label">Donations (Season)</div><div class="value white">{{ data.donations | default(0) }}</div></div>
+        <div class="stat-box"><div class="label">Donations Received</div><div class="value white">{{ data.donationsReceived | default(0) }}</div></div>
+        <div class="stat-box"><div class="label">War Day Wins</div><div class="value white">⚔️ {{ data.warDayWins | default(0) }}</div></div>
+        <div class="stat-box"><div class="label">3-Crown Win Rate</div>
+            <div class="value {% if data.wins > 0 and (data.threeCrownWins / data.wins * 100) >= 30 %}green{% else %}white{% endif %}">
+                {% if data.wins > 0 %}{{ "%.1f" | format(data.threeCrownWins / data.wins * 100) }}%{% else %}—{% endif %}
+            </div>
+        </div>
+        <div class="stat-box"><div class="label">Favourite Card</div><div class="value white" style="font-size:1rem; padding-top:4px;">{{ data.currentFavouriteCard.name if data.currentFavouriteCard else '—' }}</div></div>
+    </div>
+
+    <h2>🃏 Current Battle Deck</h2>
+    <div class="deck-grid">
+        {% for card in data.currentDeck %}
+            <div class="card-box {% if card.level >= max_lvl %}maxed{% endif %}">
+                <div class="card-name">{{ card.name }}</div>
+                <span class="card-level">Lvl {{ card.level }}{% if card.level >= max_lvl %} ✓{% endif %}</span>
+            </div>
+        {% endfor %}
+    </div>
+
+    <h2>⚔️ Recent Battles</h2>
+    <style>
+        .battle-row { display: flex; align-items: center; justify-content: space-between; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
+        .battle-row.win  { border-left: 3px solid #2ecc71; }
+        .battle-row.loss { border-left: 3px solid #e74c3c; }
+        .battle-row.draw { border-left: 3px solid #888; }
+        .battle-type { font-size: 0.72rem; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+        .battle-opp  { font-size: 0.95rem; font-weight: bold; color: #eee; }
+        .battle-score { font-size: 1.1rem; font-weight: bold; }
+        .battle-score.win  { color: #2ecc71; }
+        .battle-score.loss { color: #e74c3c; }
+        .battle-score.draw { color: #aaa; }
+        .battle-time { font-size: 0.75rem; color: #555; }
+        .no-battles { color: #555; font-style: italic; padding: 20px 0; }
+    </style>
+    <div id="battles-section">
+        <div class="no-battles">Loading recent battles...</div>
+    </div>
+
+    <script>
+    async function loadPlayerBattles() {
+        const tag = {{ data.tag | tojson }};
+        const cleanTag = tag.replace('#', '');
+        const section = document.getElementById('battles-section');
+        try {
+            const res = await fetch(`/api/player/${cleanTag}/battles`);
+            const battles = await res.json();
+            if (!battles.length) {
+                section.innerHTML = '<div class="no-battles">No battles found. Run a harvest to populate battle history.</div>';
+                return;
+            }
+            section.innerHTML = battles.map(b => {
+                const cls = b.result || 'draw';
+                const time = b.battle_time ? b.battle_time.replace('T', ' ').substring(0, 16) : '—';
+                return `<div class="battle-row ${cls}">
+                    <div>
+                        <div class="battle-type">${b.type || 'PvP'}</div>
+                        <div class="battle-opp">vs ${b.opp_name || 'Unknown'} <span style="color:#555; font-size:0.8rem;">${b.opp_tag || ''}</span></div>
+                        <div class="battle-time">${time}</div>
+                    </div>
+                    <div class="battle-score ${cls}">
+                        ${b.team_crowns ?? '—'} – ${b.opp_crowns ?? '—'}
+                        <div style="font-size:0.8rem; font-weight:normal; text-align:right;">${cls.toUpperCase()}</div>
+                    </div>
+                </div>`;
+            }).join('');
+        } catch(e) {
+            section.innerHTML = `<div class="no-battles">Error loading battle data. Make sure backend endpoint is deployed.</div>`;
+        }
+    }
+    document.addEventListener('DOMContentLoaded', loadPlayerBattles);
+    </script>
 </body>
 </html>
 """
@@ -624,14 +595,13 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
     <button class="nav-btn" onclick="showTab('harvest', this)"><span class="nav-icon">📡</span>Harvest Log</button>
     <button class="nav-btn" onclick="showTab('csv', this)"><span class="nav-icon">📄</span>CSV Export</button>
     <button class="nav-btn" onclick="showTab('editor', this)"><span class="nav-icon">🎨</span>UI Editor</button>
-    <button class="nav-btn" onclick="showTab('users', this)"><span class="nav-icon">👤</span>User Access</button>
+    <button class="nav-btn" onclick="showTab('users', this); loadUsers();"><span class="nav-icon">👤</span>User Access</button>
     <div class="nav-section">Danger Zone</div>
     <button class="nav-btn" onclick="showTab('admin', this)"><span class="nav-icon">⚙️</span>Admin Tools</button>
   </nav>
 
   <main class="main">
 
-    <!-- ── DIAGNOSTICS ── -->
     <div class="tab-pane active" id="tab-diag">
       <div class="page-header">
         <div class="page-title">Diagnostics</div>
@@ -684,22 +654,20 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
       <div class="log-box" id="diag-log">Waiting for data…</div>
     </div>
 
-    <!-- ── WAR MONITOR ── -->
     <div class="tab-pane" id="tab-war">
       <div class="page-header">
         <div class="page-title">War Monitor</div>
-        <div class="page-sub">Current River Race</div>
+        <div class="page-sub">Current & Historical River Race Data</div>
       </div>
       <div class="toolbar">
         <button class="btn-refresh" onclick="loadWar()">↻ Refresh</button>
         <span class="last-refresh" id="war-last-refresh"></span>
       </div>
       <div id="war-content">
-        <div style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Click refresh to load war data.</div>
+        <div style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Click refresh to load stacked war data.</div>
       </div>
     </div>
 
-    <!-- ── BATTLE LOGS ── -->
     <div class="tab-pane" id="tab-battles">
       <div class="page-header">
         <div class="page-title">Battle Logs</div>
@@ -728,7 +696,7 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
               <th>Result</th>
               <th>Score</th>
               <th>Opponent</th>
-              <th>Decks</th>
+              <th>Decks (You / Opp)</th>
             </tr>
           </thead>
           <tbody id="battles-body">
@@ -738,7 +706,6 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- ── HARVEST LOG ── -->
     <div class="tab-pane" id="tab-harvest">
       <div class="page-header">
         <div class="page-title">Harvest Log</div>
@@ -762,7 +729,6 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- ── CSV EXPORT ── -->
     <div class="tab-pane" id="tab-csv">
       <div class="page-header">
         <div class="page-title">Data Exporter</div>
@@ -803,7 +769,6 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- ── UI EDITOR ── -->
     <div class="tab-pane" id="tab-editor">
       <div class="page-header">
         <div class="page-title">UI Editor</div>
@@ -812,7 +777,6 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
 
       <div class="editor-shell">
 
-        <!-- Top toolbar -->
         <div class="editor-topbar">
           <select id="editor-template-name" class="form-select" onchange="onTemplateChange()">
             <option value="roster">Roster (Home)</option>
@@ -847,7 +811,6 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
           </button>
         </div>
 
-        <!-- Status bar -->
         <div class="editor-statusbar">
           <div class="sb-item"><div class="sb-dot" id="sb-dot"></div><span id="sb-state">No template loaded</span></div>
           <div class="sb-item" id="sb-template" style="display:none">Template: <strong id="sb-tpl-name">—</strong></div>
@@ -857,7 +820,6 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
           <div class="sb-item" id="sb-time-item" style="display:none">Loaded <span id="sb-load-time">—</span></div>
         </div>
 
-        <!-- Textarea -->
         <textarea
           id="editor-html-content"
           class="editor-textarea"
@@ -865,21 +827,18 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
           placeholder="Load a template above to start editing…"
         ></textarea>
 
-        <!-- Diff panel (hidden by default) -->
         <div class="diff-panel" id="diff-panel">
           <div id="diff-content"><span class="diff-empty">Load a template and make changes to see a diff.</span></div>
         </div>
 
-      </div><!-- /editor-shell -->
-    </div>
+      </div></div>
     
-    <!-- ── USER ACCESS ── -->
     <div class="tab-pane" id="tab-users">
       <div class="page-header">
         <div class="page-title">User Access</div>
         <div class="page-sub">Manage Site Administration Privileges</div>
       </div>
-      <form method="POST" action="/admin/users/update" class="diag-card" style="padding:20px; max-width: 400px;">
+      <form method="POST" action="/admin/users/update" class="diag-card" style="padding:20px; max-width: 400px; margin-bottom: 24px;">
         <div style="margin-bottom: 15px;">
             <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">Discord User ID</label>
             <input type="text" name="discord_id" placeholder="e.g. 123456789012345678" class="form-input" style="width: 100%; margin-top: 5px;" required>
@@ -893,9 +852,24 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
         </div>
         <button type="submit" class="btn-refresh" style="width: 100%; justify-content: center;">Update Status</button>
       </form>
+      <div class="diag-card" style="padding:0; overflow-x:auto;">
+        <table class="war-table">
+          <thead>
+            <tr>
+              <th>Member Name</th>
+              <th>Discord ID</th>
+              <th>Linked</th>
+              <th>Clan Rank</th>
+              <th>Site Access</th>
+            </tr>
+          </thead>
+          <tbody id="user-table-body">
+            <tr><td colspan="5" style="text-align:center; padding:24px; color:var(--dim);">Loading user roster...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <!-- ── ADMIN TOOLS ── -->
     <div class="tab-pane" id="tab-admin">
       <div class="page-header">
         <div class="page-title">Admin Tools</div>
@@ -929,7 +903,6 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
   </main>
 </div>
 
-<!-- Battle detail modal -->
 <div id="battle-modal" class="modal" onclick="closeModal()">
   <div class="modal-content" onclick="event.stopPropagation()">
     <div class="modal-header">
@@ -1140,25 +1113,27 @@ async function loadWar() {
   var content = document.getElementById('war-content');
   content.innerHTML = '<div style="color:var(--dim);font-family:var(--font-mono);font-size:12px;"><span class="spin">↻</span> Fetching live war data…</div>';
   try {
-    var res  = await fetch('/admin/api/war');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var data = await res.json();
-    if (data.error) throw new Error(data.error);
+    const [current, prev, agg] = await Promise.all([
+      fetch('/admin/api/war').then(r => r.json()),
+      fetch('/admin/api/war/previous').then(r => r.json()),
+      fetch('/admin/api/war/aggregate').then(r => r.json())
+    ]);
+    
+    if (current.error) throw new Error(current.error);
 
-    var participants = (data.clan && data.clan.participants) ? data.clan.participants : [];
-    if (!participants.length) throw new Error('No participants found.');
+    let curFame = current.clan ? current.clan.fame : 0;
+    let prevFame = prev.standings ? prev.standings.find(s => s.clan.tag.replace('#','') === '{{ clan_tag }}')?.clan.fame || 0 : 0;
 
-    var totalFame  = participants.reduce(function(s,p){ return s + (p.fame||0); }, 0);
+    var participants = (current.clan && current.clan.participants) ? current.clan.participants : [];
     var totalDecks = participants.reduce(function(s,p){ return s + (p.decksUsedToday||0); }, 0);
     var maxDecks   = participants.length * 4;
     var sorted     = participants.slice().sort(function(a,b){ return (b.fame||0)-(a.fame||0); });
 
     content.innerHTML =
       '<div class="stat-row">'
-      + '<div class="stat-card ok"><div class="stat-label">Race State</div><div class="stat-value" style="font-size:18px;">' + esc((data.state||'unknown').toUpperCase()) + '</div></div>'
-      + '<div class="stat-card ok"><div class="stat-label">Clan Fame</div><div class="stat-value">⭐ ' + esc(totalFame) + '</div></div>'
-      + '<div class="stat-card ok"><div class="stat-label">Deck Usage</div><div class="stat-value">' + esc(totalDecks) + ' / ' + esc(maxDecks) + '</div></div>'
-      + '<div class="stat-card ok"><div class="stat-label">Participants</div><div class="stat-value">👥 ' + esc(participants.length) + '</div></div>'
+      + '<div class="stat-card ok"><div class="stat-label">Current War Fame</div><div class="stat-value">⭐ ' + esc(curFame) + '</div></div>'
+      + '<div class="stat-card ok"><div class="stat-label">Previous War Fame</div><div class="stat-value">⭐ ' + esc(prevFame) + '</div></div>'
+      + '<div class="stat-card ok"><div class="stat-label">Aggregate Historical Fame</div><div class="stat-value">⭐ ' + esc(agg.total_fame || 0) + '</div></div>'
       + '</div>'
       + '<div class="diag-card" style="overflow-x:auto;">'
       + '<table class="war-table"><thead><tr>'
@@ -1179,7 +1154,7 @@ async function loadWar() {
       + '</tbody></table></div>';
 
     document.getElementById('war-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
-    toast('War data loaded (' + participants.length + ' participants).', 'ok');
+    toast('War dashboard loaded.', 'ok');
   } catch(err) {
     content.innerHTML = '<div style="color:var(--err);font-family:var(--font-mono);">Error: ' + esc(err.message) + '</div>';
     toast('Failed to load war data: ' + err.message, 'err');
@@ -1220,7 +1195,10 @@ function renderBattles(battles) {
     var resultBadge = result
       ? '<span class="badge ' + badgeCls + '">' + esc(result) + '</span>'
       : '—';
-    var decks = (b.team_cards || []).length;
+      
+    var pCards = (b.team_cards || []).map(c => c.name || c).join(', ');
+    var oCards = (b.opponent_cards || []).map(c => c.name || c).join(', ');
+    
     return '<tr onclick="showBattleDetails(' + i + ')" style="cursor:pointer">'
       + '<td style="color:var(--dim)">' + esc(formatBattleTime(b.battle_time)) + '</td>'
       + '<td><strong>' + esc(b.player_name || '—') + '</strong></td>'
@@ -1229,7 +1207,7 @@ function renderBattles(battles) {
       + '<td>' + resultBadge + '</td>'
       + '<td>' + (b.team_crowns != null ? b.team_crowns : '—') + ' – ' + (b.opp_crowns != null ? b.opp_crowns : '—') + '</td>'
       + '<td>' + esc(b.opp_name || '—') + '</td>'
-      + '<td style="color:var(--dim)">' + decks + ' cards</td>'
+      + '<td style="font-size:10px; line-height:1.4; color:var(--dim);"><strong style="color:var(--accent);">You:</strong> ' + esc(pCards) + '<br><strong style="color:var(--err);">Opp:</strong> ' + esc(oCards) + '</td>'
       + '</tr>';
   }).join('');
 }
@@ -1281,6 +1259,27 @@ function closeModal() {
   document.getElementById('battle-modal').classList.remove('open');
 }
 
+// ── Users ───────────────────────────────────────────────────────────────────
+async function loadUsers() {
+  var tbody = document.getElementById('user-table-body');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading...</td></tr>';
+  try {
+    const res = await fetch('/admin/api/users');
+    const users = await res.json();
+    tbody.innerHTML = users.map(u => `
+      <tr>
+        <td><a href="/player/${u.cr_tag}" style="color:var(--accent); text-decoration:none;">${esc(u.name)}</a></td>
+        <td style="font-family:var(--font-mono);">${esc(u.discord_id)}</td>
+        <td>${u.is_linked ? '✅' : '❌'}</td>
+        <td>${esc(u.rank)}</td>
+        <td><span style="color:${u.status==='Admin'?'var(--ok)':'var(--dim)'}">${esc(u.status)}</span></td>
+      </tr>
+    `).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--err); text-align:center; padding:24px;">Failed to load users.</td></tr>`;
+  }
+}
+
 // ── Harvest ───────────────────────────────────────────────────────────────────
 async function triggerManualHarvest() {
   if (!confirm('Force snapshot generation? This will execute the daily loop immediately.')) return;
@@ -1329,7 +1328,9 @@ async function handleCustomCSVExport() {
     });
 
     var headers = Object.keys(records[0]);
-    var csvContent = headers.join(',') + '\n';
+    var reportHeader = "Graveyard Clan Status Report - " + new Date().toLocaleDateString() + "\n\n";
+    var csvContent = reportHeader + headers.join(',') + '\n';
+    
     records.forEach(function(row) {
       csvContent += headers.map(function(h) {
         var val = row[h] != null ? row[h] : 'N/A';
@@ -1340,7 +1341,7 @@ async function handleCustomCSVExport() {
     var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     var link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.setAttribute('download', 'Graveyard_Export.csv');
+    link.setAttribute('download', 'Graveyard_Status_Report.csv');
     link.style.display = 'none';
     document.body.appendChild(link);
     link.click();
@@ -1656,4 +1657,5 @@ document.addEventListener('keydown', function(e) {
 });
 </script>
 </body>
-</html>"""
+</html>
+"""

@@ -28,7 +28,7 @@ import redis as sync_redis
 from jinja2.sandbox import SandboxedEnvironment
 
 # Import detached frontend templates
-from templates import DEFAULT_ROSTER_HTML, DEFAULT_LINK_HTML, DEFAULT_PLAYER_HTML, DEFAULT_ADMIN_HTML, DEFAULT_PUBLIC_BATTLES_HTML
+from templates import DEFAULT_ROSTER_HTML, DEFAULT_LINK_HTML, DEFAULT_PLAYER_HTML, DEFAULT_ADMIN_HTML
 
 # ---------------------------------------------------------------------------
 # 1. SETUP
@@ -94,43 +94,39 @@ def _restore_harvest_meta():
     except Exception as e:
         log.warning(f"Could not restore harvest meta: {e}")
 
-_restore_harvest_meta()
+_restore_harvest_meta()  
 # ---------------------------------------------------------------------------
 # 2. DATA ENRICHMENT & STREAK LOGIC
 # ---------------------------------------------------------------------------
 def calculate_streak(battles):
-    # Sort by battle_time descending to get newest matches first
-    sorted_battles = sorted(battles, key=lambda x: x.get('battle_time', ''), reverse=True)
+    sorted_battles = sorted(battles, key=lambda x: x.get('utcTime', ''), reverse=True)
     streak = 0
     for b in sorted_battles:
-        if b.get('result') == 'win':
-            streak += 1
-        elif b.get('result') == 'loss':
-            break
+        if b.get('type') == 'PvP':
+            if b.get('result') == 'win':
+                streak += 1
+            else:
+                break
     return streak
 
-def _enrich_members(raw_members, battles_map, snap_map, war_parts):
+def _enrich_members(raw_members, profiles, war_parts):
     players = []
     seen = set()
     for m in raw_members:
-        tag = clean_tag(m.get('tag', ''))
+        tag = m.get('tag', '').replace('#', '')
         if tag in seen: continue
         seen.add(tag)
-        
-        # Clean the name
         m['name'] = re.sub(r"<c\d?>|</c>", "", m.get("name", "Unknown"), flags=re.IGNORECASE)
+        p = profiles.get(tag, {})
+        m['current_streak'] = calculate_streak(p.get('battles', []))
         
-        # Pull records from our newly aligned database maps safely
-        player_battles = battles_map.get(tag, [])
-        player_snap = snap_map.get(tag, {})
+        # FIX: Ensure it falls back properly to database profile data if snapshot misses it
+        m['warDayWins'] = p.get('warDayWins', m.get('warDayWins', 0)) 
+        m['donations'] = p.get('donations', m.get('donations', 0))
         
-        m['current_streak'] = calculate_streak(player_battles)
-        m['warDayWins'] = player_snap.get('warDayWins', 0)
         m['fame'] = war_parts.get(tag, {}).get('fame', 0)
-        m['donations'] = m.get('donations', 0) 
         m['clean_tag'] = tag
         m['role'] = m.get('role', 'member')
-        
         players.append(m)
     return sorted(players, key=lambda x: x.get('trophies', 0), reverse=True)
 
@@ -197,32 +193,31 @@ def _get_cached_system_config() -> dict:
 def is_admin() -> bool:
     if "discord_id" not in session:
         return False
-    
     discord_id = str(session.get("discord_id"))
-    
-    if discord_id == "751975709643112569": 
+    if discord_id in ["751975709643112569"]: 
         return True
-    
     master_admin = os.getenv("MASTER_ADMIN_ID", "")
     if master_admin and discord_id == master_admin:
         return True
-        
-    return session.get("is_admin_user", False)
+    sys_config_db = _get_cached_system_config()
+    allowed_roles = sys_config_db.get("admin_role_ids", [])
+    allowed_users = sys_config_db.get("admin_user_ids", [])
+    if discord_id in allowed_users:
+        return True
+    user_roles = session.get("user_roles", [])
+    return any(str(role_id) in allowed_roles for role_id in user_roles)
 
 def get_template(template_name: str) -> str:
     with _cache_lock:
         if template_name in _HTML_CACHE:
             return _HTML_CACHE[template_name]
-    
     doc = db_sync["config"].find_one({"_id": "html_templates"})
-    
     with _cache_lock:
-        content = ""
-        if doc and template_name in doc:
+        if doc and template_name in doc and doc[template_name]:
             content = doc[template_name]
         else:
-            content = globals().get(f"DEFAULT_{template_name.upper()}_HTML", "")
-            
+            fallback = globals().get(f"DEFAULT_{template_name.upper()}_HTML", "")
+            content = fallback
         _HTML_CACHE[template_name] = content
         return content
 
@@ -232,9 +227,13 @@ def invalidate_template_cache() -> None:
         _HTML_CACHE = {}
 
 def render_sandboxed(template_str: str, **context) -> str:
+    """Safely renders HTML content, blocking remote server code injection vectors."""
     template = sandbox_env.from_string(template_str)
+    
+    # Automatically inject Flask's session object for UI logic
     if "session" not in context:
         context["session"] = session
+        
     return template.render(**context)
 
 # ---------------------------------------------------------------------------
@@ -249,18 +248,24 @@ def index():
         error_msg = None
         raw_members = []
         
+        # Check if live data is valid
         if clan_data and "memberList" in clan_data:
             raw_members = clan_data["memberList"]
         else:
+            # 🛑 FALLBACK LOGIC: Live API failed, pull from the latest DB snapshot
             log.warning("Live CR API unreachable. Falling back to latest DB snapshot.")
             is_fallback = True
             error_msg = "Live API unreachable. Displaying cached data from the latest snapshot."
             
-            latest_snap = db_sync["historical_snapshots"].find_one({}, sort=[("date", -1)])
+            # Find the most recent date we have a snapshot for
+            latest_snap = db_sync["historical_snapshots"].find_one(sort=[("date", -1)])
+            
             if not latest_snap:
+                # If we have NO live data and NO backups, we have to bail out
                 return render_sandboxed(get_template("roster"), players=[], error="Clash Royale API connection failed and no database backups exist yet.")
             
-            backup_docs = list(db_sync["historical_snapshots"].find({"date": latest_snap.get("date")}))
+            # Reconstruct the member list from the snapshot documents
+            backup_docs = list(db_sync["historical_snapshots"].find({"date": latest_snap["date"]}))
             for doc in backup_docs:
                 raw_members.append({
                     "tag": doc.get("tag"),
@@ -268,187 +273,75 @@ def index():
                     "trophies": doc.get("trophies", 0),
                     "role": doc.get("role", "member"),
                     "donations": doc.get("donations", 0),
-                    "fame": 0,                                    
+                    "fame": 0,
                     "current_streak": 0
                 })
         
-        member_tags = [clean_tag(m.get("tag", "")) for m in raw_members if m.get("tag")]
+        member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
         
-        # 2. Map Streaks & War Wins
-        all_battles = list(db_sync["battle_history"].find({"player_tag": {"$in": member_tags}}))
-        battles_map = {}
-        for b in all_battles:
-            t = b.get("player_tag")
-            if not t: continue
-            if t not in battles_map: battles_map[t] = []
-            battles_map[t].append(b)
-            
-        latest_snapshot_meta = db_sync["historical_snapshots"].find_one({}, sort=[("date", -1)])
-        snap_map = {}
-        if latest_snapshot_meta and latest_snapshot_meta.get("date"):
-            snap_docs = list(db_sync["historical_snapshots"].find({"date": latest_snapshot_meta["date"], "tag": {"$in": member_tags}}))
-            snap_map = {doc.get("tag"): doc for doc in snap_docs if doc.get("tag")}
+        # 2. Grab Database Profiles for Streaks/Stats
+        db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+        profiles_map = {p["_id"]: p for p in db_profiles}
         
-        # 3. Fetch War Data
+        # 3. Fetch War Data (Only if we aren't already in fallback mode)
         war_participants = {}
         if not is_fallback:
             war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
             if war_data and isinstance(war_data, dict):
                 if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
-                    war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if p.get("tag")}
+                    war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
                 else:
                     for clan in war_data.get("clans", []):
                         if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
-                            war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", []) if p.get("tag")}
+                            war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
                             break
         
         # 4. Enrich & Sort
-        players = _enrich_members(raw_members, battles_map, snap_map, war_participants)
+        players = _enrich_members(raw_members, profiles_map, war_participants)
         
+        # 5. Calculate Hall of Fame
         top_pusher = max(players, key=lambda x: x.get("trophies", 0)) if players else None
         top_streak = max(players, key=lambda x: x.get("current_streak", 0)) if players else None
-        war_hero = max(players, key=lambda x: x.get("warDayWins", 0)) if players else None
-        top_donator = max(players, key=lambda x: x.get("donations", 0)) if players else None
+        top_war = max(players, key=lambda x: x.get("warDayWins", 0)) if players else None
 
         return render_sandboxed(
             get_template("roster"),
             players=players,
             top_pusher=top_pusher,
             top_streak=top_streak,
-            war_hero=war_hero,
-            top_donator=top_donator,
-            error=error_msg 
+            top_war=top_war,
+            error=error_msg
         )
     except Exception as e:
         log.exception("Index route crash prevented gracefully.")
         return render_sandboxed(get_template("roster"), players=[], error=f"Internal Server Error: {str(e)}")
 
-
-
 @app.route("/favicon.ico")
 def favicon():
     return "", 204
-    
-@app.route("/login")
-def login():
-    return redirect("https://graveyardbot.onrender.com/callback")
 
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/")
+@app.route("/link", methods=["GET", "POST"])
+def link_account():
+    if "discord_id" not in session:
+        return redirect("/login")
+    if request.method == "POST":
+        tag = clean_tag(request.form.get("tag", ""))
+        db_sync["users"].update_one(
+            {"discord_id": session["discord_id"]},
+            {"$set": {"cr_tag": tag}},
+            upsert=True
+        )
+        return redirect("/")
+    return render_sandboxed(get_template("link"), name=session.get("discord_name", "User"))
 
-@app.route("/callback")
-def callback():
-    # -------------------------------------------------------------
-    # 1. Exchange code for token (using your existing logic)
-    # 2. Get user info from Discord (e.g., user_info = ...)
-    # -------------------------------------------------------------
-    
-    # Ensure user_info is defined by your OAuth logic above before proceeding
-    discord_id = str(user_info['id'])
-    discord_name = user_info.get('username', 'Unknown')
-    master_id = str(os.environ.get("751975709643112569", ""))
-    
-    # Look up the user in the database
-    db_user = db_sync["users"].find_one({"discord_id": discord_id})
-    
-    # Check if they are a hardcoded master admin
-    is_master = discord_id in ["751975709643112569", master_id]
-    
-    # Determine final admin status (Master OR Database Admin)
-    is_admin_user = is_master or (db_user and db_user.get("is_admin", False))
-    
-    # Upsert user into database to ensure they appear in the Admin UI
-    db_sync["users"].update_one(
-        {"discord_id": discord_id},
-        {"$set": {
-            "discord_id": discord_id,
-            "discord_name": discord_name,
-            "is_admin": is_admin_user, 
-            "last_login": time.time()
-        }},
-        upsert=True
-    )
-    
-    # Set session keys
-    session['discord_id'] = discord_id
-    session['discord_name'] = discord_name
-    session['is_admin_user'] = is_admin_user
-    
-    return redirect("/")
-    
-@app.route("/admin/api/battles")
-def api_get_battles():
-    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    
-    tag = request.args.get("tag")
-    page = int(request.args.get("page", 1))
-    per_page = 20
-    query = {"player_tag": tag} if tag else {}
-    
-    battles = list(db_sync["battle_history"].find(query)
-                   .sort("battle_time", -1)
-                   .skip((page - 1) * per_page)
-                   .limit(per_page))
-    total = db_sync["battle_history"].count_documents(query)
-    
-    for b in battles:
-        b["_id"] = str(b["_id"])
-        
-    return jsonify({"battles": battles, "total": total, "pages": (total // per_page) + 1})
-
-@app.route("/admin/api/users")
-def api_get_users():
-    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    users = list(db_sync["users"].find({}, {"_id": 0}))
-    return jsonify(users)
-
-@app.route("/admin/api/users/toggle", methods=["POST"])
-def api_toggle_user():
-    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-        
-    target_id = request.form.get("discord_id")
-    master_id = os.environ.get("MASTER_ADMIN_ID")
-    
-    if target_id in ["751975709643112569", master_id]:
-        return jsonify({"error": "Cannot modify Master Admin privileges."}), 403
-        
-    user = db_sync["users"].find_one({"discord_id": target_id})
-    if not user:
-        return jsonify({"error": "User not found."}), 404
-        
-    new_status = not user.get("is_admin", False)
-    db_sync["users"].update_one(
-        {"discord_id": target_id}, 
-        {"$set": {"is_admin": new_status}}
-    )
-    return jsonify({"message": f"User admin status changed to {new_status}.", "is_admin": new_status})
-
-@app.route("/admin/api/war")
-def api_get_war():
-    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    
-    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") 
-    
-    if not war_data:
-        return jsonify({"error": "Failed to fetch war data from CR API."}), 500
-        
-    if clan_data and "memberList" in clan_data and war_data.get("clan", {}).get("participants"):
-        current_tags = {clean_tag(m["tag"]) for m in clan_data["memberList"]}
-        filtered_participants = [
-            p for p in war_data["clan"]["participants"] 
-            if clean_tag(p["tag"]) in current_tags
-        ]
-        war_data["clan"]["participants"] = filtered_participants
-        
-    return jsonify(war_data)
-
+# ── /player/<tag> ────────────────────────────────────────────────────────
 @app.route("/player/<tag>")
 def player_profile(tag):
     clean_t = clean_tag(tag)
+    
+    # 1. Fetch live data from the Clash Royale API
     player_data = fetch_cr_api(f"players/%23{clean_t}")
+    
     if not player_data:
         return render_sandboxed(
             get_template("player"), 
@@ -456,14 +349,12 @@ def player_profile(tag):
             error=f"Could not find player with tag #{clean_t}"
         ), 404
 
-    player_battles = list(db_sync["battle_history"].find({"player_tag": clean_t}))
-    player_data["current_streak"] = calculate_streak(player_battles)
-
-    latest_snap = db_sync["historical_snapshots"].find_one({"tag": clean_t}, sort=[("date", -1)])
-    if latest_snap:
-        player_data["warDayWins"] = latest_snap.get("warDayWins", 0)
+    # 2. Grab Database Profile to calculate the Win Streak
+    db_profile = db_sync["player_profiles"].find_one({"_id": clean_t})
+    if db_profile and "battles" in db_profile:
+        player_data["current_streak"] = calculate_streak(db_profile.get("battles", []))
     else:
-        player_data["warDayWins"] = player_data.get("warDayWins", 0) 
+        player_data["current_streak"] = 0
 
     return render_sandboxed(
         get_template("player"),
@@ -472,27 +363,115 @@ def player_profile(tag):
         clan_tag=CLAN_TAG
     )
 
+# ── /admin ────────────────────────────────────────────────────────────────
 @app.route("/admin")
 def admin_panel():
-    if not is_admin(): return "Unauthorized", 403
-    return render_sandboxed(get_template("admin"), clan_tag=CLAN_TAG)
+    if not is_admin():
+        return "Unauthorized", 403
+    return render_sandboxed(
+        get_template("admin"),
+        clan_tag=CLAN_TAG,
+    )
+
+# ── /admin/api/battles ─────────────────────────────────────────────────────
+@app.route("/admin/api/battles")
+def api_get_battles():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    try:
+        battles = list(db_sync["battle_history"].find().sort("battle_time", -1).limit(100))
+        profiles = {p["_id"]: p.get("name", "Unknown") for p in db_sync["player_profiles"].find()}
+        for b in battles:
+            b["_id"] = str(b["_id"])
+            tag = b.get("player_tag", "")
+            b["player_name"] = profiles.get(tag, "Unknown")
+        return jsonify(battles)
+    except Exception as e:
+        log.error(f"Error fetching battles: {e}")
+        return jsonify({"error": "Internal database error."}), 500
 
 @app.route("/api/player/<tag>/battles")
 def api_player_battles(tag):
     clean_t = tag.replace("#", "").upper()
     try:
-        battles = list(
-            db_sync["battle_history"]
-            .find({"player_tag": clean_t})
-            .sort("battle_time", -1)
-            .limit(15)
-        )
+        battles = list(db_sync["battle_history"].find({"player_tag": clean_t}).sort("battle_time", -1).limit(15))
         for b in battles:
             b["_id"] = str(b["_id"])
         return jsonify(battles)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ── /admin/api/war ─────────────────────────────────────────────────────────
+@app.route("/admin/api/war")
+def api_get_war():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    if not war_data: return jsonify({"error": "Failed to fetch war data."}), 500
+    return jsonify(war_data)
+
+@app.route("/admin/api/war/previous")
+def api_get_war_previous():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    log_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/riverracelog")
+    if log_data and "items" in log_data and len(log_data["items"]) > 0:
+        return jsonify(log_data["items"][0])
+    return jsonify({"error": "No previous war data found."}), 404
+
+@app.route("/admin/api/war/aggregate")
+def api_get_war_aggregate():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    log_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/riverracelog")
+    total_fame = 0
+    if log_data and "items" in log_data:
+        for race in log_data["items"]:
+            for standing in race.get("standings", []):
+                clan = standing.get("clan", {})
+                if clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
+                    total_fame += clan.get("fame", 0)
+    return jsonify({"total_fame": total_fame})
+
+# ── /admin/api/users ───────────────────────────────────────────────────────
+@app.route("/admin/api/users")
+def api_get_users():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    linked_users = list(db_sync["users"].find({}))
+    sys_config_db = _get_cached_system_config()
+    admins = sys_config_db.get("admin_user_ids", ["751975709643112569"])
+    
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    roster = clan_data.get("memberList", []) if clan_data else []
+    
+    users_data = []
+    for member in roster:
+        tag = clean_tag(member["tag"])
+        discord_record = next((u for u in linked_users if clean_tag(u.get("cr_tag", "")) == tag), None)
+        is_admin_user = (discord_record and discord_record.get("discord_id") in admins)
+        
+        users_data.append({
+            "name": member["name"],
+            "cr_tag": tag,
+            "discord_id": discord_record["discord_id"] if discord_record else "—",
+            "is_linked": bool(discord_record),
+            "rank": member.get("role", "member").capitalize(),
+            "status": "Admin" if is_admin_user else "Member"
+        })
+    return jsonify(users_data)
+
+@app.route("/admin/users/update", methods=["POST"])
+def update_user_status():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    discord_id = request.form.get("discord_id", "").strip()
+    status = request.form.get("status")
+    if discord_id:
+        sys_config_db = _get_cached_system_config()
+        admins = sys_config_db.get("admin_user_ids", ["751975709643112569"])
+        if status == "admin" and discord_id not in admins:
+            admins.append(discord_id)
+        elif status == "member" and discord_id in admins:
+            admins.remove(discord_id)
+        db_sync["config"].update_one({"_id": "system_config"}, {"$set": {"admin_user_ids": admins}}, upsert=True)
+    return redirect("/admin")
+
+# ── /admin/harvest/manual ──────────────────────────────────────────────────
 @app.route("/admin/harvest/manual", methods=["POST"])
 def manual_harvest():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -501,6 +480,7 @@ def manual_harvest():
         return jsonify({"message": "Manual Harvest initiated successfully! Please check diagnostics in 30 seconds."})
     return jsonify({"message": "Failed to send command. Redis offline."}), 500
 
+# ── /admin/api/template/<name> ─────────────────────────────────────────────
 @app.route("/admin/api/template/<name>")
 def api_get_template(name):
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -513,45 +493,32 @@ def api_get_template(name):
             return jsonify({"html": doc[name]})
         return jsonify({"html": globals().get(f"DEFAULT_{name.upper()}_HTML", "")})
 
+# ── /admin/api/snapshot/<date> ─────────────────────────────────────────────
 @app.route("/admin/api/snapshot/<date>")
 def api_get_snapshot(date):
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     try:
         records = list(db_sync["historical_snapshots"].find({"date": date}))
         for record in records:
-            if "_id" in record: del record["_id"]
+            if "_id" in record:
+                del record["_id"]
         if not records:
             return jsonify({"error": f"No records found for date: {date}"}), 404
         return jsonify(records)
     except Exception as e:
         log.error(f"Error fetching snapshot for {date}: {e}")
-        return jsonify({"error": "Internal server error while fetching snapshot."}), 500
+        return jsonify({"error": "Internal server error."}), 500
         
+# ── /admin/preview ─────────────────────────────────────────────────────────
 @app.route("/admin/preview", methods=["POST"])
 def preview_template():
     if not is_admin(): return "Unauthorized", 403
     html = request.form.get("html", "")
     ok, message, line = validate_jinja_syntax(html)
-    if not ok:
-        return f"<h3>Syntax Error on line {line}</h3><p>{message}</p>", 400
-        
-    dummy_context = {
-        "players": [{"name": "TestPlayer", "trophies": 5500, "role": "leader", "current_streak": 3, "fame": 2000, "warDayWins": 15, "donations": 400, "clean_tag": "XXXX"}],
-        "data": {
-            "name": "TestPlayer", "tag": "#XXXX", "expLevel": 50, "trophies": 5500, "bestTrophies": 6000,
-            "wins": 100, "losses": 50, "threeCrownWins": 35, "battleCount": 150, "current_streak": 5,
-            "donations": 400, "donationsReceived": 250, "warDayWins": 15, "currentFavouriteCard": {"name": "Graveyard"},
-            "arena": {"name": "Legendary Arena"}, "clan": {"name": "Graveyard Squad"}, "role": "coLeader",
-            "currentDeck": [{"name": "Graveyard", "level": 14, "maxLevel": 14}, {"name": "Poison", "level": 13, "maxLevel": 14}, {"name": "Tornado", "level": 15, "maxLevel": 14}]
-        },
-        "top_pusher": {"name": "TestPlayer", "trophies": 5500}, "top_streak": {"name": "TestPlayer", "current_streak": 3}, "top_war": {"name": "TestPlayer", "warDayWins": 15},
-        "clan_tag": CLAN_TAG, "max_lvl": MAX_CARD_LEVEL, "session": {"discord_name": "TestAdmin", "is_admin_user": True, "discord_id": "TEST_ID"}
-    }
-    try:
-        return render_sandboxed(html, **dummy_context)
-    except Exception as e:
-        return f"<h3>Preview Render Error:</h3><p>{str(e)}</p>", 500
+    if not ok: return f"<h3>Syntax Error on line {line}</h3><p>{message}</p>", 400
+    return "Preview syntax valid.", 200
  
+# ── /admin/diagnostics ────────────────────────────────────────────────────
 @app.route("/admin/diagnostics")
 def admin_diagnostics():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -562,24 +529,25 @@ def admin_diagnostics():
         ping_ms = round((_time.monotonic() - t0) * 1000, 1)
         info = redis_sync_client.info()
         result["redis"] = {
-            "status": "ok", "ping_ms": ping_ms, "used_memory": info.get("used_memory_human", "N/A"),
-            "total_keys": redis_sync_client.dbsize(), "mode": info.get("redis_mode", "N/A"), "redis_version": info.get("redis_version", "N/A"),
+            "status": "ok", "ping_ms": ping_ms,
+            "used_memory": info.get("used_memory_human", "N/A"),
+            "total_keys": redis_sync_client.dbsize(),
+            "mode": info.get("redis_mode", "N/A"), "redis_version": info.get("redis_version", "N/A"),
         }
-    except Exception as e:
-        result["redis"] = {"status": "error", "error": str(e)}
+    except Exception as e: result["redis"] = {"status": "error", "error": str(e)}
  
     try:
         t0 = _time.monotonic()
         mongo_client_sync.admin.command("ping")
         ping_ms = round((_time.monotonic() - t0) * 1000, 1)
         result["mongo"] = {
-            "status": "ok", "ping_ms": ping_ms, "db_name": db_sync.name,
+            "status": "ok", "ping_ms": ping_ms,
+            "db_name": db_sync.name,
             "snapshot_count": db_sync["historical_snapshots"].estimated_document_count(),
             "battle_count":   db_sync["battle_history"].estimated_document_count(),
             "profile_count":  db_sync["player_profiles"].estimated_document_count(),
         }
-    except Exception as e:
-        result["mongo"] = {"status": "error", "error": str(e)}
+    except Exception as e: result["mongo"] = {"status": "error", "error": str(e)}
  
     try:
         endpoint = f"https://proxy.royaleapi.dev/v1/clans/%23{CLAN_TAG}"
@@ -593,9 +561,10 @@ def admin_diagnostics():
         elif resp.status_code == 429: api_status = "rate_limited"
         elif resp.status_code == 403: api_status = "forbidden"
         
-        result["cr_api"] = {"status": api_status, "status_code": resp.status_code, "latency_ms": latency_ms, "endpoint_tested": endpoint}
-    except Exception as e:
-        result["cr_api"] = {"status": "unreachable", "error": str(e)}
+        result["cr_api"] = {
+            "status": api_status, "status_code": resp.status_code, "latency_ms": latency_ms, "endpoint_tested": endpoint,
+        }
+    except Exception as e: result["cr_api"] = {"status": "unreachable", "error": str(e)}
  
     bot_inst = globals().get("_bot_instance")
     if bot_inst:
@@ -607,30 +576,24 @@ def admin_diagnostics():
                 "connected": not bot_inst.is_closed(), "latency_ms": round(bot_inst.latency * 1000, 1),
                 "guild_count": len(bot_inst.guilds), "uptime": f"{h}h {m}m {s}s", "prefix": getattr(bot_inst, "active_prefix", "?"),
             }
-        except Exception as e:
-            result["bot"] = {"connected": False, "error": str(e)}
-    else:
-        result["bot"] = {"connected": False, "error": "No bot instance registered"}
+        except Exception as e: result["bot"] = {"connected": False, "error": str(e)}
+    else: result["bot"] = {"connected": False, "error": "No bot instance"}
  
     try:
         backend = "redis" if result.get("redis", {}).get("status") == "ok" else "mongo_fallback"
         with _cache_lock: html_entries = len(_HTML_CACHE)
-        
         if backend == "redis":
             total = len(redis_sync_client.keys("*"))
         else:
             total = db_sync["api_cache"].estimated_document_count()
-            
         result["cache"] = {"backend": backend, "total_keys": total, "html_cache_entries": html_entries}
-    except Exception as e:
-        result["cache"] = {"error": str(e)}
+    except Exception as e: result["cache"] = {"error": str(e)}
  
     harv = _harvest_meta.copy()
     try:
         history_dates = db_sync["historical_snapshots"].distinct("date")
         sorted_dates = sorted(history_dates, reverse=True)
         harv["history_dates"] = sorted_dates
-        
         if not harv.get("last_run") and sorted_dates:
             latest_date = sorted_dates[0]
             harv["last_run"] = f"{latest_date} (DB Restored)"
@@ -639,21 +602,15 @@ def admin_diagnostics():
             harv["battles_saved"] = "N/A (Memory reset)"
     except Exception as e:
         harv["history_dates"] = []
-        log.error(f"Error compiling harvest history: {e}")
-        
     result["harvest"] = harv
  
     cog = bot_inst.cogs.get("ClashRoyale") if bot_inst else None
     if cog:
         next_snap = cog.daily_snapshot_loop.next_iteration.strftime("%Y-%m-%d %H:%M:%S UTC") if cog.daily_snapshot_loop.next_iteration else None
         result["tasks"] = {"snapshot_loop": "running" if cog.daily_snapshot_loop.is_running() else "stopped", "next_snapshot": next_snap}
-    else:
-        result["tasks"] = {"snapshot_loop": "cog not loaded"}
+    else: result["tasks"] = {"snapshot_loop": "cog not loaded"}
  
-    tmpl_doc = db_sync["config"].find_one({"_id": "html_templates"}) or {}
-    result["templates"] = {name: ("db" if tmpl_doc.get(name) else "fallback") for name in ["roster", "player", "admin"]}
- 
-    result["version"] = "1.1.0"
+    result["version"] = "1.2.0"
     result["environment"] = os.getenv("ENVIRONMENT", "production")
     result["hostname"] = platform.node()
     return jsonify(result)
@@ -663,7 +620,7 @@ def admin_reset_html():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     db_sync["config"].delete_one({"_id": "html_templates"})
     invalidate_template_cache()
-    return jsonify({"message": "All templates reset. Pages now use Python fallbacks."})
+    return jsonify({"message": "All templates reset."})
  
 @app.route("/admin/flush-cache", methods=["POST"])
 def admin_flush_cache():
@@ -674,7 +631,8 @@ def admin_flush_cache():
         cr_keys = [k for k in keys if any((k.decode() if isinstance(k, bytes) else k).startswith(p) for p in ("player:", "clan:", "battlelog:", "currentrace:", "racelog:", "cards:", "chests:", "warmed_today:"))]
         if cr_keys: flushed = redis_sync_client.delete(*cr_keys)
     except Exception:
-        flushed = db_sync["api_cache"].delete_many({}).deleted_count
+        result = db_sync["api_cache"].delete_many({})
+        flushed = result.deleted_count
     invalidate_template_cache()
     return jsonify({"message": f"Flushed {flushed} cache keys."})
 
@@ -683,60 +641,36 @@ def update_html():
     if not is_admin(): return "Unauthorized", 403
     template_name = request.form.get("template_name")
     html_content = request.form.get("html_content")
-    
-    # Change this line right here:
-    if template_name in ["roster", "player", "link", "admin", "public_battles"]:
-        db_sync["config"].update_one({"_id": "html_templates"}, {"$set": {template_name: html_content}}, upsert=True)
+    if template_name in ["roster", "player", "link", "admin"]:
+        db_sync["config"].update_one(
+            {"_id": "html_templates"},
+            {"$set": {template_name: html_content}},
+            upsert=True,
+        )
         invalidate_template_cache()
         return redirect("/admin?success=UI+Code+Deployed+Live!")
     return redirect("/admin?error=Invalid+Template+Name")
 
-# ── Public /battles/<tag> ──────────────────────────────────────────────────
-@app.route("/battles/<tag>")
-def public_battle_log(tag):
-    clean_t = clean_tag(tag)
-    # Fetch the last 20 battles from your DB (not the API)
-    battles = list(db_sync["battle_history"]
-                   .find({"player_tag": clean_t})
-                   .sort("battle_time", -1)
-                   .limit(20))
-    
-    # Render a public template (you'll need to create a 'public_battles' template)
-    return render_sandboxed(
-        get_template("public_battles"),
-        tag=clean_t,
-        battles=battles
-    )
-
 @app.route("/admin/export/custom", methods=["POST"])
 def export_custom_csv():
-    if not is_admin(): return "Unauthorized", 403
+    if not is_admin():
+        return "Unauthorized", 403
+
     clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
     members = clan_data.get("memberList", []) if clan_data else []
     member_tags = [clean_tag(m["tag"]) for m in members]
 
-    latest_snapshot_meta = db_sync["historical_snapshots"].find_one({}, sort=[("date", -1)])
-    snap_map = {}
-    if latest_snapshot_meta and latest_snapshot_meta.get("date"):
-        snap_docs = list(db_sync["historical_snapshots"].find({"date": latest_snapshot_meta["date"], "tag": {"$in": member_tags}}))
-        snap_map = {doc.get("tag"): doc for doc in snap_docs if doc.get("tag")}
-
-    all_battles = list(db_sync["battle_history"].find({"player_tag": {"$in": member_tags}}))
-    battles_map = {}
-    for b in all_battles:
-        t = b.get("player_tag")
-        if not t: continue
-        if t not in battles_map: battles_map[t] = []
-        battles_map[t].append(b)
+    db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
+    profiles_map = {p["_id"]: p for p in db_profiles}
 
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
     war_participants = {}
     if war_data and "clan" in war_data and "participants" in war_data["clan"]:
-        war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if p.get("tag")}
+        war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
     else:
         for clan in (war_data.get("clans", []) if war_data else []):
             if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
-                war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", []) if p.get("tag")}
+                war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
                 break
 
     export_format = request.form.get("export_format", "csv")
@@ -753,29 +687,41 @@ def export_custom_csv():
         "fame":              lambda m, p, wp: wp.get("fame", 0),
         "decksUsedToday":    lambda m, p, wp: wp.get("decksUsedToday", 0),
         "decksRemaining":    lambda m, p, wp: wp.get("decksRemaining", 4),
-        "current_streak":    lambda m, p, wp: calculate_streak(battles_map.get(clean_tag(m["tag"]), [])),
+        "totalWins":         lambda m, p, wp: p.get("wins", 0),
+        "totalLosses":       lambda m, p, wp: p.get("losses", 0),
+        "current_streak":    lambda m, p, wp: p.get("current_streak", 0),
         "warDayWins":        lambda m, p, wp: p.get("warDayWins", 0),
+        "favoriteCard":      lambda m, p, wp: p.get("currentFavouriteCard", {}).get("name", "N/A"),
     }
     
     rows = []
     for m in members:
         tag = clean_tag(m["tag"])
-        rows.append({f: field_extractors[f](m, snap_map.get(tag, {}), war_participants.get(tag, {})) for f in selected_fields if f in field_extractors})
+        p = profiles_map.get(tag, {})
+        wp = war_participants.get(tag, {})
+        row = {f: field_extractors[f](m, p, wp) for f in selected_fields if f in field_extractors}
+        rows.append(row)
 
-    if export_format == "json": return jsonify(rows)
+    if export_format == "json":
+        return jsonify(rows)
 
     si = io.StringIO()
     cw = csv.writer(si)
     if selected_fields:
         cw.writerow(selected_fields)
-        for row in rows: cw.writerow([row.get(f, "N/A") for f in selected_fields])
+        for row in rows:
+            cw.writerow([row.get(f, "N/A") for f in selected_fields])
     else:
         cw.writerow(["Name", "Tag", "Trophies", "Current Win Streak"])
         for m in members:
             tag = clean_tag(m["tag"])
-            cw.writerow([m.get("name"), tag, m.get("trophies"), calculate_streak(battles_map.get(tag, []))])
+            p = profiles_map.get(tag, {})
+            cw.writerow([m.get("name"), tag, m.get("trophies"), p.get("current_streak", 0)])
 
-    return app.response_class(si.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"})
+    output = si.getvalue()
+    return app.response_class(
+        output, mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"}
+    )
 
 def _try_redis_publish(payload: dict) -> bool:
     try:
@@ -859,12 +805,8 @@ class GraveyardBot(commands.Bot):
         if not self.redis_available:
             now = time.time()
             if now - self._last_config_load > 30:
-                try: 
-                    await self.load_system_config()
-                    self._last_config_load = now
-                except Exception as e: 
-                    log.error(f"Fallback config reload failed: {e}")
-                    
+                try: await self.load_system_config(); self._last_config_load = now
+                except Exception as e: log.error(f"Fallback config reload failed: {e}")
         prefix = self.active_prefix
         if message.content.startswith(prefix):
             cmd_name = message.content[len(prefix):].split()[0].lower()
@@ -872,7 +814,6 @@ class GraveyardBot(commands.Bot):
             if custom_cmd:
                 await message.channel.send(custom_cmd["response"])
                 return
-                
         await self.process_commands(message)
 
     async def load_system_config(self):
@@ -916,7 +857,8 @@ class GraveyardBot(commands.Bot):
             cog = self.get_cog("ClashRoyale")
             if cog:
                 log.info("⚡ Executing Manual Harvest trigger requested via UI...")
-                self.loop.create_task(cog.run_harvest_logic())
+                # Call underlying loop coroutine directly
+                self.loop.create_task(cog.daily_snapshot_loop.coro(cog))
 
     async def close(self):
         if self.http_session: await self.http_session.close()
