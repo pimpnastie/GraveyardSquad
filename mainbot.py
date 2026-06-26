@@ -116,12 +116,21 @@ def _enrich_members(raw_members, profiles, war_parts):
         tag = m.get('tag', '').replace('#', '')
         if tag in seen: continue
         seen.add(tag)
+        
+        # Clean the name
         m['name'] = re.sub(r"<c\d?>|</c>", "", m.get("name", "Unknown"), flags=re.IGNORECASE)
+        
+        # Merge with database profile (defaulting to 0/empty to prevent UI crashes)
         p = profiles.get(tag, {})
+        
+        # Ensure every field used by the templates exists
         m['current_streak'] = calculate_streak(p.get('battles', []))
-        m['warDayWins'] = p.get('warDayWins', 0) # 👈 ADD THIS LINE
+        m['warDayWins'] = p.get('warDayWins', 0)
         m['fame'] = war_parts.get(tag, {}).get('fame', 0)
+        m['donations'] = p.get('donations', m.get('donations', 0)) # Try DB, fall back to snapshot
         m['clean_tag'] = tag
+        m['role'] = m.get('role', 'member') # Ensure role exists
+        
         players.append(m)
     return sorted(players, key=lambda x: x.get('trophies', 0), reverse=True)
 
@@ -206,14 +215,19 @@ def get_template(template_name: str) -> str:
     with _cache_lock:
         if template_name in _HTML_CACHE:
             return _HTML_CACHE[template_name]
+    
+    # Fetch from DB outside the lock to keep the lock duration minimal
     doc = db_sync["config"].find_one({"_id": "html_templates"})
+    
     with _cache_lock:
+        content = ""
         if doc and template_name in doc:
-            _HTML_CACHE[template_name] = doc[template_name]
-            return doc[template_name]
-        fallback = globals().get(f"DEFAULT_{template_name.upper()}_HTML", "")
-        _HTML_CACHE[template_name] = fallback
-        return fallback
+            content = doc[template_name]
+        else:
+            content = globals().get(f"DEFAULT_{template_name.upper()}_HTML", "")
+            
+        _HTML_CACHE[template_name] = content
+        return content
 
 def invalidate_template_cache() -> None:
     global _HTML_CACHE
@@ -265,8 +279,10 @@ def index():
                     "tag": doc.get("tag"),
                     "name": doc.get("name", "Unknown"),
                     "trophies": doc.get("trophies", 0),
-                    # Snapshots might not store role, so we default to Member to avoid UI crashes
-                    "role": doc.get("role", "member") 
+                    "role": doc.get("role", "member"),
+                    "donations": doc.get("donations", 0), # Add this to ensure roster cards don't look empty
+                    "fame": 0,                            # Default values
+                    "current_streak": 0
                 })
         
         member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
