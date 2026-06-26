@@ -94,11 +94,10 @@ def _restore_harvest_meta():
     except Exception as e:
         log.warning(f"Could not restore harvest meta: {e}")
 
-_restore_harvest_meta()  # ← now called after definition
+_restore_harvest_meta()
 # ---------------------------------------------------------------------------
 # 2. DATA ENRICHMENT & STREAK LOGIC
 # ---------------------------------------------------------------------------
-
 def calculate_streak(battles):
     # Sort by battle_time descending to get newest matches first
     sorted_battles = sorted(battles, key=lambda x: x.get('battle_time', ''), reverse=True)
@@ -114,14 +113,14 @@ def _enrich_members(raw_members, battles_map, snap_map, war_parts):
     players = []
     seen = set()
     for m in raw_members:
-        tag = m.get('tag', '').replace('#', '')
+        tag = clean_tag(m.get('tag', ''))
         if tag in seen: continue
         seen.add(tag)
         
         # Clean the name
         m['name'] = re.sub(r"<c\d?>|</c>", "", m.get("name", "Unknown"), flags=re.IGNORECASE)
         
-        # Pull records from our newly aligned database maps
+        # Pull records from our newly aligned database maps safely
         player_battles = battles_map.get(tag, [])
         player_snap = snap_map.get(tag, {})
         
@@ -257,11 +256,12 @@ def index():
             is_fallback = True
             error_msg = "Live API unreachable. Displaying cached data from the latest snapshot."
             
-            latest_snap = db_sync["historical_snapshots"].find_one(sort=[("date", -1)])
+            # Explicitly pass empty {} filter to ensure find_one(sort) works in all PyMongo versions
+            latest_snap = db_sync["historical_snapshots"].find_one({}, sort=[("date", -1)])
             if not latest_snap:
                 return render_sandboxed(get_template("roster"), players=[], error="Clash Royale API connection failed and no database backups exist yet.")
             
-            backup_docs = list(db_sync["historical_snapshots"].find({"date": latest_snap["date"]}))
+            backup_docs = list(db_sync["historical_snapshots"].find({"date": latest_snap.get("date")}))
             for doc in backup_docs:
                 raw_members.append({
                     "tag": doc.get("tag"),
@@ -273,21 +273,22 @@ def index():
                     "current_streak": 0
                 })
         
-        member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
+        member_tags = [clean_tag(m.get("tag", "")) for m in raw_members if m.get("tag")]
         
-        # 2. FIXED: Map Streaks from battle_history & War Wins from historical_snapshots
+        # 2. Map Streaks from battle_history & War Wins from historical_snapshots
         all_battles = list(db_sync["battle_history"].find({"player_tag": {"$in": member_tags}}))
         battles_map = {}
         for b in all_battles:
-            t = b["player_tag"]
+            t = b.get("player_tag")
+            if not t: continue
             if t not in battles_map: battles_map[t] = []
             battles_map[t].append(b)
             
-        latest_snapshot_meta = db_sync["historical_snapshots"].find_one(sort=[("date", -1)])
+        latest_snapshot_meta = db_sync["historical_snapshots"].find_one({}, sort=[("date", -1)])
         snap_map = {}
-        if latest_snapshot_meta:
+        if latest_snapshot_meta and latest_snapshot_meta.get("date"):
             snap_docs = list(db_sync["historical_snapshots"].find({"date": latest_snapshot_meta["date"], "tag": {"$in": member_tags}}))
-            snap_map = {doc["tag"]: doc for doc in snap_docs}
+            snap_map = {doc.get("tag"): doc for doc in snap_docs if doc.get("tag")}
         
         # 3. Fetch War Data
         war_participants = {}
@@ -295,11 +296,11 @@ def index():
             war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
             if war_data and isinstance(war_data, dict):
                 if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
-                    war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
+                    war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if p.get("tag")}
                 else:
                     for clan in war_data.get("clans", []):
                         if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
-                            war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
+                            war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", []) if p.get("tag")}
                             break
         
         # 4. Enrich & Sort
@@ -336,13 +337,42 @@ def logout():
 
 @app.route("/callback")
 def callback():
-    discord_id = user_info['id']
-    master_id = os.environ.get("MASTER_ADMIN_ID")
-    is_admin_user = (str(discord_id) == str(master_id))
+    # -------------------------------------------------------------
+    # 1. Exchange code for token (using your existing logic)
+    # 2. Get user info from Discord (e.g., user_info = ...)
+    # -------------------------------------------------------------
     
+    # Ensure user_info is defined by your OAuth logic above before proceeding
+    discord_id = str(user_info['id'])
+    discord_name = user_info.get('username', 'Unknown')
+    master_id = str(os.environ.get("751975709643112569", ""))
+    
+    # Look up the user in the database
+    db_user = db_sync["users"].find_one({"discord_id": discord_id})
+    
+    # Check if they are a hardcoded master admin
+    is_master = discord_id in ["751975709643112569", master_id]
+    
+    # Determine final admin status (Master OR Database Admin)
+    is_admin_user = is_master or (db_user and db_user.get("is_admin", False))
+    
+    # Upsert user into database to ensure they appear in the Admin UI
+    db_sync["users"].update_one(
+        {"discord_id": discord_id},
+        {"$set": {
+            "discord_id": discord_id,
+            "discord_name": discord_name,
+            "is_admin": is_admin_user, 
+            "last_login": time.time()
+        }},
+        upsert=True
+    )
+    
+    # Set session keys
     session['discord_id'] = discord_id
-    session['discord_name'] = user_info['username']
+    session['discord_name'] = discord_name
     session['is_admin_user'] = is_admin_user
+    
     return redirect("/")
     
 @app.route("/admin/api/battles")
@@ -365,18 +395,43 @@ def api_get_battles():
         
     return jsonify({"battles": battles, "total": total, "pages": (total // per_page) + 1})
 
+@app.route("/admin/api/users")
+def api_get_users():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    users = list(db_sync["users"].find({}, {"_id": 0}))
+    return jsonify(users)
+
+@app.route("/admin/api/users/toggle", methods=["POST"])
+def api_toggle_user():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+        
+    target_id = request.form.get("discord_id")
+    master_id = os.environ.get("MASTER_ADMIN_ID")
+    
+    if target_id in ["751975709643112569", master_id]:
+        return jsonify({"error": "Cannot modify Master Admin privileges."}), 403
+        
+    user = db_sync["users"].find_one({"discord_id": target_id})
+    if not user:
+        return jsonify({"error": "User not found."}), 404
+        
+    new_status = not user.get("is_admin", False)
+    db_sync["users"].update_one(
+        {"discord_id": target_id}, 
+        {"$set": {"is_admin": new_status}}
+    )
+    return jsonify({"message": f"User admin status changed to {new_status}.", "is_admin": new_status})
+
 @app.route("/admin/api/war")
 def api_get_war():
-    if not is_admin(): 
-        return jsonify({"error": "unauthorized"}), 403
-        
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") # Fetch live roster to cross-reference
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") 
     
     if not war_data:
         return jsonify({"error": "Failed to fetch war data from CR API."}), 500
         
-    # Filter participants to only include current members
     if clan_data and "memberList" in clan_data and war_data.get("clan", {}).get("participants"):
         current_tags = {clean_tag(m["tag"]) for m in clan_data["memberList"]}
         filtered_participants = [
@@ -390,10 +445,7 @@ def api_get_war():
 @app.route("/player/<tag>")
 def player_profile(tag):
     clean_t = clean_tag(tag)
-    
-    # 1. Fetch live data from the Clash Royale API
     player_data = fetch_cr_api(f"players/%23{clean_t}")
-    
     if not player_data:
         return render_sandboxed(
             get_template("player"), 
@@ -401,22 +453,19 @@ def player_profile(tag):
             error=f"Could not find player with tag #{clean_t}"
         ), 404
 
-    # 2. FIXED: Pull directly from battle_history to calculate the accurate Win Streak
     player_battles = list(db_sync["battle_history"].find({"player_tag": clean_t}))
     player_data["current_streak"] = calculate_streak(player_battles)
 
-    # 3. FIXED: Pull from historical_snapshots to populate War Day Wins
     latest_snap = db_sync["historical_snapshots"].find_one({"tag": clean_t}, sort=[("date", -1)])
     if latest_snap:
         player_data["warDayWins"] = latest_snap.get("warDayWins", 0)
     else:
-        player_data["warDayWins"] = player_data.get("warDayWins", 0) # Fallback to live API legacy stat if any
+        player_data["warDayWins"] = player_data.get("warDayWins", 0) 
 
-    # 4. Render template
     return render_sandboxed(
         get_template("player"),
-        data=player_data,          
-        max_lvl=MAX_CARD_LEVEL,    
+        data=player_data,
+        max_lvl=MAX_CARD_LEVEL,
         clan_tag=CLAN_TAG
     )
 
@@ -644,17 +693,28 @@ def export_custom_csv():
     members = clan_data.get("memberList", []) if clan_data else []
     member_tags = [clean_tag(m["tag"]) for m in members]
 
-    db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
-    profiles_map = {p["_id"]: p for p in db_profiles}
+    latest_snapshot_meta = db_sync["historical_snapshots"].find_one({}, sort=[("date", -1)])
+    snap_map = {}
+    if latest_snapshot_meta and latest_snapshot_meta.get("date"):
+        snap_docs = list(db_sync["historical_snapshots"].find({"date": latest_snapshot_meta["date"], "tag": {"$in": member_tags}}))
+        snap_map = {doc.get("tag"): doc for doc in snap_docs if doc.get("tag")}
+
+    all_battles = list(db_sync["battle_history"].find({"player_tag": {"$in": member_tags}}))
+    battles_map = {}
+    for b in all_battles:
+        t = b.get("player_tag")
+        if not t: continue
+        if t not in battles_map: battles_map[t] = []
+        battles_map[t].append(b)
 
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
     war_participants = {}
     if war_data and "clan" in war_data and "participants" in war_data["clan"]:
-        war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if "tag" in p}
+        war_participants = {clean_tag(p["tag"]): p for p in war_data["clan"]["participants"] if p.get("tag")}
     else:
         for clan in (war_data.get("clans", []) if war_data else []):
             if clan and clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
-                war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
+                war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", []) if p.get("tag")}
                 break
 
     export_format = request.form.get("export_format", "csv")
@@ -671,17 +731,14 @@ def export_custom_csv():
         "fame":              lambda m, p, wp: wp.get("fame", 0),
         "decksUsedToday":    lambda m, p, wp: wp.get("decksUsedToday", 0),
         "decksRemaining":    lambda m, p, wp: wp.get("decksRemaining", 4),
-        "totalWins":         lambda m, p, wp: p.get("wins", 0),
-        "totalLosses":       lambda m, p, wp: p.get("losses", 0),
-        "current_streak":    lambda m, p, wp: p.get("current_streak", 0),
+        "current_streak":    lambda m, p, wp: calculate_streak(battles_map.get(clean_tag(m["tag"]), [])),
         "warDayWins":        lambda m, p, wp: p.get("warDayWins", 0),
-        "favoriteCard":      lambda m, p, wp: p.get("currentFavouriteCard", {}).get("name", "N/A"),
     }
     
     rows = []
     for m in members:
         tag = clean_tag(m["tag"])
-        rows.append({f: field_extractors[f](m, profiles_map.get(tag, {}), war_participants.get(tag, {})) for f in selected_fields if f in field_extractors})
+        rows.append({f: field_extractors[f](m, snap_map.get(tag, {}), war_participants.get(tag, {})) for f in selected_fields if f in field_extractors})
 
     if export_format == "json": return jsonify(rows)
 
@@ -694,7 +751,7 @@ def export_custom_csv():
         cw.writerow(["Name", "Tag", "Trophies", "Current Win Streak"])
         for m in members:
             tag = clean_tag(m["tag"])
-            cw.writerow([m.get("name"), tag, m.get("trophies"), profiles_map.get(tag, {}).get("current_streak", 0)])
+            cw.writerow([m.get("name"), tag, m.get("trophies"), calculate_streak(battles_map.get(tag, []))])
 
     return app.response_class(si.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"})
 
@@ -792,7 +849,7 @@ class GraveyardBot(commands.Bot):
             custom_cmd = await self.custom_cmds.find_one({"_id": cmd_name})
             if custom_cmd:
                 await message.channel.send(custom_cmd["response"])
-                return # Formally stops processing to avoid execution collisions
+                return
                 
         await self.process_commands(message)
 
@@ -837,7 +894,6 @@ class GraveyardBot(commands.Bot):
             cog = self.get_cog("ClashRoyale")
             if cog:
                 log.info("⚡ Executing Manual Harvest trigger requested via UI...")
-                # FIX: Bypassed .coro() and called run_harvest_logic() directly safely
                 self.loop.create_task(cog.run_harvest_logic())
 
     async def close(self):
