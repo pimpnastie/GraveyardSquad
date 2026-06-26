@@ -354,132 +354,957 @@ DEFAULT_PLAYER_HTML = r"""
 DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Graveyard HQ</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graveyard HQ | Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-  :root { --bg: #080a0f; --surface: #0d1117; --panel: #111820; --border: #1e2d3d; --accent: #00e5ff; --ok: #00e096; --warn: #ffaa00; --err: #ff3d71; --text: #c9d1d9; --dim: #4a5568; --font-mono: 'Share Tech Mono', monospace; --font-ui: 'Barlow Condensed', sans-serif; }
+  :root {
+    --bg:        #080a0f;
+    --surface:   #0d1117;
+    --panel:     #111820;
+    --border:    #1e2d3d;
+    --accent:    #00e5ff;
+    --ok:        #00e096;
+    --warn:      #ffaa00;
+    --err:       #ff3d71;
+    --text:      #c9d1d9;
+    --dim:       #4a5568;
+    --font-mono: 'Share Tech Mono', monospace;
+    --font-ui:   'Barlow Condensed', sans-serif;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: var(--font-ui); min-height: 100vh; display: flex; flex-direction: column; }
-  .shell { display: flex; flex: 1; height: 100vh; overflow: hidden; }
-  .sidebar { width: 220px; background: var(--surface); border-right: 1px solid var(--border); padding: 20px 0; }
-  .main { flex: 1; padding: 28px; overflow-y: auto; }
-  .tab-pane { display: none; } .tab-pane.active { display: block; }
-  .nav-btn { display: block; width: 100%; padding: 12px 20px; border: none; background: none; color: var(--dim); text-align: left; cursor: pointer; text-transform: uppercase; font-weight: bold; }
-  .nav-btn.active { color: var(--accent); background: rgba(0,229,255,0.05); border-left: 3px solid var(--accent); }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: 15px; min-height: 100vh; display: flex; flex-direction: column; }
+
+  /* ── Topbar ── */
+  .topbar { display: flex; align-items: center; gap: 16px; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
+  .topbar-title { font-size: 22px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); text-shadow: 0 0 18px rgba(0,229,255,0.35); flex: 1; }
+  .topbar-title span { color: var(--dim); font-weight: 400; }
+  .topbar-badge { font-family: var(--font-mono); font-size: 11px; padding: 3px 10px; border-radius: 3px; background: rgba(0,229,255,0.08); border: 1px solid var(--accent); color: var(--accent); letter-spacing: 1px; }
+  .topbar a { color: var(--dim); text-decoration: none; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; transition: color .2s; }
+  .topbar a:hover { color: var(--text); }
+
+  /* ── Shell ── */
+  .shell { display: flex; flex: 1; height: calc(100vh - 53px); }
+  .sidebar { width: 200px; background: var(--surface); border-right: 1px solid var(--border); padding: 20px 0; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+  .nav-section { font-family: var(--font-mono); font-size: 10px; letter-spacing: 2px; color: var(--dim); padding: 14px 20px 6px; text-transform: uppercase; }
+  .nav-btn { display: flex; align-items: center; gap: 10px; padding: 10px 20px; background: none; border: none; color: var(--dim); font-family: var(--font-ui); font-size: 14px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; cursor: pointer; text-align: left; width: 100%; border-left: 3px solid transparent; transition: all .15s; }
+  .nav-btn:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+  .nav-btn.active { color: var(--accent); border-left-color: var(--accent); background: rgba(0,229,255,0.06); }
+  .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+  .main { flex: 1; overflow-y: auto; padding: 28px 32px; }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* ── Page header ── */
+  .page-header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 14px; }
+  .page-title { font-size: 28px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #fff; }
+  .page-sub { font-family: var(--font-mono); font-size: 12px; color: var(--dim); letter-spacing: 1px; }
+
+  /* ── Stat cards ── */
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-bottom: 28px; }
+  .stat-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px 18px; position: relative; overflow: hidden; }
+  .stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--accent); opacity: .6; }
+  .stat-card.ok::before   { background: var(--ok);   }
+  .stat-card.warn::before { background: var(--warn); }
+  .stat-card.err::before  { background: var(--err);  }
+  .stat-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 2px; color: var(--dim); text-transform: uppercase; margin-bottom: 8px; }
+  .stat-value { font-family: var(--font-mono); font-size: 26px; font-weight: 700; color: #fff; line-height: 1; }
+  .stat-value.ok   { color: var(--ok);   }
+  .stat-value.warn { color: var(--warn); }
+  .stat-value.err  { color: var(--err);  }
+  .stat-note { font-size: 11px; color: var(--dim); margin-top: 5px; }
+
+  /* ── Diag cards ── */
+  .diag-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .diag-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .diag-card-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); }
+  .diag-card-title { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #fff; }
+  .status-pill { font-family: var(--font-mono); font-size: 10px; padding: 3px 9px; border-radius: 20px; letter-spacing: 1px; text-transform: uppercase; font-weight: 700; }
+  .pill-ok      { background: rgba(0,224,150,0.12);  color: var(--ok);   border: 1px solid rgba(0,224,150,0.3); }
+  .pill-warn    { background: rgba(255,170,0,0.12);   color: var(--warn); border: 1px solid rgba(255,170,0,0.3); }
+  .pill-err     { background: rgba(255,61,113,0.12);  color: var(--err);  border: 1px solid rgba(255,61,113,0.3); }
+  .pill-loading { background: rgba(255,255,255,0.05); color: var(--dim);  border: 1px solid var(--border); }
+  .diag-body { padding: 14px 16px; }
+  .diag-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-family: var(--font-mono); font-size: 12px; }
+  .diag-row:last-child { border-bottom: none; }
+  .diag-key { color: var(--dim); }
+  .diag-val { color: var(--text); text-align: right; }
+  .diag-val.ok   { color: var(--ok);   }
+  .diag-val.warn { color: var(--warn); }
+  .diag-val.err  { color: var(--err);  }
+
+  /* ── Section labels ── */
+  .section-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--dim); margin-bottom: 12px; margin-top: 24px; display: flex; align-items: center; gap: 10px; }
+  .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  /* ── Buttons ── */
+  .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .btn-refresh { display: flex; align-items: center; gap: 8px; padding: 8px 18px; background: rgba(0,229,255,0.08); border: 1px solid var(--accent); border-radius: 4px; color: var(--accent); font-family: var(--font-ui); font-weight: 700; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; cursor: pointer; transition: all .2s; text-decoration: none; }
+  .btn-refresh:hover { background: rgba(0,229,255,0.16); }
+  .btn-danger { display: flex; align-items: center; gap: 8px; padding: 8px 18px; background: rgba(255,61,113,0.08); border: 1px solid var(--err); border-radius: 4px; color: var(--err); font-family: var(--font-ui); font-weight: 700; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; cursor: pointer; transition: all .2s; }
+  .btn-danger:hover { background: rgba(255,61,113,0.16); }
+  .last-refresh { font-family: var(--font-mono); font-size: 11px; color: var(--dim); margin-left: auto; }
+
+  /* ── Spinner ── */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { display: inline-block; animation: spin .8s linear infinite; }
+
+  /* ── War / battle table ── */
   .war-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
-  .war-table th, .war-table td { padding: 12px; border-bottom: 1px solid var(--border); text-align: left; }
-  .btn-refresh { padding: 8px 16px; background: rgba(0,229,255,0.08); border: 1px solid var(--accent); color: var(--accent); cursor: pointer; border-radius: 4px; }
-  .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; }
-  .modal-content { background: var(--panel); margin: 10% auto; padding: 25px; width: 600px; border: 1px solid var(--border); border-radius: 8px; }
+  .war-table th { text-align: left; font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .war-table td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); color: var(--text); vertical-align: middle; }
+  .war-table tr:hover td { background: rgba(255,255,255,0.03); }
+
+  /* ── Filter bar ── */
+  .form-input, .form-select {
+    padding: 8px 12px;
+    background: #050709;
+    color: #fff;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .form-input:focus, .form-select:focus { border-color: var(--accent); }
+  .form-input::placeholder { color: var(--dim); }
+
+  /* ── Result badges ── */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
+  .badge-win  { background: rgba(0,224,150,0.12); color: var(--ok);  border: 1px solid rgba(0,224,150,0.25); }
+  .badge-loss { background: rgba(255,61,113,0.12); color: var(--err); border: 1px solid rgba(255,61,113,0.25); }
+
+  /* ── Deck bar ── */
+  .deck-bar { height: 5px; border-radius: 3px; background: var(--border); margin-top: 5px; overflow: hidden; max-width: 80px; }
+  .deck-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s; }
+
+  /* ── Editor ── */
+  .editor-textarea {
+    width: 100%;
+    padding: 16px;
+    background: #050709;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    line-height: 1.6;
+    resize: vertical;
+    outline: none;
+    transition: border-color .15s;
+    min-height: 420px;
+  }
+  .editor-textarea:focus { border-color: var(--accent); }
+  .editor-meta { font-family: var(--font-mono); font-size: 11px; color: var(--dim); margin-top: 8px; }
+
+  /* ── Battle modal ── */
+  .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 1000; align-items: center; justify-content: center; }
+  .modal.open { display: flex; }
+  .modal-content { background: var(--panel); width: 640px; max-width: 94vw; max-height: 82vh; border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); }
+  .modal-header h3 { font-size: 14px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #fff; }
+  .modal-close { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 18px; padding: 2px 6px; border-radius: 4px; transition: color .15s; }
+  .modal-close:hover { color: #fff; }
+  .modal-body { padding: 20px; overflow-y: auto; }
+  .card-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+  .card-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 11px; font-family: var(--font-mono); text-align: center; color: var(--text); }
+  .modal-meta { display: flex; gap: 24px; margin-bottom: 18px; font-family: var(--font-mono); font-size: 12px; flex-wrap: wrap; }
+  .modal-meta-item span { color: var(--dim); margin-right: 4px; }
+  .deck-section-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); margin: 14px 0 8px; }
+
+  /* ── Log box ── */
+  .log-box { background: #050709; border: 1px solid var(--border); border-radius: 6px; padding: 14px; font-family: var(--font-mono); font-size: 11px; color: var(--dim); max-height: 240px; overflow-y: auto; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
+  .log-line-ok   { color: var(--ok);   }
+  .log-line-warn { color: var(--warn); }
+  .log-line-err  { color: var(--err);  }
+
+  /* ── Toasts ── */
+  .toast-wrap { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
+  .toast { padding: 10px 18px; border-radius: 5px; font-family: var(--font-mono); font-size: 12px; border: 1px solid; animation: fadeIn .25s ease; cursor: pointer; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .toast-ok   { background: rgba(0,224,150,0.1);  border-color: var(--ok);     color: var(--ok);     }
+  .toast-err  { background: rgba(255,61,113,0.1); border-color: var(--err);    color: var(--err);    }
+  .toast-info { background: rgba(0,229,255,0.1);  border-color: var(--accent); color: var(--accent); }
+
+  /* ── Scrollbars ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 </style>
 </head>
 <body>
+
+<header class="topbar">
+  <div class="topbar-title">☠ Graveyard <span>HQ</span></div>
+  <span class="topbar-badge">CLAN: #{{ clan_tag }}</span>
+  <a href="/">← Roster</a>
+  <a href="/logout">Logout</a>
+</header>
+
 <div class="shell">
   <nav class="sidebar">
-    <button class="nav-btn active" onclick="showTab('battles', this)">📜 Battle Logs</button>
-    <button class="nav-btn" onclick="showTab('war', this)">⚔️ War Monitor</button>
-    <button class="nav-btn" onclick="showTab('csv', this)">📄 CSV Export</button>
-    <button class="nav-btn" onclick="showTab('admin', this)">⚙️ Admin Tools</button>
+    <div class="nav-section">Navigation</div>
+    <button class="nav-btn active" onclick="showTab('diag', this)"><span class="nav-icon">🔍</span>Diagnostics</button>
+    <button class="nav-btn" onclick="showTab('war', this)"><span class="nav-icon">⚔️</span>War Monitor</button>
+    <button class="nav-btn" onclick="showTab('battles', this)"><span class="nav-icon">📜</span>Battle Logs</button>
+    <button class="nav-btn" onclick="showTab('harvest', this)"><span class="nav-icon">📡</span>Harvest Log</button>
+    <button class="nav-btn" onclick="showTab('csv', this)"><span class="nav-icon">📄</span>CSV Export</button>
+    <button class="nav-btn" onclick="showTab('editor', this)"><span class="nav-icon">🎨</span>UI Editor</button>
+    <div class="nav-section">Danger Zone</div>
+    <button class="nav-btn" onclick="showTab('admin', this)"><span class="nav-icon">⚙️</span>Admin Tools</button>
   </nav>
+
   <main class="main">
-    <div class="tab-pane active" id="tab-battles">
-      <div class="toolbar" style="display:flex; gap:10px; margin-bottom:20px;">
-        <select id="battle-player-filter" class="form-select" onchange="loadBattles(1)">
-            <option value="">All Players</option>
-        </select>
-        <button class="btn-refresh" onclick="loadBattles(1)">↻ Refresh Logs</button>
+
+    <!-- ── DIAGNOSTICS ── -->
+    <div class="tab-pane active" id="tab-diag">
+      <div class="page-header">
+        <div class="page-title">Diagnostics</div>
+        <div class="page-sub" id="diag-env">Initializing…</div>
       </div>
-      <div id="battle-stats-summary" style="margin-bottom:10px; color:var(--accent);"></div>
-      <table class="war-table">
-        <thead><tr><th>Time</th><th>Player</th><th>Result</th><th>Score</th><th>Deck (Click to View)</th></tr></thead>
-        <tbody id="battles-body"></tbody>
-      </table>
-      <div id="pagination-controls" style="margin-top:20px; display:flex; gap:5px;"></div>
+      <div class="toolbar">
+        <button class="btn-refresh" id="btn-diag-refresh" onclick="loadDiagnostics()">
+          <span id="diag-spin">↻</span> Refresh
+        </button>
+        <span class="last-refresh" id="diag-last-refresh">Never refreshed</span>
+      </div>
+      <div class="stat-row">
+        <div class="stat-card" id="sc-redis">   <div class="stat-label">Redis</div>       <div class="stat-value">—</div><div class="stat-note">Checking…</div></div>
+        <div class="stat-card" id="sc-mongo">   <div class="stat-label">MongoDB</div>     <div class="stat-value">—</div><div class="stat-note">Checking…</div></div>
+        <div class="stat-card" id="sc-crapi">   <div class="stat-label">CR API</div>      <div class="stat-value">—</div><div class="stat-note">Checking…</div></div>
+        <div class="stat-card" id="sc-cache-keys"><div class="stat-label">Cache Keys</div><div class="stat-value">—</div><div class="stat-note">Redis key count</div></div>
+        <div class="stat-card" id="sc-harvest"> <div class="stat-label">Last Harvest</div><div class="stat-value" style="font-size:15px">—</div><div class="stat-note">Snapshot timestamp</div></div>
+      </div>
+      <div class="section-label">Infrastructure</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">⚡ Redis</div><span class="status-pill pill-loading" id="pill-redis">LOADING</span></div>
+          <div class="diag-body" id="body-redis"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🍃 MongoDB</div><span class="status-pill pill-loading" id="pill-mongo">LOADING</span></div>
+          <div class="diag-body" id="body-mongo"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🃏 CR API</div><span class="status-pill pill-loading" id="pill-crapi">LOADING</span></div>
+          <div class="diag-body" id="body-crapi"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🤖 Bot Process</div><span class="status-pill pill-loading" id="pill-bot">LOADING</span></div>
+          <div class="diag-body" id="body-bot"></div>
+        </div>
+      </div>
+      <div class="section-label">Cache &amp; Data</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">📊 Cache Stats</div></div>
+          <div class="diag-body" id="body-cache"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">⏳ Tasks</div></div>
+          <div class="diag-body" id="body-tasks"></div>
+        </div>
+      </div>
+      <div class="section-label">Event Log</div>
+      <div class="log-box" id="diag-log">Waiting for data…</div>
     </div>
 
+    <!-- ── WAR MONITOR ── -->
     <div class="tab-pane" id="tab-war">
-      <button class="btn-refresh" onclick="loadWar()">Refresh War Data</button>
-      <div id="war-content" style="margin-top:20px;"></div>
+      <div class="page-header">
+        <div class="page-title">War Monitor</div>
+        <div class="page-sub">Current River Race</div>
+      </div>
+      <div class="toolbar">
+        <button class="btn-refresh" onclick="loadWar()">↻ Refresh</button>
+        <span class="last-refresh" id="war-last-refresh"></span>
+      </div>
+      <div id="war-content">
+        <div style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Click refresh to load war data.</div>
+      </div>
     </div>
 
-    <div class="tab-pane" id="tab-csv">
-        <form id="csv-export-form" onsubmit="handleCustomCSVExport(event)">
-          <label>1. Select Fields <input type="checkbox" onchange="toggleAllFields(this)"> Toggle All</label>
-          <div id="csv-fields" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin:10px 0;">
-             <label><input type="checkbox" name="fields" value="name" checked> Name</label>
-             <label><input type="checkbox" name="fields" value="tag" checked> Tag</label>
-             <label><input type="checkbox" name="fields" value="trophies" checked> Trophies</label>
-          </div>
-          <button type="submit" class="btn-refresh">📥 Generate CSV</button>
-        </form>
+    <!-- ── BATTLE LOGS ── -->
+    <div class="tab-pane" id="tab-battles">
+      <div class="page-header">
+        <div class="page-title">Battle Logs</div>
+        <div class="page-sub">Raw Combat Feed from MongoDB</div>
+      </div>
+      <div class="toolbar">
+        <input class="form-input" id="battle-filter" placeholder="Filter by player or tag…" oninput="filterBattles()" style="width:200px">
+        <select class="form-select" id="result-filter" onchange="filterBattles()">
+          <option value="">All results</option>
+          <option value="win">Wins only</option>
+          <option value="loss">Losses only</option>
+        </select>
+        <button class="btn-refresh" onclick="loadBattles()">↻ Fetch Latest</button>
+        <span class="last-refresh" id="battles-last-refresh"></span>
+      </div>
+      <div id="battles-status"></div>
+      <div class="diag-card" style="padding:0; overflow-x:auto;">
+        <table class="war-table">
+          <thead>
+            <tr>
+              <th>Time (UTC)</th>
+              <th>Player</th>
+              <th>Tag</th>
+              <th>Type</th>
+              <th>Result</th>
+              <th>Score</th>
+              <th>Opponent</th>
+              <th>Decks</th>
+            </tr>
+          </thead>
+          <tbody id="battles-body">
+            <tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">Click fetch to load the latest 100 records.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
+
+    <!-- ── HARVEST LOG ── -->
+    <div class="tab-pane" id="tab-harvest">
+      <div class="page-header">
+        <div class="page-title">Harvest Log</div>
+        <div class="page-sub">Historical Data &amp; Manual Triggers</div>
+      </div>
+      <div class="toolbar">
+        <button class="btn-danger" onclick="triggerManualHarvest()" style="background:rgba(241,196,15,0.1); border-color:#f1c40f; color:#f1c40f;">
+          ⚡ Force Manual Snapshot
+        </button>
+        <button class="btn-refresh" onclick="loadDiagnostics()">↻ Refresh Status</button>
+      </div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">📡 Current Harvest Info</div></div>
+          <div class="diag-body" id="harvest-detail-body">Load diagnostics first.</div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">📅 Snapshot History</div></div>
+          <div class="diag-body" id="harvest-history-body" style="max-height:200px; overflow-y:auto;">Load diagnostics first.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CSV EXPORT ── -->
+    <div class="tab-pane" id="tab-csv">
+      <div class="page-header">
+        <div class="page-title">Data Exporter</div>
+        <div class="page-sub">Generate Custom CSV &amp; Computed Logic</div>
+      </div>
+      <div class="diag-card" style="padding:24px;">
+        <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">1. Select Fields</label>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; margin:12px 0 24px; color:#fff; font-family:var(--font-mono); font-size:13px;">
+          <label><input type="checkbox" name="csv-fields" value="name" checked> Name</label>
+          <label><input type="checkbox" name="csv-fields" value="tag" checked> Tag</label>
+          <label><input type="checkbox" name="csv-fields" value="role" checked> Role</label>
+          <label><input type="checkbox" name="csv-fields" value="trophies" checked> Trophies</label>
+          <label><input type="checkbox" name="csv-fields" value="fame" checked> War Fame</label>
+          <label><input type="checkbox" name="csv-fields" value="totalWins"> Total Wins</label>
+          <label><input type="checkbox" name="csv-fields" value="totalLosses"> Total Losses</label>
+          <label><input type="checkbox" name="csv-fields" value="current_streak"> Win Streak</label>
+          <label><input type="checkbox" name="csv-fields" value="donations"> Donations</label>
+          <label><input type="checkbox" name="csv-fields" value="warDayWins"> War Day Wins</label>
+          <label><input type="checkbox" name="csv-fields" value="decksUsedToday" checked> Decks Used</label>
+          <label><input type="checkbox" name="csv-fields" value="decksRemaining" checked> Decks Remaining</label>
+        </div>
+        <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">2. Computed Formulas</label>
+        <div style="display:grid; gap:10px; margin:12px 0 24px; color:#fff; font-family:var(--font-mono); font-size:13px;">
+          <label>
+            <input type="checkbox" id="formula-winrate">
+            <strong>Win Rate %</strong>
+            <span style="color:var(--dim);"> ( totalWins / (totalWins + totalLosses) * 100 )</span>
+          </label>
+          <label>
+            <input type="checkbox" id="formula-warpart">
+            <strong>War Participation %</strong>
+            <span style="color:var(--dim);"> ( decksUsedToday / (decksUsedToday + decksRemaining) * 100 )</span>
+          </label>
+        </div>
+        <button class="btn-refresh" onclick="handleCustomCSVExport()" style="border-color:var(--ok); color:var(--ok); background:rgba(0,224,150,0.08);">
+          📥 Generate &amp; Download CSV
+        </button>
+      </div>
+    </div>
+
+    <!-- ── UI EDITOR ── -->
+    <div class="tab-pane" id="tab-editor">
+      <div class="page-header">
+        <div class="page-title">UI Editor</div>
+        <div class="page-sub">Live deploy or preview custom HTML templates</div>
+      </div>
+      <div class="diag-card" style="padding:24px;">
+        <div style="display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap;">
+          <select id="editor-template-name" class="form-select" onchange="onTemplateChange()">
+            <option value="roster">Roster (Home)</option>
+            <option value="player">Player Profile</option>
+            <option value="admin">Admin Dashboard</option>
+            <option value="link">Discord Link Page</option>
+          </select>
+          <button onclick="fetchTemplateForEditor('current')" class="btn-refresh" style="padding:6px 14px;">Load Live DB</button>
+          <button onclick="fetchTemplateForEditor('default')" class="btn-refresh" style="padding:6px 14px;">Load Default</button>
+          <span class="last-refresh" id="editor-meta"></span>
+        </div>
+
+        <textarea id="editor-html-content" class="editor-textarea" spellcheck="false" placeholder="Load a template above to start editing…"></textarea>
+        <div class="editor-meta" id="editor-char-count"></div>
+
+        <div style="display:flex; gap:12px; margin-top:16px; flex-wrap:wrap;">
+          <button class="btn-refresh" onclick="deployTemplate()" style="border-color:var(--ok); color:var(--ok); background:rgba(0,224,150,0.08);">
+            🚀 Deploy Live
+          </button>
+          <button class="btn-refresh" onclick="previewTemplate()" style="border-color:#f1c40f; color:#f1c40f; background:rgba(241,196,15,0.1);">
+            👀 Preview in New Tab
+          </button>
+          <button class="btn-danger" onclick="resetTemplate()" style="margin-left:auto;">
+            ↩ Reset to Default
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ADMIN TOOLS ── -->
+    <div class="tab-pane" id="tab-admin">
+      <div class="page-header">
+        <div class="page-title">Admin Tools</div>
+        <div class="page-sub">Careful in here</div>
+      </div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🔄 Cache Flush</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Flush all Redis CR API cache keys. Use when data looks stale.</p>
+            <button class="btn-danger" onclick="confirmFlushCache()">⚠ Flush CR Cache</button>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🩺 Health Check API</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Raw JSON payload of all internal diagnostics.</p>
+            <button class="btn-refresh" onclick="window.open('/admin/diagnostics','_blank')">Open Raw JSON ↗</button>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">⚡ Manual Harvest</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Force a snapshot outside the scheduled window.</p>
+            <button class="btn-danger" onclick="triggerManualHarvest()" style="background:rgba(241,196,15,0.1); border-color:#f1c40f; color:#f1c40f;">⚡ Trigger Now</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </main>
 </div>
 
-<div id="battle-modal" class="modal" onclick="this.style.display='none'">
+<!-- Battle detail modal -->
+<div id="battle-modal" class="modal" onclick="closeModal()">
   <div class="modal-content" onclick="event.stopPropagation()">
-    <h3>Battle Details</h3>
-    <div id="modal-body" style="display:flex; gap:20px; margin-top:15px;"></div>
+    <div class="modal-header">
+      <h3>Battle Details</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
   </div>
 </div>
 
+<!-- Hidden preview form (POST to server so it can render the template) -->
+<form id="preview-form" action="/admin/preview" method="POST" target="_blank" style="display:none;">
+  <input type="hidden" name="template" id="preview-template-name">
+  <textarea name="html" id="preview-html"></textarea>
+</form>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+
 <script>
+// ── State ─────────────────────────────────────────────────────────────────────
+var allBattles = [];
+var _logLines  = [];
+
+// ── Navigation ────────────────────────────────────────────────────────────────
 function showTab(name, btn) {
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-    document.getElementById('tab-' + name).classList.add('active');
-    btn.classList.add('active');
+  document.querySelectorAll('.tab-pane').forEach(function(p) { p.classList.remove('active'); });
+  document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
+  var pane = document.getElementById('tab-' + name);
+  if (pane) pane.classList.add('active');
+  if (btn)  btn.classList.add('active');
 }
 
-async function loadBattles(page = 1) {
-    const tag = document.getElementById('battle-player-filter').value;
-    const res = await fetch(`/admin/api/battles?tag=${tag}&page=${page}`);
-    const data = await res.json();
-    
-    document.getElementById('battles-body').innerHTML = data.battles.map(b => `
-        <tr onclick='showBattleDetails(${JSON.stringify(b)})' style="cursor:pointer">
-            <td>${b.battle_time.substring(0,16)}</td>
-            <td>${b.player_name || b.player_tag}</td>
-            <td class="${b.result}">${b.result.toUpperCase()}</td>
-            <td>${b.team_crowns}-${b.opp_crowns}</td>
-            <td>${(b.team_cards || []).length} cards used</td>
-        </tr>
-    `).join('');
-
-    const pag = document.getElementById('pagination-controls');
-    pag.innerHTML = Array.from({length: data.pages}, (_, i) => 
-        `<button class="btn-refresh" onclick="loadBattles(${i+1})">${i+1}</button>`
-    ).join('');
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-function showBattleDetails(b) {
-    const body = document.getElementById('modal-body');
-    const team = (b.team_cards || []).map(c => c.name).join(', ');
-    const opp = (b.opponent_cards || []).map(c => c.name).join(', ');
-    body.innerHTML = `<div style="flex:1"><h4>Your Deck</h4><p>${team}</p></div>
-                      <div style="flex:1"><h4>Opponent Deck</h4><p>${opp}</p></div>`;
-    document.getElementById('battle-modal').style.display = 'block';
+function toast(msg, type, duration) {
+  type     = type     || 'info';
+  duration = duration || 3500;
+  var wrap = document.getElementById('toast-wrap');
+  var t = document.createElement('div');
+  t.className   = 'toast toast-' + type;
+  t.textContent = msg;
+  t.onclick = function() { t.remove(); };
+  wrap.appendChild(t);
+  setTimeout(function() { if (t.parentNode) t.remove(); }, duration);
 }
 
-function toggleAllFields(source) {
-  document.querySelectorAll('#csv-export-form input[type="checkbox"]').forEach(cb => cb.checked = source.checked);
+function appendLog(msg, level) {
+  level = level || 'info';
+  var ts = new Date().toLocaleTimeString();
+  _logLines.push({ ts: ts, msg: msg, level: level });
+  if (_logLines.length > 200) _logLines.shift();
+  var box = document.getElementById('diag-log');
+  if (!box) return;
+  box.innerHTML = _logLines.map(function(l) {
+    return '<span class="log-line-' + l.level + '">[' + l.ts + '] ' + esc(l.msg) + '</span>';
+  }).join('\n');
+  box.scrollTop = box.scrollHeight;
 }
 
-// Auto-populate filter from Roster cards
-document.addEventListener('DOMContentLoaded', async () => {
-    const res = await fetch('/');
-    const text = await res.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(text, 'text/html');
-    const filter = document.getElementById('battle-player-filter');
-    doc.querySelectorAll('.player-card').forEach(card => {
-        const name = card.querySelector('.p-name').textContent.trim();
-        const tag = card.getAttribute('href').split('/').pop();
-        filter.innerHTML += `<option value="${tag}">${name}</option>`;
+function setPill(id, text, type) {
+  var el = document.getElementById(id);
+  if (el) { el.className = 'status-pill pill-' + type; el.textContent = text; }
+}
+
+function setStatCard(id, value, note, status) {
+  var card = document.getElementById(id);
+  if (!card) return;
+  card.className = 'stat-card ' + status;
+  card.querySelector('.stat-value').className = 'stat-value ' + status;
+  card.querySelector('.stat-value').textContent = value;
+  card.querySelector('.stat-note').textContent  = note;
+}
+
+function renderRows(rows) {
+  return rows.map(function(r) {
+    return '<div class="diag-row"><span class="diag-key">' + esc(r[0]) + '</span>'
+      + '<span class="diag-val ' + (r[2] || '') + '">' + esc(String(r[1])) + '</span></div>';
+  }).join('');
+}
+
+function formatBattleTime(raw) {
+  if (!raw) return '—';
+  // CR format: 20240612T123456.000Z → readable
+  var m = String(raw).match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
+  if (m) return m[1]+'-'+m[2]+'-'+m[3]+' '+m[4]+':'+m[5];
+  return raw.substring(0, 16);
+}
+
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+async function loadDiagnostics() {
+  var btn  = document.getElementById('btn-diag-refresh');
+  var spin = document.getElementById('diag-spin');
+  btn.disabled = true;
+  spin.className = 'spin';
+  appendLog('Fetching /admin/diagnostics…');
+  try {
+    var resp = await fetch('/admin/diagnostics');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var d = await resp.json();
+    appendLog('Response received (HTTP 200)', 'ok');
+    renderDiagnostics(d);
+    document.getElementById('diag-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    appendLog('Error: ' + e.message, 'err');
+    toast('Failed to load diagnostics: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    spin.className = '';
+  }
+}
+
+function renderDiagnostics(d) {
+  document.getElementById('diag-env').textContent =
+    'v' + (d.version || '?') + ' · ' + (d.environment || 'unknown') + ' · ' + (d.hostname || '');
+
+  var redis = d.redis || {};
+  var redisOk = redis.status === 'ok';
+  setPill('pill-redis', redisOk ? 'ONLINE' : 'OFFLINE', redisOk ? 'ok' : 'err');
+  setStatCard('sc-redis', redisOk ? '✓' : '✗', redis.ping_ms != null ? redis.ping_ms + 'ms ping' : 'unreachable', redisOk ? 'ok' : 'err');
+  document.getElementById('body-redis').innerHTML = renderRows([
+    ['Status',     redis.status     || 'unknown', redisOk ? 'ok' : 'err'],
+    ['Ping',       redis.ping_ms    != null ? redis.ping_ms + ' ms' : 'N/A'],
+    ['Used Memory',redis.used_memory || 'N/A'],
+    ['Total Keys', redis.total_keys  != null ? redis.total_keys : 'N/A']
+  ]);
+
+  var mongo = d.mongo || {};
+  var mongoOk = mongo.status === 'ok';
+  setPill('pill-mongo', mongoOk ? 'ONLINE' : 'OFFLINE', mongoOk ? 'ok' : 'err');
+  setStatCard('sc-mongo', mongoOk ? '✓' : '✗', mongo.ping_ms != null ? mongo.ping_ms + 'ms ping' : 'unreachable', mongoOk ? 'ok' : 'err');
+  document.getElementById('body-mongo').innerHTML = renderRows([
+    ['Status',      mongo.status      || 'unknown', mongoOk ? 'ok' : 'err'],
+    ['Ping',        mongo.ping_ms     != null ? mongo.ping_ms + ' ms' : 'N/A'],
+    ['Snapshots',   mongo.snapshot_count != null ? mongo.snapshot_count : 'N/A'],
+    ['Battle Docs', mongo.battle_count   != null ? mongo.battle_count   : 'N/A']
+  ]);
+
+  var api = d.cr_api || {};
+  var apiOk  = api.status === 'ok';
+  var apiCls = apiOk ? 'ok' : (api.status === 'rate_limited' ? 'warn' : 'err');
+  setPill('pill-crapi', (api.status || 'unknown').toUpperCase(), apiCls);
+  setStatCard('sc-crapi', api.status_code || '—', api.latency_ms != null ? api.latency_ms + 'ms' : 'unreachable', apiCls);
+  document.getElementById('body-crapi').innerHTML = renderRows([
+    ['Status',          api.status          || 'unknown', apiCls],
+    ['HTTP Code',       api.status_code     != null ? api.status_code  : 'N/A'],
+    ['Latency',         api.latency_ms      != null ? api.latency_ms + ' ms' : 'N/A'],
+    ['Endpoint Tested', api.endpoint_tested || 'N/A']
+  ]);
+
+  var bot = d.bot || {};
+  var botOk = bot.connected === true;
+  setPill('pill-bot', botOk ? 'CONNECTED' : 'OFFLINE', botOk ? 'ok' : 'err');
+  document.getElementById('body-bot').innerHTML = renderRows([
+    ['Discord WS', bot.connected ? 'Connected' : 'Disconnected', bot.connected ? 'ok' : 'err'],
+    ['Latency',    bot.latency_ms != null ? bot.latency_ms + ' ms' : 'N/A'],
+    ['Uptime',     bot.uptime     || 'N/A']
+  ]);
+
+  var cache = d.cache || {};
+  var totalKeys = cache.total_keys != null ? cache.total_keys : 0;
+  setStatCard('sc-cache-keys', totalKeys, 'keys in store', totalKeys > 0 ? 'ok' : 'warn');
+  document.getElementById('body-cache').innerHTML = renderRows([
+    ['Backend',         cache.backend            || 'unknown'],
+    ['Total Keys',      cache.total_keys         != null ? cache.total_keys : 0],
+    ['HTML Cache Entries', cache.html_cache_entries != null ? cache.html_cache_entries : 0]
+  ]);
+
+  var harv = d.harvest || {};
+  var harvOk = !!harv.last_run;
+  setStatCard('sc-harvest', harv.last_run || 'Never', harv.snapshots_saved ? harv.snapshots_saved + ' snaps' : 'no data', harvOk ? 'ok' : 'warn');
+  document.getElementById('harvest-detail-body').innerHTML = renderRows([
+    ['Last Run',          harv.last_run           || 'Never'],
+    ['Status',            harv.status             || 'unknown', harv.status === 'ok' ? 'ok' : 'warn'],
+    ['Snapshots Saved',   harv.snapshots_saved    != null ? harv.snapshots_saved    : 'N/A'],
+    ['Profiles Saved',    harv.profiles_saved     != null ? harv.profiles_saved     : 'N/A'],
+    ['Battles Saved',     harv.battles_saved      != null ? harv.battles_saved      : 'N/A'],
+    ['Duration',          harv.duration_s         != null ? harv.duration_s + 's'  : 'N/A'],
+    ['Members',           harv.member_count       != null ? harv.member_count       : 'N/A'],
+    ['War Participants',  harv.war_participants_found != null ? harv.war_participants_found : 'N/A']
+  ]);
+
+  var historyList = (harv.history_dates || []).map(function(date) {
+    return '<div class="diag-row" style="padding:10px 0;">'
+      + '<span class="diag-key" style="color:#fff;">' + esc(date) + '</span>'
+      + '<span class="diag-val">'
+      + '<button class="btn-refresh" style="padding:4px 10px; font-size:11px;" '
+      + 'onclick="window.open(\'/admin/api/snapshot/' + esc(date) + '\',\'_blank\')">👀 View</button>'
+      + '</span></div>';
+  }).join('');
+  document.getElementById('harvest-history-body').innerHTML = historyList || 'No snapshots found.';
+
+  var tasks = d.tasks || {};
+  document.getElementById('body-tasks').innerHTML = renderRows([
+    ['Snapshot Loop', tasks.snapshot_loop || 'unknown'],
+    ['Next Snapshot', tasks.next_snapshot || 'N/A']
+  ]);
+
+  appendLog('Diagnostics render complete.', 'ok');
+}
+
+// ── War Monitor ───────────────────────────────────────────────────────────────
+async function loadWar() {
+  var content = document.getElementById('war-content');
+  content.innerHTML = '<div style="color:var(--dim);font-family:var(--font-mono);font-size:12px;"><span class="spin">↻</span> Fetching live war data…</div>';
+  try {
+    var res  = await fetch('/admin/api/war');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    var participants = (data.clan && data.clan.participants) ? data.clan.participants : [];
+    if (!participants.length) throw new Error('No participants found.');
+
+    var totalFame  = participants.reduce(function(s,p){ return s + (p.fame||0); }, 0);
+    var totalDecks = participants.reduce(function(s,p){ return s + (p.decksUsedToday||0); }, 0);
+    var maxDecks   = participants.length * 4;
+
+    var sorted = participants.slice().sort(function(a,b){ return (b.fame||0)-(a.fame||0); });
+
+    content.innerHTML =
+      '<div class="stat-row">'
+      + '<div class="stat-card ok"><div class="stat-label">Race State</div><div class="stat-value" style="font-size:18px;">' + esc((data.state||'unknown').toUpperCase()) + '</div></div>'
+      + '<div class="stat-card ok"><div class="stat-label">Clan Fame</div><div class="stat-value">⭐ ' + esc(totalFame) + '</div></div>'
+      + '<div class="stat-card ok"><div class="stat-label">Deck Usage</div><div class="stat-value">' + esc(totalDecks) + ' / ' + esc(maxDecks) + '</div></div>'
+      + '<div class="stat-card ok"><div class="stat-label">Participants</div><div class="stat-value">👥 ' + esc(participants.length) + '</div></div>'
+      + '</div>'
+      + '<div class="diag-card" style="overflow-x:auto;">'
+      + '<table class="war-table"><thead><tr>'
+      + '<th>Player</th><th>Tag</th><th>Fame</th><th>Decks Today</th><th>War Wins</th>'
+      + '</tr></thead><tbody>'
+      + sorted.map(function(p) {
+          var decks = p.decksUsedToday || 0;
+          var pct   = Math.round(decks / 4 * 100);
+          return '<tr>'
+            + '<td><strong>' + esc(p.name) + '</strong></td>'
+            + '<td style="color:var(--dim)">' + esc(p.tag) + '</td>'
+            + '<td style="color:var(--accent); font-weight:700;">' + esc(p.fame||0) + '</td>'
+            + '<td>' + esc(decks) + '/4'
+            + '<div class="deck-bar"><div class="deck-bar-fill" style="width:' + pct + '%"></div></div></td>'
+            + '<td>' + esc(p.warDayWins||0) + '</td>'
+            + '</tr>';
+        }).join('')
+      + '</tbody></table></div>';
+
+    document.getElementById('war-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
+    toast('War data loaded (' + participants.length + ' participants).', 'ok');
+  } catch(err) {
+    content.innerHTML = '<div style="color:var(--err);font-family:var(--font-mono);">Error: ' + esc(err.message) + '</div>';
+    toast('Failed to load war data: ' + err.message, 'err');
+  }
+}
+
+// ── Battle Logs ───────────────────────────────────────────────────────────────
+async function loadBattles() {
+  var tbody  = document.getElementById('battles-body');
+  var status = document.getElementById('battles-status');
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading…</td></tr>';
+  status.innerHTML = '';
+  try {
+    var res  = await fetch('/admin/api/battles');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    allBattles = Array.isArray(data) ? data : (data.battles || []);
+    document.getElementById('battles-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
+    renderBattles(allBattles);
+    toast('Loaded ' + allBattles.length + ' battle records.', 'ok');
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--err);">Error: ' + esc(e.message) + '</td></tr>';
+    toast('Failed to load battles: ' + e.message, 'err');
+  }
+}
+
+function renderBattles(battles) {
+  var tbody = document.getElementById('battles-body');
+  if (!battles.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">No records match your filter.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = battles.map(function(b, i) {
+    var resultBadge = (b.result === 'win' || b.result === 'loss')
+      ? '<span class="badge badge-' + esc(b.result) + '">' + esc(b.result) + '</span>'
+      : esc(b.result || '—');
+    var decks = (b.team_cards || []).length;
+    return '<tr onclick="showBattleDetails(' + i + ')" style="cursor:pointer">'
+      + '<td style="color:var(--dim)">' + esc(formatBattleTime(b.battle_time)) + '</td>'
+      + '<td><strong>' + esc(b.player_name || '—') + '</strong></td>'
+      + '<td style="color:var(--dim)">' + esc(b.player_tag || '—') + '</td>'
+      + '<td style="color:var(--dim)">' + esc(b.type || '—') + '</td>'
+      + '<td>' + resultBadge + '</td>'
+      + '<td>' + (b.team_crowns != null ? b.team_crowns : '—') + ' – ' + (b.opp_crowns != null ? b.opp_crowns : '—') + '</td>'
+      + '<td>' + esc(b.opp_name || '—') + '</td>'
+      + '<td style="color:var(--dim)">' + decks + ' cards</td>'
+      + '</tr>';
+  }).join('');
+}
+
+function filterBattles() {
+  var text   = document.getElementById('battle-filter').value.toUpperCase();
+  var result = document.getElementById('result-filter').value;
+  var filtered = allBattles.filter(function(b) {
+    var matchText = !text
+      || (b.player_name || '').toUpperCase().includes(text)
+      || (b.player_tag  || '').toUpperCase().includes(text);
+    var matchResult = !result || b.result === result;
+    return matchText && matchResult;
+  });
+  renderBattles(filtered);
+}
+
+function showBattleDetails(i) {
+  var b = allBattles[i];
+  if (!b) return;
+  var teamCards = b.team_cards || [];
+  var oppCards  = b.opponent_cards || [];
+
+  function cardGrid(cards) {
+    if (!cards.length) return '<p style="color:var(--dim);font-size:12px;font-family:var(--font-mono);">No cards recorded.</p>';
+    return '<div class="card-grid">' + cards.map(function(c) {
+      return '<div class="card-chip">' + esc(c.name || c) + '</div>';
+    }).join('') + '</div>';
+  }
+
+  document.getElementById('modal-body').innerHTML =
+    '<div class="modal-meta">'
+    + '<div class="modal-meta-item"><span>Time</span>' + esc(formatBattleTime(b.battle_time)) + '</div>'
+    + '<div class="modal-meta-item"><span>Player</span>' + esc(b.player_name || b.player_tag) + '</div>'
+    + '<div class="modal-meta-item"><span>Result</span><strong style="color:var(--' + (b.result==='win'?'ok':'err') + ')">' + esc((b.result||'').toUpperCase()) + '</strong></div>'
+    + '<div class="modal-meta-item"><span>Score</span>' + (b.team_crowns??'?') + ' – ' + (b.opp_crowns??'?') + '</div>'
+    + '</div>'
+    + '<div class="deck-section-title">Your Deck</div>' + cardGrid(teamCards)
+    + '<div class="deck-section-title" style="margin-top:16px;">Opponent Deck</div>' + cardGrid(oppCards);
+
+  document.getElementById('battle-modal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('battle-modal').classList.remove('open');
+}
+
+// ── Harvest ───────────────────────────────────────────────────────────────────
+async function triggerManualHarvest() {
+  if (!confirm('Force snapshot generation? This will execute the daily loop immediately.')) return;
+  try {
+    var res  = await fetch('/admin/harvest/manual', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    toast(data.message || 'Harvest triggered.', 'ok');
+    appendLog('Manual harvest broadcast sent.', 'warn');
+  } catch(e) {
+    toast('Harvest failed: ' + e.message, 'err');
+    appendLog('Harvest error: ' + e.message, 'err');
+  }
+}
+
+// ── UI Editor ─────────────────────────────────────────────────────────────────
+function onTemplateChange() {
+  document.getElementById('editor-html-content').value = '';
+  document.getElementById('editor-meta').textContent = '';
+  document.getElementById('editor-char-count').textContent = '';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  var ta = document.getElementById('editor-html-content');
+  if (ta) {
+    ta.addEventListener('input', function() {
+      var n = ta.value.length;
+      document.getElementById('editor-char-count').textContent = n.toLocaleString() + ' characters';
     });
-    loadBattles();
+  }
 });
+
+async function fetchTemplateForEditor(source) {
+  var name = document.getElementById('editor-template-name').value;
+  try {
+    var res  = await fetch('/admin/api/template/' + encodeURIComponent(name) + '?source=' + encodeURIComponent(source));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    if (data.html === undefined) throw new Error('No HTML field in response.');
+    var ta = document.getElementById('editor-html-content');
+    ta.value = data.html;
+    var n = ta.value.length;
+    document.getElementById('editor-char-count').textContent = n.toLocaleString() + ' characters';
+    document.getElementById('editor-meta').textContent =
+      'Loaded ' + source + ' · ' + name + ' · ' + new Date().toLocaleTimeString();
+    toast('Loaded ' + source + ' HTML for "' + name + '"', 'ok');
+  } catch(e) {
+    toast('Error loading template: ' + e.message, 'err');
+  }
+}
+
+async function deployTemplate() {
+  var name = document.getElementById('editor-template-name').value;
+  var html = document.getElementById('editor-html-content').value.trim();
+  if (!html) { toast('Nothing to deploy — editor is empty.', 'err'); return; }
+  if (!confirm('Deploy this HTML as the live "' + name + '" template?')) return;
+  try {
+    var body = new FormData();
+    body.set('template_name', name);
+    body.set('html_content',  html);
+    var res = await fetch('/admin/update-html', { method: 'POST', body: body });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    toast('Deployed "' + name + '" successfully.', 'ok');
+    appendLog('Template deployed: ' + name, 'ok');
+  } catch(e) {
+    toast('Deploy failed: ' + e.message, 'err');
+    appendLog('Deploy error: ' + e.message, 'err');
+  }
+}
+
+function previewTemplate() {
+  var html = document.getElementById('editor-html-content').value.trim();
+  if (!html) { toast('Nothing to preview — editor is empty.', 'err'); return; }
+  document.getElementById('preview-template-name').value = document.getElementById('editor-template-name').value;
+  document.getElementById('preview-html').value = html;
+  document.getElementById('preview-form').submit();
+}
+
+async function resetTemplate() {
+  var name = document.getElementById('editor-template-name').value;
+  if (!confirm('Reset "' + name + '" to its default? This will overwrite the DB entry.')) return;
+  await fetchTemplateForEditor('default');
+  await deployTemplate();
+}
+
+// ── CSV Export ────────────────────────────────────────────────────────────────
+async function handleCustomCSVExport() {
+  var fields = Array.from(document.querySelectorAll('input[name="csv-fields"]:checked')).map(function(cb){ return cb.value; });
+  if (!fields.length) { toast('Select at least one field.', 'err'); return; }
+
+  var formData = new FormData();
+  fields.forEach(function(f){ formData.append('fields', f); });
+  formData.set('export_format', 'json');
+  toast('Fetching data…', 'info');
+
+  try {
+    var res     = await fetch('/admin/export/custom', { method: 'POST', body: formData });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var records = await res.json();
+    if (!Array.isArray(records)) throw new Error('Invalid response format.');
+
+    var wantWinRate = document.getElementById('formula-winrate').checked;
+    var wantWarPart = document.getElementById('formula-warpart').checked;
+    var headers = Object.keys(records[0] || {});
+    if (wantWinRate) headers.push('Computed_WinRate%');
+    if (wantWarPart) headers.push('Computed_WarParticipation%');
+
+    var csvContent = headers.join(',') + '\n';
+    records.forEach(function(row) {
+      if (wantWinRate) {
+        var w = row.totalWins || 0, l = row.totalLosses || 0;
+        row['Computed_WinRate%'] = (w + l > 0) ? ((w / (w + l)) * 100).toFixed(1) : 0;
+      }
+      if (wantWarPart) {
+        var used = row.decksUsedToday || 0, rem = row.decksRemaining || 0, total = used + rem;
+        row['Computed_WarParticipation%'] = total > 0 ? ((used / total) * 100).toFixed(1) : 0;
+      }
+      csvContent += headers.map(function(h) {
+        var val = row[h] != null ? row[h] : 'N/A';
+        return '"' + String(val).replace(/"/g, '""') + '"';
+      }).join(',') + '\n';
+    });
+
+    var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute('download', 'Graveyard_Export.csv');
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast('CSV downloaded (' + records.length + ' rows).', 'ok');
+  } catch(err) {
+    toast('Export error: ' + err.message, 'err');
+  }
+}
+
+// ── Admin ─────────────────────────────────────────────────────────────────────
+async function confirmFlushCache() {
+  if (!confirm('Flush all CR API cache keys from Redis?')) return;
+  try {
+    var res  = await fetch('/admin/flush-cache', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    toast(data.message || 'Cache flushed.', 'ok');
+    appendLog('Cache flushed.', 'warn');
+    loadDiagnostics();
+  } catch(e) {
+    toast('Flush failed: ' + e.message, 'err');
+    appendLog('Flush error: ' + e.message, 'err');
+  }
+}
+
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeModal();
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function() { loadDiagnostics(); });
 </script>
 </body>
 </html>"""

@@ -195,22 +195,18 @@ def _get_cached_system_config() -> dict:
         return {}
 
 def is_admin() -> bool:
-    # Check if the user is authenticated
     if "discord_id" not in session:
         return False
     
     discord_id = str(session.get("discord_id"))
     
-    # Hardcoded ID check (as requested)
     if discord_id == "751975709643112569": 
         return True
     
-    # Env Var check
     master_admin = os.getenv("MASTER_ADMIN_ID", "")
     if master_admin and discord_id == master_admin:
         return True
         
-    # Optional: check DB-based roles if implemented
     return session.get("is_admin_user", False)
 
 def get_template(template_name: str) -> str:
@@ -218,7 +214,6 @@ def get_template(template_name: str) -> str:
         if template_name in _HTML_CACHE:
             return _HTML_CACHE[template_name]
     
-    # Fetch from DB outside the lock to keep the lock duration minimal
     doc = db_sync["config"].find_one({"_id": "html_templates"})
     
     with _cache_lock:
@@ -237,13 +232,9 @@ def invalidate_template_cache() -> None:
         _HTML_CACHE = {}
 
 def render_sandboxed(template_str: str, **context) -> str:
-    """Safely renders HTML content, blocking remote server code injection vectors."""
     template = sandbox_env.from_string(template_str)
-    
-    # Automatically inject Flask's session object for UI logic
     if "session" not in context:
         context["session"] = session
-        
     return template.render(**context)
 
 # ---------------------------------------------------------------------------
@@ -252,29 +243,22 @@ def render_sandboxed(template_str: str, **context) -> str:
 @app.route("/")
 def index():
     try:
-        # 1. Try to Fetch Live Clan Roster
         clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
         is_fallback = False
         error_msg = None
         raw_members = []
         
-        # Check if live data is valid
         if clan_data and "memberList" in clan_data:
             raw_members = clan_data["memberList"]
         else:
-            # 🛑 FALLBACK LOGIC: Live API failed, pull from the latest DB snapshot
             log.warning("Live CR API unreachable. Falling back to latest DB snapshot.")
             is_fallback = True
             error_msg = "Live API unreachable. Displaying cached data from the latest snapshot."
             
-            # Find the most recent date we have a snapshot for
             latest_snap = db_sync["historical_snapshots"].find_one(sort=[("date", -1)])
-            
             if not latest_snap:
-                # If we have NO live data and NO backups, we have to bail out
                 return render_sandboxed(get_template("roster"), players=[], error="Clash Royale API connection failed and no database backups exist yet.")
             
-            # Reconstruct the member list from the snapshot documents
             backup_docs = list(db_sync["historical_snapshots"].find({"date": latest_snap["date"]}))
             for doc in backup_docs:
                 raw_members.append({
@@ -282,18 +266,15 @@ def index():
                     "name": doc.get("name", "Unknown"),
                     "trophies": doc.get("trophies", 0),
                     "role": doc.get("role", "member"),
-                    "donations": doc.get("donations", 0), # Add this to ensure roster cards don't look empty
-                    "fame": 0,                            # Default values
+                    "donations": doc.get("donations", 0),
+                    "fame": 0,
                     "current_streak": 0
                 })
         
         member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
-        
-        # 2. Grab Database Profiles for Streaks/Stats
         db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
         profiles_map = {p["_id"]: p for p in db_profiles}
         
-        # 3. Fetch War Data (Only if we aren't already in fallback mode)
         war_participants = {}
         if not is_fallback:
             war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
@@ -306,10 +287,7 @@ def index():
                             war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
                             break
         
-        # 4. Enrich & Sort
         players = _enrich_members(raw_members, profiles_map, war_participants)
-        
-        # 5. Calculate Hall of Fame
         top_pusher = max(players, key=lambda x: x.get("trophies", 0)) if players else None
         top_streak = max(players, key=lambda x: x.get("current_streak", 0)) if players else None
         top_war = max(players, key=lambda x: x.get("warDayWins", 0)) if players else None
@@ -320,7 +298,7 @@ def index():
             top_pusher=top_pusher,
             top_streak=top_streak,
             top_war=top_war,
-            error=error_msg # Will display the warning banner if fallback was triggered
+            error=error_msg
         )
     except Exception as e:
         log.exception("Index route crash prevented gracefully.")
@@ -332,7 +310,6 @@ def favicon():
     
 @app.route("/login")
 def login():
-    # Redirect to your Discord OAuth2 URL
     return redirect("https://graveyardbot.onrender.com/callback")
 
 @app.route("/logout")
@@ -342,22 +319,15 @@ def logout():
 
 @app.route("/callback")
 def callback():
-    # 1. Exchange code for token (using your existing logic)
-    # 2. Get user info from Discord
     discord_id = user_info['id']
-    
-    # 3. Check against your Master Admin ID
     master_id = os.environ.get("MASTER_ADMIN_ID")
     is_admin_user = (str(discord_id) == str(master_id))
     
-    # 4. Set session keys
     session['discord_id'] = discord_id
     session['discord_name'] = user_info['username']
     session['is_admin_user'] = is_admin_user
-    
     return redirect("/")
     
-# ── /admin/api/battles ─────────────────────────────────────────────────────
 @app.route("/admin/api/battles")
 def api_get_battles():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -365,114 +335,83 @@ def api_get_battles():
     tag = request.args.get("tag")
     page = int(request.args.get("page", 1))
     per_page = 20
-    
     query = {"player_tag": tag} if tag else {}
     
-    # Fetch battles + total count for pagination
     battles = list(db_sync["battle_history"].find(query)
                    .sort("battle_time", -1)
                    .skip((page - 1) * per_page)
                    .limit(per_page))
-    
-    # Include total count for the frontend to calculate "Pages"
     total = db_sync["battle_history"].count_documents(query)
     
     for b in battles:
         b["_id"] = str(b["_id"])
         
     return jsonify({"battles": battles, "total": total, "pages": (total // per_page) + 1})
-#################################################WAR MONITOR
-# ── /admin/api/war ─────────────────────────────────────────────────────────
+
 @app.route("/admin/api/war")
 def api_get_war():
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
-        
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
     if not war_data:
         return jsonify({"error": "Failed to fetch war data from CR API."}), 500
-        
     return jsonify(war_data)
-###############################ROSTERLOGIC
-# ── /player/<tag> ────────────────────────────────────────────────────────
+
 @app.route("/player/<tag>")
 def player_profile(tag):
     clean_t = clean_tag(tag)
-    
-    # 1. Fetch live data from the Clash Royale API
     player_data = fetch_cr_api(f"players/%23{clean_t}")
-    
     if not player_data:
-        # If the API fails or the tag is invalid, return a friendly error
         return render_sandboxed(
             get_template("player"), 
             player=None, 
             error=f"Could not find player with tag #{clean_t}"
         ), 404
 
-    # 2. Grab Database Profile to calculate the Win Streak
     db_profile = db_sync["player_profiles"].find_one({"_id": clean_t})
     if db_profile and "battles" in db_profile:
         player_data["current_streak"] = calculate_streak(db_profile.get("battles", []))
     else:
         player_data["current_streak"] = 0
 
-    # 3. Render your custom 'player' UI Template
     return render_sandboxed(
         get_template("player"),
-        data=player_data,          # FIXED: 'player' -> 'data'
-        max_lvl=MAX_CARD_LEVEL,    # ADDED: Needed for max-level UI logic
+        data=player_data,
+        max_lvl=MAX_CARD_LEVEL,
         clan_tag=CLAN_TAG
     )
 
-
-
- 
-# ── /admin ────────────────────────────────────────────────────────────────
 @app.route("/admin")
 def admin_panel():
-    if not is_admin():
-        return "Unauthorized", 403
-    return render_sandboxed(
-        get_template("admin"),
-        clan_tag=CLAN_TAG,
-    )
-#----/battles-------------------------------------------------------------------------------------
+    if not is_admin(): return "Unauthorized", 403
+    return render_sandboxed(get_template("admin"), clan_tag=CLAN_TAG)
+
 @app.route("/api/player/<tag>/battles")
 def api_player_battles(tag):
-    # Ensure tag matches db format (no #)
     clean_t = tag.replace("#", "").upper()
     try:
-        # Fetch the 15 most recent battles for this specific tag
         battles = list(
             db_sync["battle_history"]
             .find({"player_tag": clean_t})
             .sort("battle_time", -1)
             .limit(15)
         )
-        
-        # Convert ObjectId to string for JSON serialization
         for b in battles:
             b["_id"] = str(b["_id"])
-            
         return jsonify(battles)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-# ── /admin/harvest/manual ──────────────────────────────────────────────────
+
 @app.route("/admin/harvest/manual", methods=["POST"])
 def manual_harvest():
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     ok = _try_redis_publish({"action": "MANUAL_HARVEST"})
     if ok:
         return jsonify({"message": "Manual Harvest initiated successfully! Please check diagnostics in 30 seconds."})
     return jsonify({"message": "Failed to send command. Redis offline."}), 500
 
-# ── /admin/api/template/<name> ─────────────────────────────────────────────
 @app.route("/admin/api/template/<name>")
 def api_get_template(name):
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     source = request.args.get("source", "current")
     if source == "default":
         return jsonify({"html": globals().get(f"DEFAULT_{name.upper()}_HTML", "")})
@@ -482,98 +421,48 @@ def api_get_template(name):
             return jsonify({"html": doc[name]})
         return jsonify({"html": globals().get(f"DEFAULT_{name.upper()}_HTML", "")})
 
-# ── /admin/api/snapshot/<date> ─────────────────────────────────────────────
 @app.route("/admin/api/snapshot/<date>")
 def api_get_snapshot(date):
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
-
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     try:
-        # Fetch all records for the given date from MongoDB
         records = list(db_sync["historical_snapshots"].find({"date": date}))
-        
-        # Flask cannot serialize MongoDB's ObjectId, so we remove it
         for record in records:
-            if "_id" in record:
-                del record["_id"]
-
+            if "_id" in record: del record["_id"]
         if not records:
             return jsonify({"error": f"No records found for date: {date}"}), 404
-
         return jsonify(records)
     except Exception as e:
         log.error(f"Error fetching snapshot for {date}: {e}")
         return jsonify({"error": "Internal server error while fetching snapshot."}), 500
         
-# ── /admin/preview ─────────────────────────────────────────────────────────
-# ── /admin/preview ─────────────────────────────────────────────────────────
 @app.route("/admin/preview", methods=["POST"])
 def preview_template():
-    if not is_admin():
-        return "Unauthorized", 403
-    
+    if not is_admin(): return "Unauthorized", 403
     html = request.form.get("html", "")
-    template_name = request.form.get("template", "roster")
-    
-    # Safe validation check before execution
     ok, message, line = validate_jinja_syntax(html)
     if not ok:
         return f"<h3>Syntax Error on line {line}</h3><p>{message}</p>", 400
         
-    # Provide dummy context specific to testing
     dummy_context = {
-        "players": [
-            {"name": "TestPlayer", "trophies": 5500, "role": "leader", "current_streak": 3, "fame": 2000, "warDayWins": 15, "donations": 400, "clean_tag": "XXXX"}
-        ],
+        "players": [{"name": "TestPlayer", "trophies": 5500, "role": "leader", "current_streak": 3, "fame": 2000, "warDayWins": 15, "donations": 400, "clean_tag": "XXXX"}],
         "data": {
-            "name": "TestPlayer", 
-            "tag": "#XXXX", 
-            "expLevel": 50, 
-            "trophies": 5500, 
-            "bestTrophies": 6000,
-            "wins": 100, 
-            "losses": 50, 
-            "threeCrownWins": 35,
-            "battleCount": 150,
-            "current_streak": 5,
-            "donations": 400,
-            "donationsReceived": 250,
-            "warDayWins": 15,
-            "currentFavouriteCard": {"name": "Graveyard"},
-            "arena": {"name": "Legendary Arena"},
-            "clan": {"name": "Graveyard Squad"},
-            "role": "coLeader",
-            "currentDeck": [
-                {"name": "Graveyard", "level": 14, "maxLevel": 14},
-                {"name": "Poison", "level": 13, "maxLevel": 14},
-                {"name": "Tornado", "level": 15, "maxLevel": 14}
-            ]
+            "name": "TestPlayer", "tag": "#XXXX", "expLevel": 50, "trophies": 5500, "bestTrophies": 6000,
+            "wins": 100, "losses": 50, "threeCrownWins": 35, "battleCount": 150, "current_streak": 5,
+            "donations": 400, "donationsReceived": 250, "warDayWins": 15, "currentFavouriteCard": {"name": "Graveyard"},
+            "arena": {"name": "Legendary Arena"}, "clan": {"name": "Graveyard Squad"}, "role": "coLeader",
+            "currentDeck": [{"name": "Graveyard", "level": 14, "maxLevel": 14}, {"name": "Poison", "level": 13, "maxLevel": 14}, {"name": "Tornado", "level": 15, "maxLevel": 14}]
         },
-        "top_pusher": {"name": "TestPlayer", "trophies": 5500},
-        "top_streak": {"name": "TestPlayer", "current_streak": 3},
-        "top_war": {"name": "TestPlayer", "warDayWins": 15},
-        "clan_tag": CLAN_TAG,
-        "max_lvl": MAX_CARD_LEVEL,
-        "session": {
-            "discord_name": "TestAdmin",
-            "is_admin_user": True,
-            "discord_id": "TEST_ID"
-        }
+        "top_pusher": {"name": "TestPlayer", "trophies": 5500}, "top_streak": {"name": "TestPlayer", "current_streak": 3}, "top_war": {"name": "TestPlayer", "warDayWins": 15},
+        "clan_tag": CLAN_TAG, "max_lvl": MAX_CARD_LEVEL, "session": {"discord_name": "TestAdmin", "is_admin_user": True, "discord_id": "TEST_ID"}
     }
-    
     try:
-        # Pass the context to the renderer
         return render_sandboxed(html, **dummy_context)
     except Exception as e:
-        # This will now print the exact missing variable or error in the preview window
         return f"<h3>Preview Render Error:</h3><p>{str(e)}</p>", 500
  
-# ── /admin/diagnostics ────────────────────────────────────────────────────
 @app.route("/admin/diagnostics")
 def admin_diagnostics():
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
- 
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     result = {}
     try:
         t0 = _time.monotonic()
@@ -581,12 +470,8 @@ def admin_diagnostics():
         ping_ms = round((_time.monotonic() - t0) * 1000, 1)
         info = redis_sync_client.info()
         result["redis"] = {
-            "status": "ok",
-            "ping_ms": ping_ms,
-            "used_memory": info.get("used_memory_human", "N/A"),
-            "total_keys": redis_sync_client.dbsize(),
-            "mode": info.get("redis_mode", "N/A"),
-            "redis_version": info.get("redis_version", "N/A"),
+            "status": "ok", "ping_ms": ping_ms, "used_memory": info.get("used_memory_human", "N/A"),
+            "total_keys": redis_sync_client.dbsize(), "mode": info.get("redis_mode", "N/A"), "redis_version": info.get("redis_version", "N/A"),
         }
     except Exception as e:
         result["redis"] = {"status": "error", "error": str(e)}
@@ -596,9 +481,7 @@ def admin_diagnostics():
         mongo_client_sync.admin.command("ping")
         ping_ms = round((_time.monotonic() - t0) * 1000, 1)
         result["mongo"] = {
-            "status": "ok",
-            "ping_ms": ping_ms,
-            "db_name": db_sync.name,
+            "status": "ok", "ping_ms": ping_ms, "db_name": db_sync.name,
             "snapshot_count": db_sync["historical_snapshots"].estimated_document_count(),
             "battle_count":   db_sync["battle_history"].estimated_document_count(),
             "profile_count":  db_sync["player_profiles"].estimated_document_count(),
@@ -609,10 +492,7 @@ def admin_diagnostics():
     try:
         endpoint = f"https://proxy.royaleapi.dev/v1/clans/%23{CLAN_TAG}"
         t0 = _time.monotonic()
-        auth_headers = {
-            "Authorization": f"Bearer {os.getenv('CR_TOKEN', '').strip()}",
-            "Accept": "application/json"
-        }
+        auth_headers = {"Authorization": f"Bearer {os.getenv('CR_TOKEN', '').strip()}", "Accept": "application/json"}
         resp = cr_api_session.get(endpoint, headers=auth_headers, timeout=5)
         latency_ms = round((_time.monotonic() - t0) * 1000, 1)
         
@@ -621,12 +501,7 @@ def admin_diagnostics():
         elif resp.status_code == 429: api_status = "rate_limited"
         elif resp.status_code == 403: api_status = "forbidden"
         
-        result["cr_api"] = {
-            "status": api_status,
-            "status_code": resp.status_code,
-            "latency_ms": latency_ms,
-            "endpoint_tested": endpoint,
-        }
+        result["cr_api"] = {"status": api_status, "status_code": resp.status_code, "latency_ms": latency_ms, "endpoint_tested": endpoint}
     except Exception as e:
         result["cr_api"] = {"status": "unreachable", "error": str(e)}
  
@@ -637,11 +512,8 @@ def admin_diagnostics():
             h, rem = divmod(uptime_s, 3600)
             m, s = divmod(rem, 60)
             result["bot"] = {
-                "connected": not bot_inst.is_closed(),
-                "latency_ms": round(bot_inst.latency * 1000, 1),
-                "guild_count": len(bot_inst.guilds),
-                "uptime": f"{h}h {m}m {s}s",
-                "prefix": getattr(bot_inst, "active_prefix", "?"),
+                "connected": not bot_inst.is_closed(), "latency_ms": round(bot_inst.latency * 1000, 1),
+                "guild_count": len(bot_inst.guilds), "uptime": f"{h}h {m}m {s}s", "prefix": getattr(bot_inst, "active_prefix", "?"),
             }
         except Exception as e:
             result["bot"] = {"connected": False, "error": str(e)}
@@ -653,28 +525,20 @@ def admin_diagnostics():
         with _cache_lock: html_entries = len(_HTML_CACHE)
         
         if backend == "redis":
-            all_keys = redis_sync_client.keys("*")
-            total = len(all_keys)
+            total = len(redis_sync_client.keys("*"))
         else:
             total = db_sync["api_cache"].estimated_document_count()
             
-        result["cache"] = {
-            "backend": backend,
-            "total_keys": total,
-            "html_cache_entries": html_entries,
-        }
+        result["cache"] = {"backend": backend, "total_keys": total, "html_cache_entries": html_entries}
     except Exception as e:
         result["cache"] = {"error": str(e)}
  
-    # Compile harvest metadata + history
-    # Compile harvest metadata + history
     harv = _harvest_meta.copy()
     try:
         history_dates = db_sync["historical_snapshots"].distinct("date")
         sorted_dates = sorted(history_dates, reverse=True)
         harv["history_dates"] = sorted_dates
         
-        # 🛑 RESTART FALLBACK: If RAM is wiped, pull the latest data from the database
         if not harv.get("last_run") and sorted_dates:
             latest_date = sorted_dates[0]
             harv["last_run"] = f"{latest_date} (DB Restored)"
@@ -690,10 +554,7 @@ def admin_diagnostics():
     cog = bot_inst.cogs.get("ClashRoyale") if bot_inst else None
     if cog:
         next_snap = cog.daily_snapshot_loop.next_iteration.strftime("%Y-%m-%d %H:%M:%S UTC") if cog.daily_snapshot_loop.next_iteration else None
-        result["tasks"] = {
-            "snapshot_loop": "running" if cog.daily_snapshot_loop.is_running() else "stopped",
-            "next_snapshot": next_snap,
-        }
+        result["tasks"] = {"snapshot_loop": "running" if cog.daily_snapshot_loop.is_running() else "stopped", "next_snapshot": next_snap}
     else:
         result["tasks"] = {"snapshot_loop": "cog not loaded"}
  
@@ -707,49 +568,38 @@ def admin_diagnostics():
  
 @app.route("/admin/reset-html", methods=["POST"])
 def admin_reset_html():
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     db_sync["config"].delete_one({"_id": "html_templates"})
     invalidate_template_cache()
     return jsonify({"message": "All templates reset. Pages now use Python fallbacks."})
  
 @app.route("/admin/flush-cache", methods=["POST"])
 def admin_flush_cache():
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     flushed = 0
     try:
         keys = redis_sync_client.keys("*")
         cr_keys = [k for k in keys if any((k.decode() if isinstance(k, bytes) else k).startswith(p) for p in ("player:", "clan:", "battlelog:", "currentrace:", "racelog:", "cards:", "chests:", "warmed_today:"))]
-        if cr_keys:
-            flushed = redis_sync_client.delete(*cr_keys)
+        if cr_keys: flushed = redis_sync_client.delete(*cr_keys)
     except Exception:
-        result = db_sync["api_cache"].delete_many({})
-        flushed = result.deleted_count
+        flushed = db_sync["api_cache"].delete_many({}).deleted_count
     invalidate_template_cache()
     return jsonify({"message": f"Flushed {flushed} cache keys."})
 
 @app.route("/admin/update-html", methods=["POST"])
 def update_html():
-    if not is_admin():
-        return "Unauthorized", 403
+    if not is_admin(): return "Unauthorized", 403
     template_name = request.form.get("template_name")
     html_content = request.form.get("html_content")
     if template_name in ["roster", "player", "link", "admin"]:
-        db_sync["config"].update_one(
-            {"_id": "html_templates"},
-            {"$set": {template_name: html_content}},
-            upsert=True,
-        )
+        db_sync["config"].update_one({"_id": "html_templates"}, {"$set": {template_name: html_content}}, upsert=True)
         invalidate_template_cache()
         return redirect("/admin?success=UI+Code+Deployed+Live!")
     return redirect("/admin?error=Invalid+Template+Name")
 
 @app.route("/admin/export/custom", methods=["POST"])
 def export_custom_csv():
-    if not is_admin():
-        return "Unauthorized", 403
-
+    if not is_admin(): return "Unauthorized", 403
     clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
     members = clan_data.get("memberList", []) if clan_data else []
     member_tags = [clean_tag(m["tag"]) for m in members]
@@ -791,31 +641,22 @@ def export_custom_csv():
     rows = []
     for m in members:
         tag = clean_tag(m["tag"])
-        p = profiles_map.get(tag, {})
-        wp = war_participants.get(tag, {})
-        row = {f: field_extractors[f](m, p, wp) for f in selected_fields if f in field_extractors}
-        rows.append(row)
+        rows.append({f: field_extractors[f](m, profiles_map.get(tag, {}), war_participants.get(tag, {})) for f in selected_fields if f in field_extractors})
 
-    if export_format == "json":
-        return jsonify(rows)
+    if export_format == "json": return jsonify(rows)
 
     si = io.StringIO()
     cw = csv.writer(si)
     if selected_fields:
         cw.writerow(selected_fields)
-        for row in rows:
-            cw.writerow([row.get(f, "N/A") for f in selected_fields])
+        for row in rows: cw.writerow([row.get(f, "N/A") for f in selected_fields])
     else:
         cw.writerow(["Name", "Tag", "Trophies", "Current Win Streak"])
         for m in members:
             tag = clean_tag(m["tag"])
-            p = profiles_map.get(tag, {})
-            cw.writerow([m.get("name"), tag, m.get("trophies"), p.get("current_streak", 0)])
+            cw.writerow([m.get("name"), tag, m.get("trophies"), profiles_map.get(tag, {}).get("current_streak", 0)])
 
-    output = si.getvalue()
-    return app.response_class(
-        output, mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"}
-    )
+    return app.response_class(si.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=Graveyard_Custom_Export.csv"})
 
 def _try_redis_publish(payload: dict) -> bool:
     try:
@@ -899,15 +740,20 @@ class GraveyardBot(commands.Bot):
         if not self.redis_available:
             now = time.time()
             if now - self._last_config_load > 30:
-                try: await self.load_system_config(); self._last_config_load = now
-                except Exception as e: log.error(f"Fallback config reload failed: {e}")
+                try: 
+                    await self.load_system_config()
+                    self._last_config_load = now
+                except Exception as e: 
+                    log.error(f"Fallback config reload failed: {e}")
+                    
         prefix = self.active_prefix
         if message.content.startswith(prefix):
             cmd_name = message.content[len(prefix):].split()[0].lower()
             custom_cmd = await self.custom_cmds.find_one({"_id": cmd_name})
             if custom_cmd:
                 await message.channel.send(custom_cmd["response"])
-                return
+                return # Formally stops processing to avoid execution collisions
+                
         await self.process_commands(message)
 
     async def load_system_config(self):
@@ -951,8 +797,8 @@ class GraveyardBot(commands.Bot):
             cog = self.get_cog("ClashRoyale")
             if cog:
                 log.info("⚡ Executing Manual Harvest trigger requested via UI...")
-                # Call underlying loop coroutine directly
-                self.loop.create_task(cog.daily_snapshot_loop.coro(cog))
+                # FIX: Bypassed .coro() and called run_harvest_logic() directly safely
+                self.loop.create_task(cog.run_harvest_logic())
 
     async def close(self):
         if self.http_session: await self.http_session.close()
