@@ -113,8 +113,36 @@ DEFAULT_ROSTER_HTML = r"""
 </script>
 </body>
 </html>
+"""
 
-######################################################################################################################################################################
+DEFAULT_LINK_HTML = r"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Link Account</title>
+    <style>
+        body { background: #121212; color: white; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 50px; }
+        .box { background: #1e1e1e; padding: 40px; border-radius: 10px; max-width: 400px; margin: auto; border: 1px solid #333; }
+        h2 { color: #f1c40f; margin-bottom: 10px; }
+        input { width: 100%; padding: 12px; margin: 15px 0; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 5px; font-size: 1rem;}
+        button { width: 100%; background: #5865F2; color: white; padding: 12px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 1rem;}
+        button:hover { background: #4752C4; }
+        .error { color: #e74c3c; margin-bottom: 15px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>Link Clash Royale Tag</h2>
+        <p style="color: #aaa; margin-bottom: 20px;">Authenticated as <strong>@{{ name }}</strong></p>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <form method="POST">
+            <input type="text" name="tag" placeholder="e.g. #2Y8JLYPQ2" required>
+            <button type="submit">Link to Discord</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
 
 DEFAULT_PLAYER_HTML = r"""
 <!DOCTYPE html>
@@ -266,8 +294,8 @@ DEFAULT_PLAYER_HTML = r"""
     </script>
 </body>
 </html>
+"""
 
-################################################################################################################################################################################################################
 DEFAULT_ADMIN_HTML = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -410,7 +438,6 @@ DEFAULT_ADMIN_HTML = r"""
  
   <main class="main">
     
-    <!-- ════ DIAGNOSTICS TAB ════ -->
     <div class="tab-pane active" id="tab-diag">
       <div class="page-header">
         <div class="page-title">Diagnostics</div>
@@ -444,14 +471,12 @@ DEFAULT_ADMIN_HTML = r"""
       <div class="log-box" id="diag-log">Waiting for data...\n</div>
     </div>
  
-    <!-- ════ WAR TAB ════ -->
     <div class="tab-pane" id="tab-war">
       <div class="page-header"><div class="page-title">War Monitor</div><div class="page-sub">Current River Race</div></div>
       <div class="toolbar"><button class="btn-refresh" onclick="loadWar()">↻ Refresh</button><span class="last-refresh" id="war-last-refresh"></span></div>
       <div id="war-content"><div style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Click refresh to load war data.</div></div>
     </div>
  
-    <!-- ════ HARVEST LOG TAB ════ -->
     <div class="tab-pane" id="tab-harvest">
       <div class="page-header">
         <div class="page-title">Harvest Log</div>
@@ -475,7 +500,6 @@ DEFAULT_ADMIN_HTML = r"""
       </div>
     </div>
     
-    <!-- ════ CSV EXPORT TAB ════ -->
     <div class="tab-pane" id="tab-csv">
       <div class="page-header">
         <div class="page-title">Data Exporter</div>
@@ -513,7 +537,6 @@ DEFAULT_ADMIN_HTML = r"""
       </div>
     </div>
 
-    <!-- ════ UI EDITOR TAB ════ -->
     <div class="tab-pane" id="tab-editor">
       <div class="page-header">
         <div class="page-title">UI Editor</div>
@@ -542,7 +565,6 @@ DEFAULT_ADMIN_HTML = r"""
       </div>
     </div>
  
-    <!-- ════ ADMIN TOOLS TAB ════ -->
     <div class="tab-pane" id="tab-admin">
       <div class="page-header"><div class="page-title">Admin Tools</div><div class="page-sub">Careful in here</div></div>
       <div class="diag-grid">
@@ -595,14 +617,12 @@ DEFAULT_ADMIN_HTML = r"""
  
 <div class="toast-wrap" id="toast-wrap"></div>
  
-<!-- FORM FOR SAFE PREVIEWS -->
 <form id="preview-form" action="/admin/preview" method="POST" target="_blank" style="display:none;">
     <input type="hidden" name="template" id="preview-template-name">
     <textarea name="html" id="preview-html"></textarea>
 </form>
 
 <script>
-// ─── TABS & UI ───────────────────────────────────────────────────────────
 async function loadBattles() {
     const tbody = document.getElementById('battles-body');
     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading...</td></tr>';
@@ -669,8 +689,6 @@ function setStatCard(id, value, note, status) {
 function renderRows(rows) {
   return rows.map(([k, v, cls='']) => `<div class="diag-row"><span class="diag-key">${escHtml(k)}</span><span class="diag-val ${cls}">${escHtml(String(v))}</span></div>`).join('');
 }
-
-// ─── EDITOR & PREVIEW ────────────────────────────────────────────────────
 async function fetchTemplateForEditor(source) {
     const name = document.getElementById('editor-template-name').value;
     document.getElementById('hidden-template-name').value = name;
@@ -690,8 +708,6 @@ function previewTemplate() {
     document.getElementById('preview-html').value = document.getElementById('editor-html-content').value;
     document.getElementById('preview-form').submit();
 }
-
-// ─── HARVEST TRIGGERS ────────────────────────────────────────────────────
 async function triggerManualHarvest() {
     if(!confirm("Force snapshot generation? This will execute the daily loop immediately and overwrite today's existing snapshot entry if it exists.")) return;
     try {
@@ -701,24 +717,17 @@ async function triggerManualHarvest() {
         appendLog('Manual harvest broadcast sent.', 'warn');
     } catch(e) { toast(e.message, 'err'); }
 }
-//------- Harvest View======================================
-// ─── WAR MONITOR ─────────────────────────────────────────────────────────
 async function loadWar() {
     const content = document.getElementById('war-content');
     const lastRef = document.getElementById('war-last-refresh');
-    
     content.innerHTML = '<div style="color:var(--dim);"><span class="spin">↻</span> Fetching live war data...</div>';
-    
     try {
         const res = await fetch('/admin/api/war');
         const data = await res.json();
-        
         if (data.error) throw new Error(data.error);
-        
         const state = data.state || 'Unknown';
         const fame = data.clan ? data.clan.fame : 0;
         const participants = data.clan && data.clan.participants ? data.clan.participants.length : 0;
-        
         content.innerHTML = `
             <div class="stat-row">
                 <div class="stat-card ok"><div class="stat-label">Race State</div><div class="stat-value" style="font-size: 18px;">${state.toUpperCase()}</div><div class="stat-note">Current Phase</div></div>
@@ -733,34 +742,22 @@ async function loadWar() {
         toast('Failed to load war data', 'err');
     }
 }
-// ─── CSV CUSTOM EXPORT ───────────────────────────────────────────────────
 async function handleCustomCSVExport(e) {
     e.preventDefault();
     const form = e.target;
     const formData = new FormData(form);
-    
-    // First, request JSON data from the backend so we can evaluate formulas safely in Javascript
     formData.set('export_format', 'json'); 
     toast('Fetching data for custom CSV computation...', 'info');
-    
     try {
         const res = await fetch('/admin/export/custom', { method: 'POST', body: formData });
         let records = await res.json();
-        
         if (!Array.isArray(records)) throw new Error("Invalid response format.");
-        
-        // Find which formulas are checked
         const wantWinRate = document.getElementById('formula-winrate').checked;
         const wantWarPart = document.getElementById('formula-warpart').checked;
-        
-        // Grab headers from the first record plus our custom formulas
         let headers = Object.keys(records[0] || {});
         if(wantWinRate) headers.push("Computed_WinRate%");
         if(wantWarPart) headers.push("Computed_WarParticipation%");
-        
         let csvContent = headers.join(",") + "\\n";
-        
-        // Loop and compute logic per row
         for(const row of records) {
             if(wantWinRate) {
                 const w = row.totalWins || 0;
@@ -773,15 +770,12 @@ async function handleCustomCSVExport(e) {
                 const totalDecks = used + rem;
                 row["Computed_WarParticipation%"] = (totalDecks > 0) ? ((used / totalDecks) * 100).toFixed(1) : 0;
             }
-            
             let rowString = headers.map(h => {
                 let val = row[h] !== null && row[h] !== undefined ? row[h] : "N/A";
-                return `"${String(val).replace(/"/g, '""')}"`; // escape quotes for valid CSV
+                return `"${String(val).replace(/"/g, '""')}"`;
             }).join(",");
             csvContent += rowString + "\\n";
         }
-        
-        // Trigger download
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement("a");
         const url = URL.createObjectURL(blob);
@@ -792,19 +786,15 @@ async function handleCustomCSVExport(e) {
         link.click();
         document.body.removeChild(link);
         toast('CSV successfully generated and downloaded!', 'ok');
-        
     } catch(err) {
         toast('Error generating CSV: ' + err.message, 'err');
     }
 }
-
-// ─── LOAD DIAGNOSTICS ────────────────────────────────────────────────────
 async function loadDiagnostics() {
   const btn = document.getElementById('btn-diag-refresh');
   const spin = document.getElementById('diag-spin');
   btn.disabled = true; spin.className = 'spin';
   appendLog('Fetching /admin/diagnostics...', 'info');
- 
   try {
     const resp = await fetch('/admin/diagnostics');
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -817,42 +807,32 @@ async function loadDiagnostics() {
     toast('Failed to load diagnostics: ' + e.message, 'err');
   } finally { btn.disabled = false; spin.className = ''; }
 }
- 
 function renderDiagnostics(d) {
   document.getElementById('diag-env').textContent = `v${d.version || '?'} · ${d.environment || 'unknown'} · ${d.hostname || ''}`;
- 
   const redis = d.redis || {}; const redisOk = redis.status === 'ok';
   setPill('pill-redis', redisOk ? 'ONLINE' : 'OFFLINE', redisOk ? 'ok' : 'err');
   setStatCard('sc-redis', redisOk ? '✓' : '✗', redis.ping_ms != null ? `${redis.ping_ms}ms ping` : 'unreachable', redisOk ? 'ok' : 'err');
   document.getElementById('body-redis').innerHTML = renderRows([['Status', redis.status||'unknown', redisOk?'ok':'err'],['Ping', redis.ping_ms!=null?redis.ping_ms+' ms':'N/A'],['Used Memory', redis.used_memory||'N/A'],['Total Keys', redis.total_keys??'N/A']]);
- 
   const mongo = d.mongo || {}; const mongoOk = mongo.status === 'ok';
   setPill('pill-mongo', mongoOk ? 'ONLINE' : 'OFFLINE', mongoOk ? 'ok' : 'err');
   setStatCard('sc-mongo', mongoOk ? '✓' : '✗', mongo.ping_ms != null ? `${mongo.ping_ms}ms ping` : 'unreachable', mongoOk ? 'ok' : 'err');
   document.getElementById('body-mongo').innerHTML = renderRows([['Status', mongo.status||'unknown', mongoOk?'ok':'err'],['Ping', mongo.ping_ms!=null?mongo.ping_ms+' ms':'N/A'],['Snapshots', mongo.snapshot_count??'N/A'],['Battle Docs', mongo.battle_count??'N/A']]);
- 
   const api = d.cr_api || {}; const apiOk = api.status === 'ok'; const apiCls = apiOk ? 'ok' : (api.status === 'rate_limited' ? 'warn' : 'err');
   setPill('pill-crapi', api.status?.toUpperCase() || 'UNKNOWN', apiCls);
   setStatCard('sc-crapi', api.status_code || '—', api.latency_ms != null ? `${api.latency_ms}ms` : 'unreachable', apiCls);
   document.getElementById('body-crapi').innerHTML = renderRows([['Status', api.status||'unknown', apiCls],['HTTP Code', api.status_code??'N/A'],['Latency', api.latency_ms!=null?api.latency_ms+' ms':'N/A'],['Endpoint', api.endpoint_tested||'N/A']]);
- 
   const bot = d.bot || {}; const botOk = bot.connected === true;
   setPill('pill-bot', botOk ? 'CONNECTED' : 'OFFLINE', botOk ? 'ok' : 'err');
   document.getElementById('body-bot').innerHTML = renderRows([['Discord WS', bot.connected?'Connected':'Disconnected', bot.connected?'ok':'err'],['Latency', bot.latency_ms!=null?bot.latency_ms+' ms':'N/A'],['Uptime', bot.uptime||'N/A']]);
- 
   const cache = d.cache || {}; const totalKeys = cache.total_keys ?? 0;
   setStatCard('sc-cache-keys', totalKeys, 'keys in store', totalKeys > 0 ? 'ok' : 'warn');
   document.getElementById('body-cache').innerHTML = renderRows([['Backend', cache.backend||'unknown'],['Total Keys', cache.total_keys??0],['HTML Cache', cache.html_cache_entries??0]]);
- 
   const harv = d.harvest || {}; const harvOk = !!harv.last_run;
   setStatCard('sc-harvest', harv.last_run || 'Never', harv.snapshots_saved ? `${harv.snapshots_saved} snaps` : 'no data', harvOk ? 'ok' : 'warn');
-  
-  // Populate Harvest Detail Tab
   document.getElementById('harvest-detail-body').innerHTML = renderRows([
     ['Last Run', harv.last_run || 'Never'], ['Status', harv.status || 'unknown', harv.status === 'ok' ? 'ok' : 'warn'],
     ['Snapshots Saved', harv.snapshots_saved ?? 'N/A'], ['Battles Saved', harv.battles_saved ?? 'N/A']
   ]);
-  
   const historyList = (harv.history_dates || []).map(date => `
     <div class="diag-row" style="padding: 10px 0;">
         <span class="diag-key" style="color: #fff;">${escHtml(date)}</span>
@@ -866,13 +846,10 @@ function renderDiagnostics(d) {
     </div>
 `).join('');
   document.getElementById('harvest-history-body').innerHTML = historyList || 'No historical snapshots found in DB.';
- 
   const tasks = d.tasks || {};
   document.getElementById('body-tasks').innerHTML = renderRows([['Snapshot Loop', tasks.snapshot_loop||'unknown'], ['Next Snapshot', tasks.next_snapshot||'N/A']]);
- 
   appendLog('Diagnostics render complete.', 'ok');
 }
- 
 function confirmFlushCache() {
   if (!confirm('Flush all CR API cache keys?')) return;
   fetch('/admin/flush-cache', { method: 'POST' }).then(r=>r.json()).then(d=>{toast(d.message,'ok'); loadDiagnostics();}).catch(e=>toast(e.message,'err'));
