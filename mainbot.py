@@ -324,20 +324,6 @@ def index():
         return render_sandboxed(get_template("roster"), players=[], error=f"Internal Server Error: {str(e)}")
 
 
-@app.route("/battles/<tag>")
-def public_battle_log(tag):
-    clean_t = clean_tag(tag)
-    battles = list(db_sync["battle_history"]
-                   .find({"player_tag": clean_t})
-                   .sort("battle_time", -1)
-                   .limit(20))
-    
-    # Force registration check for system fallback strings
-    return render_sandboxed(
-        get_template("public_battles"),
-        tag=clean_t,
-        battles=battles
-    )
 
 @app.route("/favicon.ico")
 def favicon():
