@@ -442,9 +442,11 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
   /* ── Buttons ── */
   .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
   .btn-refresh { display: flex; align-items: center; gap: 8px; padding: 8px 18px; background: rgba(0,229,255,0.08); border: 1px solid var(--accent); border-radius: 4px; color: var(--accent); font-family: var(--font-ui); font-weight: 700; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; cursor: pointer; transition: all .2s; text-decoration: none; }
-  .btn-refresh:hover { background: rgba(0,229,255,0.16); }
+  .btn-refresh:hover:not(:disabled) { background: rgba(0,229,255,0.16); }
+  .btn-refresh:disabled { opacity: 0.45; cursor: not-allowed; }
   .btn-danger { display: flex; align-items: center; gap: 8px; padding: 8px 18px; background: rgba(255,61,113,0.08); border: 1px solid var(--err); border-radius: 4px; color: var(--err); font-family: var(--font-ui); font-weight: 700; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; cursor: pointer; transition: all .2s; }
-  .btn-danger:hover { background: rgba(255,61,113,0.16); }
+  .btn-danger:hover:not(:disabled) { background: rgba(255,61,113,0.16); }
+  .btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
   .last-refresh { font-family: var(--font-mono); font-size: 11px; color: var(--dim); margin-left: auto; }
 
   /* ── Spinner ── */
@@ -476,29 +478,132 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
   .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
   .badge-win  { background: rgba(0,224,150,0.12); color: var(--ok);  border: 1px solid rgba(0,224,150,0.25); }
   .badge-loss { background: rgba(255,61,113,0.12); color: var(--err); border: 1px solid rgba(255,61,113,0.25); }
+  .badge-draw { background: rgba(255,170,0,0.12);  color: var(--warn); border: 1px solid rgba(255,170,0,0.25); }
 
   /* ── Deck bar ── */
   .deck-bar { height: 5px; border-radius: 3px; background: var(--border); margin-top: 5px; overflow: hidden; max-width: 80px; }
   .deck-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s; }
 
-  /* ── Editor ── */
+  /* ── ═══════════════════════════════════════════ ── */
+  /* ── UI EDITOR — improved                        ── */
+  /* ── ═══════════════════════════════════════════ ── */
+
+  .editor-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  /* Toolbar strip across the top of the editor */
+  .editor-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .editor-topbar select.form-select { font-size: 12px; padding: 5px 10px; }
+
+  .editor-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 13px;
+    border-radius: 4px;
+    font-family: var(--font-ui);
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    cursor: pointer;
+    border: 1px solid;
+    transition: background .15s, opacity .15s;
+    white-space: nowrap;
+  }
+  .editor-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .editor-btn-load    { background: rgba(0,229,255,0.07);   border-color: var(--accent); color: var(--accent); }
+  .editor-btn-load:hover:not(:disabled)    { background: rgba(0,229,255,0.16); }
+  .editor-btn-deploy  { background: rgba(0,224,150,0.07);   border-color: var(--ok);     color: var(--ok);     }
+  .editor-btn-deploy:hover:not(:disabled)  { background: rgba(0,224,150,0.16); }
+  .editor-btn-preview { background: rgba(241,196,15,0.07);  border-color: #f1c40f;       color: #f1c40f;       }
+  .editor-btn-preview:hover:not(:disabled) { background: rgba(241,196,15,0.16); }
+  .editor-btn-reset   { background: rgba(255,61,113,0.07);  border-color: var(--err);    color: var(--err);    }
+  .editor-btn-reset:hover:not(:disabled)   { background: rgba(255,61,113,0.16); }
+  .editor-btn-diff    { background: rgba(255,170,0,0.07);   border-color: var(--warn);   color: var(--warn);   }
+  .editor-btn-diff:hover:not(:disabled)    { background: rgba(255,170,0,0.16); }
+  .editor-btn-copy    { background: rgba(255,255,255,0.04); border-color: var(--border); color: var(--text);   }
+  .editor-btn-copy:hover:not(:disabled)    { background: rgba(255,255,255,0.09); }
+
+  .editor-spacer { flex: 1; }
+
+  /* Status strip below toolbar */
+  .editor-statusbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 5px 14px;
+    background: rgba(0,0,0,0.25);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--dim);
+    flex-wrap: wrap;
+    min-height: 26px;
+  }
+  .editor-statusbar .sb-item { display: flex; align-items: center; gap: 5px; }
+  .sb-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+  .sb-dot.loaded   { background: var(--ok); }
+  .sb-dot.dirty    { background: var(--warn); }
+  .sb-dot.empty    { background: var(--dim); }
+  .sb-dot.deploying { background: var(--accent); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+  /* The actual textarea */
   .editor-textarea {
     width: 100%;
-    padding: 16px;
+    padding: 16px 18px;
     background: #050709;
     color: var(--accent);
     font-family: var(--font-mono);
     font-size: 13px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    line-height: 1.6;
+    border: none;
+    line-height: 1.65;
     resize: vertical;
     outline: none;
-    transition: border-color .15s;
-    min-height: 420px;
+    min-height: 480px;
+    tab-size: 2;
   }
-  .editor-textarea:focus { border-color: var(--accent); }
-  .editor-meta { font-family: var(--font-mono); font-size: 11px; color: var(--dim); margin-top: 8px; }
+  .editor-textarea::selection { background: rgba(0,229,255,0.18); }
+
+  /* Diff viewer */
+  .diff-panel {
+    display: none;
+    background: #050709;
+    border-top: 1px solid var(--border);
+    padding: 14px 18px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    max-height: 260px;
+    overflow-y: auto;
+    line-height: 1.7;
+  }
+  .diff-panel.open { display: block; }
+  .diff-line-add { color: var(--ok);   white-space: pre-wrap; word-break: break-all; }
+  .diff-line-del { color: var(--err);  white-space: pre-wrap; word-break: break-all; text-decoration: line-through; opacity: .7; }
+  .diff-line-ctx { color: var(--dim);  white-space: pre-wrap; word-break: break-all; }
+  .diff-empty { color: var(--dim); font-style: italic; }
+
+  /* ── Log box ── */
+  .log-box { background: #050709; border: 1px solid var(--border); border-radius: 6px; padding: 14px; font-family: var(--font-mono); font-size: 11px; color: var(--dim); max-height: 240px; overflow-y: auto; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
+  .log-line-ok   { color: var(--ok);   }
+  .log-line-warn { color: var(--warn); }
+  .log-line-err  { color: var(--err);  }
 
   /* ── Battle modal ── */
   .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 1000; align-items: center; justify-content: center; }
@@ -514,12 +619,6 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
   .modal-meta { display: flex; gap: 24px; margin-bottom: 18px; font-family: var(--font-mono); font-size: 12px; flex-wrap: wrap; }
   .modal-meta-item span { color: var(--dim); margin-right: 4px; }
   .deck-section-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); margin: 14px 0 8px; }
-
-  /* ── Log box ── */
-  .log-box { background: #050709; border: 1px solid var(--border); border-radius: 6px; padding: 14px; font-family: var(--font-mono); font-size: 11px; color: var(--dim); max-height: 240px; overflow-y: auto; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
-  .log-line-ok   { color: var(--ok);   }
-  .log-line-warn { color: var(--warn); }
-  .log-line-err  { color: var(--err);  }
 
   /* ── Toasts ── */
   .toast-wrap { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
@@ -639,6 +738,7 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
           <option value="">All results</option>
           <option value="win">Wins only</option>
           <option value="loss">Losses only</option>
+          <option value="draw">Draws only</option>
         </select>
         <button class="btn-refresh" onclick="loadBattles()">↻ Fetch Latest</button>
         <span class="last-refresh" id="battles-last-refresh"></span>
@@ -734,36 +834,70 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
     <div class="tab-pane" id="tab-editor">
       <div class="page-header">
         <div class="page-title">UI Editor</div>
-        <div class="page-sub">Live deploy or preview custom HTML templates</div>
+        <div class="page-sub">Edit, preview and deploy HTML templates</div>
       </div>
-      <div class="diag-card" style="padding:24px;">
-        <div style="display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap;">
+
+      <div class="editor-shell">
+
+        <!-- Top toolbar -->
+        <div class="editor-topbar">
           <select id="editor-template-name" class="form-select" onchange="onTemplateChange()">
             <option value="roster">Roster (Home)</option>
             <option value="player">Player Profile</option>
             <option value="admin">Admin Dashboard</option>
             <option value="link">Discord Link Page</option>
           </select>
-          <button onclick="fetchTemplateForEditor('current')" class="btn-refresh" style="padding:6px 14px;">Load Live DB</button>
-          <button onclick="fetchTemplateForEditor('default')" class="btn-refresh" style="padding:6px 14px;">Load Default</button>
-          <span class="last-refresh" id="editor-meta"></span>
+
+          <button class="editor-btn editor-btn-load" onclick="fetchTemplateForEditor('current')" id="btn-load-live">
+            ↓ Load Live
+          </button>
+          <button class="editor-btn editor-btn-load" onclick="fetchTemplateForEditor('default')" id="btn-load-default">
+            ↓ Load Default
+          </button>
+
+          <div class="editor-spacer"></div>
+
+          <button class="editor-btn editor-btn-copy" onclick="copyEditorToClipboard()" id="btn-copy">
+            ⎘ Copy
+          </button>
+          <button class="editor-btn editor-btn-diff" onclick="toggleDiff()" id="btn-diff" disabled>
+            ± Diff
+          </button>
+          <button class="editor-btn editor-btn-preview" onclick="previewTemplate()" id="btn-preview" disabled>
+            👁 Preview
+          </button>
+          <button class="editor-btn editor-btn-deploy" onclick="deployTemplate()" id="btn-deploy" disabled>
+            🚀 Deploy
+          </button>
+          <button class="editor-btn editor-btn-reset" onclick="resetTemplate()" id="btn-reset" disabled>
+            ↩ Reset
+          </button>
         </div>
 
-        <textarea id="editor-html-content" class="editor-textarea" spellcheck="false" placeholder="Load a template above to start editing…"></textarea>
-        <div class="editor-meta" id="editor-char-count"></div>
-
-        <div style="display:flex; gap:12px; margin-top:16px; flex-wrap:wrap;">
-          <button class="btn-refresh" onclick="deployTemplate()" style="border-color:var(--ok); color:var(--ok); background:rgba(0,224,150,0.08);">
-            🚀 Deploy Live
-          </button>
-          <button class="btn-refresh" onclick="previewTemplate()" style="border-color:#f1c40f; color:#f1c40f; background:rgba(241,196,15,0.1);">
-            👀 Preview in New Tab
-          </button>
-          <button class="btn-danger" onclick="resetTemplate()" style="margin-left:auto;">
-            ↩ Reset to Default
-          </button>
+        <!-- Status bar -->
+        <div class="editor-statusbar">
+          <div class="sb-item"><div class="sb-dot" id="sb-dot"></div><span id="sb-state">No template loaded</span></div>
+          <div class="sb-item" id="sb-template" style="display:none">Template: <strong id="sb-tpl-name">—</strong></div>
+          <div class="sb-item" id="sb-source-item" style="display:none">Source: <span id="sb-source">—</span></div>
+          <div class="sb-item" id="sb-chars-item" style="display:none"><span id="sb-chars">0</span> chars</div>
+          <div class="sb-item" id="sb-lines-item" style="display:none"><span id="sb-lines">0</span> lines</div>
+          <div class="sb-item" id="sb-time-item" style="display:none">Loaded <span id="sb-load-time">—</span></div>
         </div>
-      </div>
+
+        <!-- Textarea -->
+        <textarea
+          id="editor-html-content"
+          class="editor-textarea"
+          spellcheck="false"
+          placeholder="Load a template above to start editing…"
+        ></textarea>
+
+        <!-- Diff panel (hidden by default) -->
+        <div class="diff-panel" id="diff-panel">
+          <div id="diff-content"><span class="diff-empty">Load a template and make changes to see a diff.</span></div>
+        </div>
+
+      </div><!-- /editor-shell -->
     </div>
 
     <!-- ── ADMIN TOOLS ── -->
@@ -811,23 +945,24 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Hidden preview form (POST to server so it can render the template) -->
-<form id="preview-form" action="/admin/preview" method="POST" target="_blank" style="display:none;">
-  <input type="hidden" name="template" id="preview-template-name">
-  <textarea name="html" id="preview-html"></textarea>
-</form>
-
 <div class="toast-wrap" id="toast-wrap"></div>
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
-var allBattles = [];
-var _logLines  = [];
+var allBattles     = [];
+var filteredBattles = [];   // FIX: track the filtered set separately for modal indexing
+var _logLines      = [];
+
+// Editor state
+var editorOriginal   = '';   // the snapshot loaded from server — used for diff
+var editorDirty      = false;
+var editorDeploying  = false;
+var editorTemplateName = '';
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 function showTab(name, btn) {
   document.querySelectorAll('.tab-pane').forEach(function(p) { p.classList.remove('active'); });
-  document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelectorAll('.nav-btn').forEach(function(b)  { b.classList.remove('active'); });
   var pane = document.getElementById('tab-' + name);
   if (pane) pane.classList.add('active');
   if (btn)  btn.classList.add('active');
@@ -888,7 +1023,6 @@ function renderRows(rows) {
 
 function formatBattleTime(raw) {
   if (!raw) return '—';
-  // CR format: 20240612T123456.000Z → readable
   var m = String(raw).match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
   if (m) return m[1]+'-'+m[2]+'-'+m[3]+' '+m[4]+':'+m[5];
   return raw.substring(0, 16);
@@ -968,23 +1102,23 @@ function renderDiagnostics(d) {
   var totalKeys = cache.total_keys != null ? cache.total_keys : 0;
   setStatCard('sc-cache-keys', totalKeys, 'keys in store', totalKeys > 0 ? 'ok' : 'warn');
   document.getElementById('body-cache').innerHTML = renderRows([
-    ['Backend',         cache.backend            || 'unknown'],
-    ['Total Keys',      cache.total_keys         != null ? cache.total_keys : 0],
-    ['HTML Cache Entries', cache.html_cache_entries != null ? cache.html_cache_entries : 0]
+    ['Backend',            cache.backend               || 'unknown'],
+    ['Total Keys',         cache.total_keys            != null ? cache.total_keys            : 0],
+    ['HTML Cache Entries', cache.html_cache_entries    != null ? cache.html_cache_entries    : 0]
   ]);
 
   var harv = d.harvest || {};
   var harvOk = !!harv.last_run;
   setStatCard('sc-harvest', harv.last_run || 'Never', harv.snapshots_saved ? harv.snapshots_saved + ' snaps' : 'no data', harvOk ? 'ok' : 'warn');
   document.getElementById('harvest-detail-body').innerHTML = renderRows([
-    ['Last Run',          harv.last_run           || 'Never'],
-    ['Status',            harv.status             || 'unknown', harv.status === 'ok' ? 'ok' : 'warn'],
-    ['Snapshots Saved',   harv.snapshots_saved    != null ? harv.snapshots_saved    : 'N/A'],
-    ['Profiles Saved',    harv.profiles_saved     != null ? harv.profiles_saved     : 'N/A'],
-    ['Battles Saved',     harv.battles_saved      != null ? harv.battles_saved      : 'N/A'],
-    ['Duration',          harv.duration_s         != null ? harv.duration_s + 's'  : 'N/A'],
-    ['Members',           harv.member_count       != null ? harv.member_count       : 'N/A'],
-    ['War Participants',  harv.war_participants_found != null ? harv.war_participants_found : 'N/A']
+    ['Last Run',           harv.last_run               || 'Never'],
+    ['Status',             harv.status                 || 'unknown', harv.status === 'ok' ? 'ok' : 'warn'],
+    ['Snapshots Saved',    harv.snapshots_saved        != null ? harv.snapshots_saved        : 'N/A'],
+    ['Profiles Saved',     harv.profiles_saved         != null ? harv.profiles_saved         : 'N/A'],
+    ['Battles Saved',      harv.battles_saved          != null ? harv.battles_saved          : 'N/A'],
+    ['Duration',           harv.duration_s             != null ? harv.duration_s + 's'       : 'N/A'],
+    ['Members',            harv.member_count           != null ? harv.member_count           : 'N/A'],
+    ['War Participants',   harv.war_participants_found != null ? harv.war_participants_found  : 'N/A']
   ]);
 
   var historyList = (harv.history_dates || []).map(function(date) {
@@ -1022,8 +1156,7 @@ async function loadWar() {
     var totalFame  = participants.reduce(function(s,p){ return s + (p.fame||0); }, 0);
     var totalDecks = participants.reduce(function(s,p){ return s + (p.decksUsedToday||0); }, 0);
     var maxDecks   = participants.length * 4;
-
-    var sorted = participants.slice().sort(function(a,b){ return (b.fame||0)-(a.fame||0); });
+    var sorted     = participants.slice().sort(function(a,b){ return (b.fame||0)-(a.fame||0); });
 
     content.innerHTML =
       '<div class="stat-row">'
@@ -1069,8 +1202,9 @@ async function loadBattles() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     var data = await res.json();
     allBattles = Array.isArray(data) ? data : (data.battles || []);
+    filteredBattles = allBattles.slice(); // FIX: initialise filtered to full set
     document.getElementById('battles-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
-    renderBattles(allBattles);
+    renderBattles(filteredBattles);
     toast('Loaded ' + allBattles.length + ' battle records.', 'ok');
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--err);">Error: ' + esc(e.message) + '</td></tr>';
@@ -1079,15 +1213,19 @@ async function loadBattles() {
 }
 
 function renderBattles(battles) {
+  // FIX: store the currently rendered set so showBattleDetails uses the right index
+  filteredBattles = battles;
   var tbody = document.getElementById('battles-body');
   if (!battles.length) {
     tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">No records match your filter.</td></tr>';
     return;
   }
   tbody.innerHTML = battles.map(function(b, i) {
-    var resultBadge = (b.result === 'win' || b.result === 'loss')
-      ? '<span class="badge badge-' + esc(b.result) + '">' + esc(b.result) + '</span>'
-      : esc(b.result || '—');
+    var result = b.result || '';
+    var badgeCls = result === 'win' ? 'badge-win' : (result === 'loss' ? 'badge-loss' : 'badge-draw');
+    var resultBadge = result
+      ? '<span class="badge ' + badgeCls + '">' + esc(result) + '</span>'
+      : '—';
     var decks = (b.team_cards || []).length;
     return '<tr onclick="showBattleDetails(' + i + ')" style="cursor:pointer">'
       + '<td style="color:var(--dim)">' + esc(formatBattleTime(b.battle_time)) + '</td>'
@@ -1112,11 +1250,12 @@ function filterBattles() {
     var matchResult = !result || b.result === result;
     return matchText && matchResult;
   });
-  renderBattles(filtered);
+  renderBattles(filtered); // FIX: filteredBattles updated inside renderBattles
 }
 
 function showBattleDetails(i) {
-  var b = allBattles[i];
+  // FIX: index into filteredBattles (the currently visible set), not allBattles
+  var b = filteredBattles[i];
   if (!b) return;
   var teamCards = b.team_cards || [];
   var oppCards  = b.opponent_cards || [];
@@ -1128,12 +1267,16 @@ function showBattleDetails(i) {
     }).join('') + '</div>';
   }
 
+  var resultColor = b.result === 'win' ? 'ok' : (b.result === 'draw' ? 'warn' : 'err');
   document.getElementById('modal-body').innerHTML =
     '<div class="modal-meta">'
-    + '<div class="modal-meta-item"><span>Time</span>' + esc(formatBattleTime(b.battle_time)) + '</div>'
-    + '<div class="modal-meta-item"><span>Player</span>' + esc(b.player_name || b.player_tag) + '</div>'
-    + '<div class="modal-meta-item"><span>Result</span><strong style="color:var(--' + (b.result==='win'?'ok':'err') + ')">' + esc((b.result||'').toUpperCase()) + '</strong></div>'
-    + '<div class="modal-meta-item"><span>Score</span>' + (b.team_crowns??'?') + ' – ' + (b.opp_crowns??'?') + '</div>'
+    + '<div class="modal-meta-item"><span>Time</span>'     + esc(formatBattleTime(b.battle_time)) + '</div>'
+    + '<div class="modal-meta-item"><span>Player</span>'   + esc(b.player_name || b.player_tag) + '</div>'
+    + '<div class="modal-meta-item"><span>Opponent</span>' + esc(b.opp_name || b.opp_tag || '—') + '</div>'
+    + '<div class="modal-meta-item"><span>Result</span><strong style="color:var(--' + resultColor + ')">' + esc((b.result||'').toUpperCase()) + '</strong></div>'
+    + '<div class="modal-meta-item"><span>Score</span>' + (b.team_crowns ?? '?') + ' – ' + (b.opp_crowns ?? '?') + '</div>'
+    + (b.trophy_change != null ? '<div class="modal-meta-item"><span>Trophy Δ</span>' + (b.trophy_change >= 0 ? '+' : '') + esc(b.trophy_change) + '</div>' : '')
+    + (b.type ? '<div class="modal-meta-item"><span>Mode</span>' + esc(b.type) + '</div>' : '')
     + '</div>'
     + '<div class="deck-section-title">Your Deck</div>' + cardGrid(teamCards)
     + '<div class="deck-section-title" style="margin-top:16px;">Opponent Deck</div>' + cardGrid(oppCards);
@@ -1160,76 +1303,6 @@ async function triggerManualHarvest() {
   }
 }
 
-// ── UI Editor ─────────────────────────────────────────────────────────────────
-function onTemplateChange() {
-  document.getElementById('editor-html-content').value = '';
-  document.getElementById('editor-meta').textContent = '';
-  document.getElementById('editor-char-count').textContent = '';
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-  var ta = document.getElementById('editor-html-content');
-  if (ta) {
-    ta.addEventListener('input', function() {
-      var n = ta.value.length;
-      document.getElementById('editor-char-count').textContent = n.toLocaleString() + ' characters';
-    });
-  }
-});
-
-async function fetchTemplateForEditor(source) {
-  var name = document.getElementById('editor-template-name').value;
-  try {
-    var res  = await fetch('/admin/api/template/' + encodeURIComponent(name) + '?source=' + encodeURIComponent(source));
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var data = await res.json();
-    if (data.html === undefined) throw new Error('No HTML field in response.');
-    var ta = document.getElementById('editor-html-content');
-    ta.value = data.html;
-    var n = ta.value.length;
-    document.getElementById('editor-char-count').textContent = n.toLocaleString() + ' characters';
-    document.getElementById('editor-meta').textContent =
-      'Loaded ' + source + ' · ' + name + ' · ' + new Date().toLocaleTimeString();
-    toast('Loaded ' + source + ' HTML for "' + name + '"', 'ok');
-  } catch(e) {
-    toast('Error loading template: ' + e.message, 'err');
-  }
-}
-
-async function deployTemplate() {
-  var name = document.getElementById('editor-template-name').value;
-  var html = document.getElementById('editor-html-content').value.trim();
-  if (!html) { toast('Nothing to deploy — editor is empty.', 'err'); return; }
-  if (!confirm('Deploy this HTML as the live "' + name + '" template?')) return;
-  try {
-    var body = new FormData();
-    body.set('template_name', name);
-    body.set('html_content',  html);
-    var res = await fetch('/admin/update-html', { method: 'POST', body: body });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    toast('Deployed "' + name + '" successfully.', 'ok');
-    appendLog('Template deployed: ' + name, 'ok');
-  } catch(e) {
-    toast('Deploy failed: ' + e.message, 'err');
-    appendLog('Deploy error: ' + e.message, 'err');
-  }
-}
-
-function previewTemplate() {
-  var html = document.getElementById('editor-html-content').value.trim();
-  if (!html) { toast('Nothing to preview — editor is empty.', 'err'); return; }
-  document.getElementById('preview-template-name').value = document.getElementById('editor-template-name').value;
-  document.getElementById('preview-html').value = html;
-  document.getElementById('preview-form').submit();
-}
-
-async function resetTemplate() {
-  var name = document.getElementById('editor-template-name').value;
-  if (!confirm('Reset "' + name + '" to its default? This will overwrite the DB entry.')) return;
-  await fetchTemplateForEditor('default');
-  await deployTemplate();
-}
-
 // ── CSV Export ────────────────────────────────────────────────────────────────
 async function handleCustomCSVExport() {
   var fields = Array.from(document.querySelectorAll('input[name="csv-fields"]:checked')).map(function(cb){ return cb.value; });
@@ -1245,23 +1318,28 @@ async function handleCustomCSVExport() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     var records = await res.json();
     if (!Array.isArray(records)) throw new Error('Invalid response format.');
+    // FIX: guard against empty records array before accessing records[0]
+    if (!records.length) { toast('No records returned.', 'err'); return; }
 
     var wantWinRate = document.getElementById('formula-winrate').checked;
     var wantWarPart = document.getElementById('formula-warpart').checked;
-    var headers = Object.keys(records[0] || {});
-    if (wantWinRate) headers.push('Computed_WinRate%');
-    if (wantWarPart) headers.push('Computed_WarParticipation%');
 
-    var csvContent = headers.join(',') + '\n';
+    // FIX: build computed columns into each row first, THEN derive headers,
+    // so headers and row keys always stay in sync
     records.forEach(function(row) {
       if (wantWinRate) {
         var w = row.totalWins || 0, l = row.totalLosses || 0;
-        row['Computed_WinRate%'] = (w + l > 0) ? ((w / (w + l)) * 100).toFixed(1) : 0;
+        row['Computed_WinRate%'] = (w + l > 0) ? ((w / (w + l)) * 100).toFixed(1) : '0.0';
       }
       if (wantWarPart) {
         var used = row.decksUsedToday || 0, rem = row.decksRemaining || 0, total = used + rem;
-        row['Computed_WarParticipation%'] = total > 0 ? ((used / total) * 100).toFixed(1) : 0;
+        row['Computed_WarParticipation%'] = total > 0 ? ((used / total) * 100).toFixed(1) : '0.0';
       }
+    });
+
+    var headers = Object.keys(records[0]);
+    var csvContent = headers.join(',') + '\n';
+    records.forEach(function(row) {
       csvContent += headers.map(function(h) {
         var val = row[h] != null ? row[h] : 'N/A';
         return '"' + String(val).replace(/"/g, '""') + '"';
@@ -1298,13 +1376,317 @@ async function confirmFlushCache() {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// UI EDITOR — improved
+// ═════════════════════════════════════════════════════════════════════════════
+
+function _editorSetButtons(hasContent) {
+  var btns = ['btn-preview', 'btn-deploy', 'btn-reset', 'btn-diff'];
+  btns.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.disabled = !hasContent;
+  });
+}
+
+function _editorUpdateStatusBar(opts) {
+  // opts: { state, dotClass, template, source, loadTime }
+  var dot   = document.getElementById('sb-dot');
+  var state = document.getElementById('sb-state');
+  if (dot   && opts.dotClass) dot.className = 'sb-dot ' + opts.dotClass;
+  if (state && opts.state)    state.textContent = opts.state;
+
+  if (opts.template) {
+    document.getElementById('sb-template').style.display   = '';
+    document.getElementById('sb-tpl-name').textContent     = opts.template;
+  }
+  if (opts.source) {
+    document.getElementById('sb-source-item').style.display = '';
+    document.getElementById('sb-source').textContent        = opts.source;
+  }
+  if (opts.loadTime) {
+    document.getElementById('sb-time-item').style.display  = '';
+    document.getElementById('sb-load-time').textContent    = opts.loadTime;
+  }
+}
+
+function _editorUpdateMetrics(text) {
+  var chars = text.length;
+  var lines = text ? text.split('\n').length : 0;
+  document.getElementById('sb-chars-item').style.display = '';
+  document.getElementById('sb-lines-item').style.display = '';
+  document.getElementById('sb-chars').textContent = chars.toLocaleString();
+  document.getElementById('sb-lines').textContent = lines.toLocaleString();
+}
+
+function onTemplateChange() {
+  // Reset editor when a different template is selected from the dropdown
+  var ta = document.getElementById('editor-html-content');
+  ta.value = '';
+  editorOriginal   = '';
+  editorDirty      = false;
+  editorTemplateName = document.getElementById('editor-template-name').value;
+  _editorSetButtons(false);
+  _editorUpdateStatusBar({ dotClass: 'empty', state: 'No template loaded' });
+  document.getElementById('sb-chars-item').style.display = 'none';
+  document.getElementById('sb-lines-item').style.display = 'none';
+  document.getElementById('sb-template').style.display   = 'none';
+  document.getElementById('sb-source-item').style.display = 'none';
+  document.getElementById('sb-time-item').style.display   = 'none';
+  // Close diff panel if open
+  var dp = document.getElementById('diff-panel');
+  if (dp) dp.classList.remove('open');
+  document.getElementById('btn-diff').disabled = true;
+}
+
+async function fetchTemplateForEditor(source) {
+  var name = document.getElementById('editor-template-name').value;
+  var btn  = source === 'current' ? document.getElementById('btn-load-live') : document.getElementById('btn-load-default');
+  btn.disabled = true;
+  btn.textContent = '↻ Loading…';
+  try {
+    var res = await fetch('/admin/api/template/' + encodeURIComponent(name) + '?source=' + encodeURIComponent(source));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    if (data.html === undefined) throw new Error('No HTML field in response.');
+
+    var ta = document.getElementById('editor-html-content');
+    ta.value       = data.html;
+    editorOriginal = data.html;  // snapshot for diff
+    editorDirty    = false;
+    editorTemplateName = name;
+
+    _editorSetButtons(true);
+    _editorUpdateStatusBar({
+      dotClass: 'loaded',
+      state:    'Loaded — no unsaved changes',
+      template: name,
+      source:   source === 'current' ? 'Live DB' : 'Default file',
+      loadTime: new Date().toLocaleTimeString(),
+    });
+    _editorUpdateMetrics(data.html);
+
+    // Close diff panel on fresh load
+    document.getElementById('diff-panel').classList.remove('open');
+    document.getElementById('btn-diff').disabled = false;
+
+    toast('Loaded ' + source + ' template: "' + name + '"', 'ok');
+  } catch(e) {
+    toast('Error loading template: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = source === 'current' ? '↓ Load Live' : '↓ Load Default';
+  }
+}
+
+// Track dirty state as user types
+document.addEventListener('DOMContentLoaded', function() {
+  var ta = document.getElementById('editor-html-content');
+  if (!ta) return;
+
+  ta.addEventListener('input', function() {
+    _editorUpdateMetrics(ta.value);
+    if (!editorDirty && ta.value !== editorOriginal) {
+      editorDirty = true;
+      _editorUpdateStatusBar({ dotClass: 'dirty', state: 'Unsaved changes' });
+    } else if (ta.value === editorOriginal) {
+      editorDirty = false;
+      _editorUpdateStatusBar({ dotClass: 'loaded', state: 'Loaded — no unsaved changes' });
+    }
+    // Refresh diff if panel is open
+    if (document.getElementById('diff-panel').classList.contains('open')) {
+      renderDiff(editorOriginal, ta.value);
+    }
+  });
+
+  // Tab key inserts 2 spaces instead of jumping focus
+  ta.addEventListener('keydown', function(e) {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      var start = ta.selectionStart;
+      var end   = ta.selectionEnd;
+      ta.value  = ta.value.substring(0, start) + '  ' + ta.value.substring(end);
+      ta.selectionStart = ta.selectionEnd = start + 2;
+    }
+  });
+
+  loadDiagnostics();
+});
+
+async function deployTemplate() {
+  // FIX: guard against double-clicks during an in-flight POST
+  if (editorDeploying) return;
+  var name = document.getElementById('editor-template-name').value;
+  var html = document.getElementById('editor-html-content').value.trim();
+  if (!html) { toast('Nothing to deploy — editor is empty.', 'err'); return; }
+  if (!confirm('Deploy this HTML as the live "' + name + '" template?')) return;
+
+  editorDeploying = true;
+  var btn = document.getElementById('btn-deploy');
+  btn.disabled    = true;
+  btn.textContent = '⏳ Deploying…';
+  _editorUpdateStatusBar({ dotClass: 'deploying', state: 'Deploying…' });
+
+  try {
+    var body = new FormData();
+    body.set('template_name', name);
+    body.set('html_content',  html);
+    var res = await fetch('/admin/update-html', { method: 'POST', body: body });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    // Mark clean after successful deploy
+    editorOriginal = html;
+    editorDirty    = false;
+    _editorUpdateStatusBar({ dotClass: 'loaded', state: 'Deployed successfully', loadTime: new Date().toLocaleTimeString() });
+    toast('Deployed "' + name + '" successfully.', 'ok');
+    appendLog('Template deployed: ' + name, 'ok');
+  } catch(e) {
+    _editorUpdateStatusBar({ dotClass: 'dirty', state: 'Deploy failed — changes unsaved' });
+    toast('Deploy failed: ' + e.message, 'err');
+    appendLog('Deploy error: ' + e.message, 'err');
+  } finally {
+    editorDeploying = false;
+    btn.disabled    = false;
+    btn.textContent = '🚀 Deploy';
+  }
+}
+
+// FIX: previewTemplate sends content via fetch + blob URL instead of a hidden
+// form POST, avoiding potential truncation of large templates by the browser
+async function previewTemplate() {
+  var html = document.getElementById('editor-html-content').value.trim();
+  if (!html) { toast('Nothing to preview — editor is empty.', 'err'); return; }
+
+  try {
+    // Ask the server to render the template with dummy context and return HTML
+    var body = new FormData();
+    body.set('template_name', document.getElementById('editor-template-name').value);
+    body.set('html_content',  html);
+    var res  = await fetch('/admin/preview', { method: 'POST', body: body });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var rendered = await res.text();
+    var blob = new Blob([rendered], { type: 'text/html' });
+    var url  = URL.createObjectURL(blob);
+    var win  = window.open(url, '_blank');
+    // Revoke after a short delay to let the new tab load
+    setTimeout(function() { URL.revokeObjectURL(url); }, 5000);
+    if (!win) toast('Pop-up blocked — allow pop-ups for previews.', 'err');
+  } catch(e) {
+    toast('Preview failed: ' + e.message, 'err');
+  }
+}
+
+// FIX: resetTemplate awaits the load, then asks before deploying — prevents
+// deploying stale content if the user cancels the second confirm
+async function resetTemplate() {
+  var name = document.getElementById('editor-template-name').value;
+  if (!confirm('Load the default for "' + name + '"? This will replace the editor content.')) return;
+  await fetchTemplateForEditor('default');
+  // fetchTemplateForEditor populates the textarea; ask before deploying
+  if (confirm('Default loaded. Deploy it to overwrite the live template?')) {
+    await deployTemplate();
+  }
+}
+
+function copyEditorToClipboard() {
+  var ta = document.getElementById('editor-html-content');
+  if (!ta.value) { toast('Nothing to copy.', 'err'); return; }
+  navigator.clipboard.writeText(ta.value)
+    .then(function() { toast('Copied to clipboard.', 'ok'); })
+    .catch(function() {
+      // Fallback for older browsers
+      ta.select();
+      document.execCommand('copy');
+      toast('Copied to clipboard.', 'ok');
+    });
+}
+
+// ── Diff viewer ───────────────────────────────────────────────────────────────
+function toggleDiff() {
+  var panel = document.getElementById('diff-panel');
+  var isOpen = panel.classList.contains('open');
+  if (isOpen) {
+    panel.classList.remove('open');
+    document.getElementById('btn-diff').textContent = '± Diff';
+  } else {
+    var current = document.getElementById('editor-html-content').value;
+    renderDiff(editorOriginal, current);
+    panel.classList.add('open');
+    document.getElementById('btn-diff').textContent = '± Hide Diff';
+  }
+}
+
+function renderDiff(original, current) {
+  var container = document.getElementById('diff-content');
+  if (!original && !current) {
+    container.innerHTML = '<span class="diff-empty">Nothing to diff.</span>';
+    return;
+  }
+  if (original === current) {
+    container.innerHTML = '<span class="diff-empty">No changes — content matches the loaded version.</span>';
+    return;
+  }
+
+  // Line-by-line diff (LCS-based, lightweight)
+  var aLines = original.split('\n');
+  var bLines = current.split('\n');
+  var result = lineDiff(aLines, bLines);
+  var html   = result.map(function(d) {
+    if (d.type === 'add') return '<div class="diff-line-add">+ ' + esc(d.line) + '</div>';
+    if (d.type === 'del') return '<div class="diff-line-del">- ' + esc(d.line) + '</div>';
+    return '<div class="diff-line-ctx">  ' + esc(d.line) + '</div>';
+  }).join('');
+  container.innerHTML = html || '<span class="diff-empty">Empty diff result.</span>';
+}
+
+// Lightweight Myers-inspired line diff (patience diff simplified)
+function lineDiff(a, b) {
+  // Build LCS table
+  var m = a.length, n = b.length;
+  // For large files cap context to avoid freezing the browser
+  if (m > 2000 || n > 2000) {
+    return [{ type: 'ctx', line: '(diff suppressed — file too large for inline diff)' }];
+  }
+  var dp = [];
+  for (var i = 0; i <= m; i++) { dp[i] = new Array(n + 1).fill(0); }
+  for (var i = 1; i <= m; i++) {
+    for (var j = 1; j <= n; j++) {
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+    }
+  }
+  // Backtrack
+  var result = [], i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i-1] === b[j-1]) {
+      result.unshift({ type: 'ctx', line: a[i-1] });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+      result.unshift({ type: 'add', line: b[j-1] });
+      j--;
+    } else {
+      result.unshift({ type: 'del', line: a[i-1] });
+      i--;
+    }
+  }
+  // Collapse unchanged runs to ±3 context lines around changes
+  var CONTEXT = 3;
+  var changed = result.map(function(d, idx) { return d.type !== 'ctx' ? idx : -1; }).filter(function(x){ return x >= 0; });
+  if (!changed.length) return [{ type: 'ctx', line: '(no changes)' }];
+  var keep = new Set();
+  changed.forEach(function(idx) {
+    for (var k = Math.max(0, idx - CONTEXT); k <= Math.min(result.length - 1, idx + CONTEXT); k++) keep.add(k);
+  });
+  var out = [], prev = -1;
+  result.forEach(function(d, idx) {
+    if (!keep.has(idx)) { if (prev !== -2) { out.push({ type: 'ctx', line: '···' }); prev = -2; } return; }
+    out.push(d); prev = idx;
+  });
+  return out;
+}
+
 // ── Keyboard ──────────────────────────────────────────────────────────────────
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeModal();
 });
-
-// ── Init ──────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', function() { loadDiagnostics(); });
 </script>
 </body>
 </html>"""
