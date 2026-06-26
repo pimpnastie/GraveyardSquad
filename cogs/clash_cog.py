@@ -287,7 +287,7 @@ class ClashRoyale(commands.Cog):
             )
         return tag, member, profile, blog
 
-    results = await asyncio.gather(*(harvest_member(m) for m in members))
+        results = await asyncio.gather(*(harvest_member(m) for m in members))
 
     for tag, m, profile, blog in results:
         # 3. Snapshot document — include war data if available
