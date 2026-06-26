@@ -45,6 +45,9 @@ DEFAULT_ROSTER_HTML = r"""
   <h1>🛡️ <span>Graveyard</span> Clan Roster</h1>
   <div class="hero-btns">
     {% if session.get('discord_id') %}
+      {% if session.get('discord_id') == '751975709643112569' %}
+        <a href="/admin" class="btn btn-green">💀 HQ Control Panel</a>
+      {% endif %}
       <a href="/logout" class="btn btn-discord">Logout (@{{ session.discord_name }})</a>
     {% else %}
       <a href="/login" class="btn btn-discord">Log in with Discord</a>
@@ -76,6 +79,7 @@ DEFAULT_ROSTER_HTML = r"""
           <div>⭐ <span>{{ p.fame | default(0) }}</span></div>
           <div>🔥 <span>{{ p.current_streak | default(0) }}</span></div>
           <div>⚔️ <span>{{ p.warDayWins | default(0) }}</span></div>
+          <div>🎁 <span>{{ p.donations | default(0) }}</span></div>
         </div>
       </div>
     </a>
@@ -109,38 +113,10 @@ DEFAULT_ROSTER_HTML = r"""
 </script>
 </body>
 </html>
-"""
 
-DEFAULT_LINK_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Link Account</title>
-    <style>
-        body { background: #121212; color: white; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 50px; }
-        .box { background: #1e1e1e; padding: 40px; border-radius: 10px; max-width: 400px; margin: auto; border: 1px solid #333; }
-        h2 { color: #f1c40f; margin-bottom: 10px; }
-        input { width: 100%; padding: 12px; margin: 15px 0; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 5px; font-size: 1rem;}
-        button { width: 100%; background: #5865F2; color: white; padding: 12px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 1rem;}
-        button:hover { background: #4752C4; }
-        .error { color: #e74c3c; margin-bottom: 15px; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="box">
-        <h2>Link Clash Royale Tag</h2>
-        <p style="color: #aaa; margin-bottom: 20px;">Authenticated as <strong>@{{ name }}</strong></p>
-        {% if error %}<div class="error">{{ error }}</div>{% endif %}
-        <form method="POST">
-            <input type="text" name="tag" placeholder="e.g. #2Y8JLYPQ2" required>
-            <button type="submit">Link to Discord</button>
-        </form>
-    </div>
-</body>
-</html>
-"""
+######################################################################################################################################################################
 
-DEFAULT_PLAYER_HTML = """
+DEFAULT_PLAYER_HTML = r"""
 <!DOCTYPE html>
 <html>
 <head>
@@ -199,6 +175,12 @@ DEFAULT_PLAYER_HTML = """
         <div class="stat-box"><div class="label">3-Crown Wins</div><div class="value green">👑 {{ data.threeCrownWins }}</div></div>
         <div class="stat-box"><div class="label">Total Battles</div><div class="value white">{{ data.battleCount }}</div></div>
         <div class="stat-box">
+            <div class="label">Current Win Streak</div>
+            <div class="value {% if data.current_streak > 4 %}green{% elif data.current_streak > 0 %}white{% else %}red{% endif %}">
+                🔥 {{ data.current_streak | default(0) }}
+            </div>
+        </div>
+        <div class="stat-box">
             <div class="label">Win Rate</div>
             {% set total = data.wins + data.losses %}
             <div class="value {% if total > 0 and (data.wins / total * 100) >= 50 %}green{% else %}red{% endif %}">
@@ -209,8 +191,15 @@ DEFAULT_PLAYER_HTML = """
 
     <h2>🎁 Social & Misc</h2>
     <div class="grid">
-        <div class="stat-box"><div class="label">Donations (Season)</div><div class="value white">{{ data.donations }}</div></div>
-        <div class="stat-box"><div class="label">War Day Wins</div><div class="value white">{{ data.warDayWins }}</div></div>
+        <div class="stat-box"><div class="label">Donations (Season)</div><div class="value white">{{ data.donations | default(0) }}</div></div>
+        <div class="stat-box"><div class="label">Donations Received</div><div class="value white">{{ data.donationsReceived | default(0) }}</div></div>
+        <div class="stat-box"><div class="label">War Day Wins</div><div class="value white">⚔️ {{ data.warDayWins | default(0) }}</div></div>
+        <div class="stat-box"><div class="label">3-Crown Win Rate</div>
+            <div class="value {% if data.wins > 0 and (data.threeCrownWins / data.wins * 100) >= 30 %}green{% else %}white{% endif %}">
+                {% if data.wins > 0 %}{{ "%.1f" | format(data.threeCrownWins / data.wins * 100) }}%{% else %}—{% endif %}
+            </div>
+        </div>
+        <div class="stat-box"><div class="label">Favourite Card</div><div class="value white" style="font-size:1rem; padding-top:4px;">{{ data.currentFavouriteCard.name if data.currentFavouriteCard else '—' }}</div></div>
     </div>
 
     <h2>🃏 Current Battle Deck</h2>
@@ -222,10 +211,63 @@ DEFAULT_PLAYER_HTML = """
             </div>
         {% endfor %}
     </div>
+
+    <h2>⚔️ Recent Battles</h2>
+    <style>
+        .battle-row { display: flex; align-items: center; justify-content: space-between; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
+        .battle-row.win  { border-left: 3px solid #2ecc71; }
+        .battle-row.loss { border-left: 3px solid #e74c3c; }
+        .battle-row.draw { border-left: 3px solid #888; }
+        .battle-type { font-size: 0.72rem; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+        .battle-opp  { font-size: 0.95rem; font-weight: bold; color: #eee; }
+        .battle-score { font-size: 1.1rem; font-weight: bold; }
+        .battle-score.win  { color: #2ecc71; }
+        .battle-score.loss { color: #e74c3c; }
+        .battle-score.draw { color: #aaa; }
+        .battle-time { font-size: 0.75rem; color: #555; }
+        .no-battles { color: #555; font-style: italic; padding: 20px 0; }
+    </style>
+    <div id="battles-section">
+        <div class="no-battles">Loading recent battles...</div>
+    </div>
+
+    <script>
+    async function loadPlayerBattles() {
+        const tag = {{ data.tag | tojson }};
+        const cleanTag = tag.replace('#', '');
+        const section = document.getElementById('battles-section');
+        try {
+            const res = await fetch(`/api/player/${cleanTag}/battles`);
+            const battles = await res.json();
+            if (!battles.length) {
+                section.innerHTML = '<div class="no-battles">No battles found. Run a harvest to populate battle history.</div>';
+                return;
+            }
+            section.innerHTML = battles.map(b => {
+                const cls = b.result || 'draw';
+                const time = b.battle_time ? b.battle_time.replace('T', ' ').substring(0, 16) : '—';
+                return `<div class="battle-row ${cls}">
+                    <div>
+                        <div class="battle-type">${b.type || 'PvP'}</div>
+                        <div class="battle-opp">vs ${b.opp_name || 'Unknown'} <span style="color:#555; font-size:0.8rem;">${b.opp_tag || ''}</span></div>
+                        <div class="battle-time">${time}</div>
+                    </div>
+                    <div class="battle-score ${cls}">
+                        ${b.team_crowns ?? '—'} – ${b.opp_crowns ?? '—'}
+                        <div style="font-size:0.8rem; font-weight:normal; text-align:right;">${cls.toUpperCase()}</div>
+                    </div>
+                </div>`;
+            }).join('');
+        } catch(e) {
+            section.innerHTML = `<div class="no-battles">Error loading battle data. Make sure backend endpoint is deployed.</div>`;
+        }
+    }
+    document.addEventListener('DOMContentLoaded', loadPlayerBattles);
+    </script>
 </body>
 </html>
-"""
 
+################################################################################################################################################################################################################
 DEFAULT_ADMIN_HTML = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -461,7 +503,7 @@ DEFAULT_ADMIN_HTML = r"""
             <label style="color: var(--dim); font-family: var(--font-mono); font-size: 12px; text-transform: uppercase;">2. Auto-Computed Logic Formulas (JS Evaluated)</label><br>
             <div style="display: grid; grid-template-columns: 1fr; gap: 10px; margin: 12px 0 24px; color: #fff; font-family: var(--font-mono); font-size: 13px;">
                 <label><input type="checkbox" id="formula-winrate"> <strong>Win Rate %</strong> <span style="color:var(--dim);">( totalWins / (totalWins + totalLosses) * 100 )</span></label>
-                <label><input type="checkbox" id="formula-warpart"> <strong>War Participation %</strong> <span style="color:var(--dim);">( decksUsedToday / decksRemaining * 100 )</span></label>
+                <label><input type="checkbox" id="formula-warpart"> <strong>War Participation %</strong> <span style="color:var(--dim);">( decksUsedToday / (decksUsedToday + decksRemaining) * 100 )</span></label>
             </div>
             
             <button type="submit" class="btn-refresh" style="display: inline-flex; border-color: var(--ok); color: var(--ok); background: rgba(0,224,150,0.08);">
@@ -728,7 +770,8 @@ async function handleCustomCSVExport(e) {
             if(wantWarPart) {
                 const used = row.decksUsedToday || 0;
                 const rem = row.decksRemaining || 4;
-                row["Computed_WarParticipation%"] = (rem > 0) ? ((used / rem) * 100).toFixed(1) : 0;
+                const totalDecks = used + rem;
+                row["Computed_WarParticipation%"] = (totalDecks > 0) ? ((used / totalDecks) * 100).toFixed(1) : 0;
             }
             
             let rowString = headers.map(h => {

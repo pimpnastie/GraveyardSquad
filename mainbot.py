@@ -84,6 +84,17 @@ _harvest_meta = {
     "status": "never_run",
 }
 
+def _restore_harvest_meta():
+    try:
+        doc = db_sync["config"].find_one({"_id": "harvest_meta"})
+        if doc:
+            doc.pop("_id", None)
+            _harvest_meta.update(doc)
+            log.info("✅ Restored harvest metadata from DB.")
+    except Exception as e:
+        log.warning(f"Could not restore harvest meta: {e}")
+
+_restore_harvest_meta()  # ← now called after definition
 # ---------------------------------------------------------------------------
 # 2. DATA ENRICHMENT & STREAK LOGIC
 # ---------------------------------------------------------------------------
@@ -380,7 +391,27 @@ def admin_panel():
         get_template("admin"),
         clan_tag=CLAN_TAG,
     )
-
+#----/battles-------------------------------------------------------------------------------------
+@app.route("/api/player/<tag>/battles")
+def api_player_battles(tag):
+    # Ensure tag matches db format (no #)
+    clean_t = tag.replace("#", "").upper()
+    try:
+        # Fetch the 15 most recent battles for this specific tag
+        battles = list(
+            db_sync["battle_history"]
+            .find({"player_tag": clean_t})
+            .sort("battle_time", -1)
+            .limit(15)
+        )
+        
+        # Convert ObjectId to string for JSON serialization
+        for b in battles:
+            b["_id"] = str(b["_id"])
+            
+        return jsonify(battles)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 # ── /admin/harvest/manual ──────────────────────────────────────────────────
 @app.route("/admin/harvest/manual", methods=["POST"])
 def manual_harvest():
@@ -443,14 +474,39 @@ def preview_template():
         
     # Provide dummy context specific to testing
     dummy_context = {
-        "players": [{"name": "TestPlayer", "trophies": 5500, "role": "leader", "current_streak": 3, "clean_tag": "XXXX"}],
-        "data": {"name": "TestPlayer", "tag": "#XXXX", "expLevel": 50, "trophies": 5500, "wins": 100, "losses": 50, "battleCount": 150},
+        "players": [
+            {"name": "TestPlayer", "trophies": 5500, "role": "leader", "current_streak": 3, "fame": 2000, "warDayWins": 15, "donations": 400, "clean_tag": "XXXX"}
+        ],
+        "data": {
+            "name": "TestPlayer", 
+            "tag": "#XXXX", 
+            "expLevel": 50, 
+            "trophies": 5500, 
+            "bestTrophies": 6000,
+            "wins": 100, 
+            "losses": 50, 
+            "threeCrownWins": 35,
+            "battleCount": 150,
+            "current_streak": 5,
+            "donations": 400,
+            "donationsReceived": 250,
+            "warDayWins": 15,
+            "currentFavouriteCard": {"name": "Graveyard"},
+            "arena": {"name": "Legendary Arena"},
+            "clan": {"name": "Graveyard Squad"},
+            "role": "coLeader",
+            "currentDeck": [
+                {"name": "Graveyard", "level": 14, "maxLevel": 14},
+                {"name": "Poison", "level": 13, "maxLevel": 14},
+                {"name": "Tornado", "level": 15, "maxLevel": 14}
+            ]
+        },
         "top_pusher": {"name": "TestPlayer", "trophies": 5500},
         "top_streak": {"name": "TestPlayer", "current_streak": 3},
         "top_war": {"name": "TestPlayer", "warDayWins": 15},
-        "clan_tag": CLAN_TAG
+        "clan_tag": CLAN_TAG,
+        "max_lvl": MAX_CARD_LEVEL
     }
-    return render_sandboxed(html, **dummy_context)
  
 # ── /admin/diagnostics ────────────────────────────────────────────────────
 @app.route("/admin/diagnostics")
