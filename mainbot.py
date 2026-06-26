@@ -360,26 +360,27 @@ def callback():
 # ── /admin/api/battles ─────────────────────────────────────────────────────
 @app.route("/admin/api/battles")
 def api_get_battles():
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     
-    try:
-        # Fetch the 100 most recent battles sorted by time descending
-        battles = list(db_sync["battle_history"].find().sort("battle_time", -1).limit(100))
+    tag = request.args.get("tag")
+    page = int(request.args.get("page", 1))
+    per_page = 20
+    
+    query = {"player_tag": tag} if tag else {}
+    
+    # Fetch battles + total count for pagination
+    battles = list(db_sync["battle_history"].find(query)
+                   .sort("battle_time", -1)
+                   .skip((page - 1) * per_page)
+                   .limit(per_page))
+    
+    # Include total count for the frontend to calculate "Pages"
+    total = db_sync["battle_history"].count_documents(query)
+    
+    for b in battles:
+        b["_id"] = str(b["_id"])
         
-        # Grab all profiles so we can match tags to player names
-        profiles = {p["_id"]: p.get("name", "Unknown") for p in db_sync["player_profiles"].find()}
-        
-        # Format for JSON serialization
-        for b in battles:
-            b["_id"] = str(b["_id"])
-            tag = b.get("player_tag", "")
-            b["player_name"] = profiles.get(tag, "Unknown")
-            
-        return jsonify(battles)
-    except Exception as e:
-        log.error(f"Error fetching battles: {e}")
-        return jsonify({"error": "Internal database error."}), 500
+    return jsonify({"battles": battles, "total": total, "pages": (total // per_page) + 1})
 #################################################WAR MONITOR
 # ── /admin/api/war ─────────────────────────────────────────────────────────
 @app.route("/admin/api/war")

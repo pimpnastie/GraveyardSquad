@@ -44,15 +44,15 @@ DEFAULT_ROSTER_HTML = r"""
 <header class="hero">
   <h1>🛡️ <span>Graveyard</span> Clan Roster</h1>
   <div class="hero-btns">
-    {% if session.get('discord_id') %}
-      {% if session.get('is_admin') %}
-        <a href="/admin" class="btn btn-green">💀 HQ Control Panel</a>
+      {% if session.get('discord_id') %}
+        {% if session.get('is_admin_user') %}
+          <a href="/admin" class="btn btn-green">💀 HQ Control Panel</a>
+        {% endif %}
+        <a href="/logout" class="btn btn-discord">Logout (@{{ session.discord_name }})</a>
+      {% else %}
+        <a href="/login" class="btn btn-discord">Log in with Discord</a>
       {% endif %}
-      <a href="/logout" class="btn btn-discord">Logout (@{{ session.discord_name }})</a>
-    {% else %}
-      <a href="/login" class="btn btn-discord">Log in with Discord</a>
-    {% endif %}
-  </div>
+    </div>
   <div class="hero-sub">{{ players | length }} members &middot; Click a name to view their profile</div>
 </header>
 
@@ -551,33 +551,40 @@ DEFAULT_ADMIN_HTML = r"""
     <div class="tab-pane" id="tab-battles">
       <div class="page-header">
         <div class="page-title">Battle Logs</div>
-        <div class="page-sub">Raw Combat Feed from MongoDB</div>
+        <div class="page-sub">Performance Analytics & 100-Match History</div>
       </div>
-      <div class="toolbar">
-        <button class="btn-refresh" onclick="loadBattles()">↻ Fetch Latest Logs</button>
+      
+      <div class="toolbar" style="display: flex; gap: 10px; align-items: center; margin-bottom: 20px;">
+        <select id="battle-player-filter" class="form-select" onchange="loadBattles(1)">
+            <option value="">All Players</option>
+        </select>
+        <button class="btn-refresh" onclick="loadBattles(1)">
+          <span id="battle-spin">↻</span> Refresh
+        </button>
       </div>
+      
+      <div id="battle-stats-summary" style="margin-bottom: 20px; font-family: var(--font-mono); color: var(--accent);">
+        Select a player to view performance analytics.
+      </div>
+
       <div class="diag-card" style="padding: 0; overflow-x: auto;">
         <table class="war-table">
           <thead>
             <tr>
               <th>Time (UTC)</th>
-              <th>Player</th>
-              <th>Tag</th>
-              <th>Type</th>
               <th>Result</th>
+              <th>Type</th>
               <th>Score</th>
               <th>Opponent</th>
             </tr>
           </thead>
           <tbody id="battles-body">
-            <tr>
-              <td colspan="7" style="text-align:center; padding:24px; color:var(--dim);">
-                Click fetch to load the latest 100 database records.
-              </td>
-            </tr>
+            <tr><td colspan="5" style="text-align:center; padding:20px; color:var(--dim);">No data loaded.</td></tr>
           </tbody>
         </table>
       </div>
+      
+      <div id="pagination-controls" style="margin-top: 15px; display: flex; gap: 5px; flex-wrap: wrap;"></div>
     </div>
 
     <!-- HARVEST LOG -->
@@ -945,6 +952,53 @@ async function loadBattles() {
     tbody.innerHTML = '<tr><td colspan="7" style="color:var(--err); padding:24px;">' + escHtml(e.message) + '</td></tr>';
     toast('Failed to load battles: ' + e.message, 'err');
   }
+}
+
+async function loadBattles(page = 1) {
+    const filter = document.getElementById('battle-player-filter');
+    const tag = filter.value;
+    const tbody = document.getElementById('battles-body');
+    const pag = document.getElementById('pagination-controls');
+    const summary = document.getElementById('battle-stats-summary');
+
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:20px;">Loading...</td></tr>';
+
+    try {
+        const res = await fetch(`/admin/api/battles?tag=${tag}&page=${page}`);
+        const data = await res.json();
+
+        if (data.battles.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:20px;">No battles found.</td></tr>';
+            return;
+        }
+
+        // Render Table Rows
+        tbody.innerHTML = data.battles.map(b => `
+            <tr>
+                <td>${b.battle_time ? b.battle_time.substring(0, 16) : '—'}</td>
+                <td class="${b.result || ''}">${(b.result || '—').toUpperCase()}</td>
+                <td>${b.type || 'PvP'}</td>
+                <td>${b.team_crowns ?? '—'} - ${b.opp_crowns ?? '—'}</td>
+                <td>${b.opp_name || 'Unknown'}</td>
+            </tr>
+        `).join('');
+
+        // Render Pagination
+        pag.innerHTML = Array.from({length: data.pages}, (_, i) => 
+            `<button class="btn-refresh" style="padding:4px 10px;" onclick="loadBattles(${i+1})">${i+1}</button>`
+        ).join('');
+
+        // Calculate and display performance stats if a player is selected
+        if (tag) {
+            const wins = data.battles.filter(b => b.result === 'win').length;
+            const winRate = ((wins / data.battles.length) * 100).toFixed(1);
+            summary.textContent = `Performance: ${wins} wins in this view (${winRate}% win rate)`;
+        } else {
+            summary.textContent = `Viewing most recent database records.`;
+        }
+    } catch (e) {
+        toast('Error loading battles: ' + e.message, 'err');
+    }
 }
 
 async function triggerManualHarvest() {
