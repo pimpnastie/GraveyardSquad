@@ -1,36 +1,5 @@
 # templates.py
 
-DEFAULT_PUBLIC_BATTLES_HTML = r"""
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Battle Log for #{{ tag }}</title>
-  <style>
-    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 20px; }
-    .battle-row { background: #1a1a1a; padding: 15px; margin-bottom: 10px; border-radius: 8px; border-left: 4px solid #444; }
-    .win { border-left-color: #2ecc71; }
-    .loss { border-left-color: #e74c3c; }
-    .deck-grid { display: flex; gap: 4px; margin-top: 8px; }
-    .deck-grid img { width: 32px; height: 38px; object-fit: contain; }
-  </style>
-</head>
-<body>
-  <h1>Public Battle Log: #{{ tag }}</h1>
-  {% for b in battles %}
-    <div class="battle-row {{ b.result }}">
-      <strong>{{ b.result | upper }}</strong> vs {{ b.opp_name }} 
-      <br><small>{{ b.battle_time }}</small>
-      <div class="deck-grid">
-        {% for card in b.team_cards %}
-            <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
-        {% endfor %}
-      </div>
-    </div>
-  {% endfor %}
-</body>
-</html>
-"""
-
 DEFAULT_ROSTER_HTML = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -71,7 +40,6 @@ DEFAULT_ROSTER_HTML = r"""
 </style>
 </head>
 <body>
-
 <header class="hero">
   <h1>🛡️ <span>Graveyard</span> Clan Roster</h1>
   <div class="hero-btns">
@@ -86,23 +54,14 @@ DEFAULT_ROSTER_HTML = r"""
     </div>
   <div class="hero-sub">{{ players | length }} members &middot; Click a name to view their profile</div>
 </header>
-
 <div class="container">
   <div class="main-col">
-    {% if error %}
-      <div class="error-banner">⚠️ {{ error }}</div>
-    {% endif %}
-
+    {% if error %}<div class="error-banner">⚠️ {{ error }}</div>{% endif %}
     {% for p in players %}
     <a href="/player/{{ p.clean_tag }}" class="player-card">
       <div class="p-left">
         <div class="p-name cr-name">{{ p.name }}</div>
-        <div class="p-role">
-          {% if p.role == 'leader' %}Leader
-          {% elif p.role == 'coLeader' %}Co-Leader
-          {% elif p.role == 'elder' %}Elder
-          {% else %}Member{% endif %}
-        </div>
+        <div class="p-role">{{ p.role | title }}</div>
       </div>
       <div class="p-right">
         <div class="p-trophies">🏆 {{ p.trophies }}</div>
@@ -110,13 +69,11 @@ DEFAULT_ROSTER_HTML = r"""
           <div>⭐ <span>{{ p.fame | default(0) }}</span></div>
           <div>🔥 <span>{{ p.current_streak | default(0) }}</span></div>
           <div>⚔️ <span>{{ p.warDayWins | default(0) }}</span></div>
-          <div>🎁 <span>{{ p.donations | default(0) }}</span></div>
         </div>
       </div>
     </a>
     {% endfor %}
   </div>
-
   <div class="side-col">
     <h2>Hall of Fame</h2>
     <div class="hof-card" style="--hof-color: #3498db;">
@@ -124,24 +81,87 @@ DEFAULT_ROSTER_HTML = r"""
       <div class="hof-name cr-name">{{ top_pusher.name if top_pusher else 'N/A' }}</div>
       <div class="hof-stat">🏆 {{ top_pusher.trophies if top_pusher else 0 }} Trophies</div>
     </div>
-    <div class="hof-card" style="--hof-color: #e74c3c;">
-      <div class="hof-label">Highest Win Streak</div>
-      <div class="hof-name cr-name">{{ top_streak.name if top_streak else 'N/A' }}</div>
-      <div class="hof-stat">🔥 {{ top_streak.current_streak if top_streak else 0 }} Wins</div>
-    </div>
-    <div class="hof-card" style="--hof-color: #f1c40f;">
-      <div class="hof-label">War Legend</div>
-      <div class="hof-name cr-name">{{ top_war.name if top_war else 'N/A' }}</div>
-      <div class="hof-stat">⚔️ {{ top_war.warDayWins if top_war else 0 }} Lifetime Wins</div>
-    </div>
   </div>
 </div>
+</body>
+</html>
+"""
 
-<script>
-  document.querySelectorAll('.cr-name').forEach(el => {
-    el.innerHTML = el.innerHTML.replace(/<c\d+>|<\/c>/gi, '');
-  });
-</script>
+DEFAULT_PUBLIC_BATTLES_HTML = r"""
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Battle Log for #{{ tag }}</title>
+  <style>
+    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 20px; }
+    .battle-row { background: #1a1a1a; padding: 20px; margin-bottom: 15px; border-radius: 8px; border-left: 5px solid #444; }
+    .win { border-left-color: #2ecc71; }
+    .loss { border-left-color: #e74c3c; }
+    .deck-grid { display: flex; gap: 4px; margin-top: 10px; }
+    .deck-grid img { width: 32px; height: 38px; object-fit: contain; background: #222; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Battle Log: #{{ tag }}</h1>
+  {% for b in battles %}
+    <div class="battle-row {{ b.result }}">
+      <strong>{{ b.result | upper }}</strong> vs {{ b.opp_name }} ({{ b.opp_clan }})
+      <br><small>{{ b.battle_time.replace('T', ' ').substring(0, 16) }}</small>
+      <div class="deck-grid">
+        {% for card in b.team_cards %}
+            <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
+        {% endfor %}
+      </div>
+    </div>
+  {% endfor %}
+</body>
+</html>
+"""
+
+DEFAULT_PLAYER_HTML = r"""
+<!DOCTYPE html>
+<html>
+<head>
+  <title>{{ data.name }} - Analytics</title>
+  <style>
+    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 40px; }
+    .deck-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; }
+    .card-box img { width: 100%; max-width: 80px; display: block; margin: auto; }
+    .battle-row { background: #1a1a1a; padding: 15px; margin-bottom: 10px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+    .deck-images { display: flex; gap: 4px; }
+    .deck-images img { width: 35px; height: 42px; object-fit: contain; }
+  </style>
+</head>
+<body>
+  <h1>{{ data.name }} <small>{{ data.tag }}</small></h1>
+  <a href="/battles/{{ data.tag | replace('#','') }}" style="background: #45a29e; color: white; padding: 10px; border-radius: 5px; text-decoration: none;">📜 View Full Public Battle Log</a>
+  
+  <h2>🃏 Current Battle Deck</h2>
+  <div class="deck-grid">
+    {% for card in data.currentDeck %}
+      <div class="card-box">
+        <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
+        <div>{{ card.name }}</div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <h2>⚔️ Recent Battles</h2>
+  <div id="battles-section"></div>
+  <script>
+    async function loadPlayerBattles() {
+      const tag = '{{ data.tag }}'.replace('#', '');
+      const res = await fetch('/api/player/' + tag + '/battles');
+      const battles = await res.json();
+      document.getElementById('battles-section').innerHTML = battles.map(b => `
+        <div class="battle-row ${b.result}">
+          <div><strong>${b.result.toUpperCase()}</strong> vs ${b.opp_name}<br><small>${b.battle_time}</small></div>
+          <div class="deck-images">${b.team_cards.map(c => `<img src="${c.iconUrls.medium}" title="${c.name}">`).join('')}</div>
+        </div>
+      `).join('');
+    }
+    loadPlayerBattles();
+  </script>
 </body>
 </html>
 """
@@ -172,62 +192,6 @@ DEFAULT_LINK_HTML = r"""
       <button type="submit">Link to Discord</button>
     </form>
   </div>
-</body>
-</html>
-"""
-
-
-DEFAULT_PLAYER_HTML = r"""
-<!DOCTYPE html>
-<html>
-<head>
-  <title>{{ data.name }} - Analytics</title>
-  <style>
-    /* ... (Your existing dark-mode CSS) ... */
-    .deck-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; }
-    .card-box img { width: 100%; max-width: 80px; display: block; margin: auto; }
-    .battle-row { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-    .deck-images { display: flex; gap: 4px; }
-    .deck-images img { width: 35px; height: 42px; object-fit: contain; }
-  </style>
-</head>
-<body>
-  <h1>{{ data.name }} <small>{{ data.tag }}</small></h1>
-  
-  <h2>🃏 Current Battle Deck</h2>
-  <div class="deck-grid">
-    {% for card in data.currentDeck %}
-      <div class="card-box">
-        <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
-        <div>{{ card.name }}</div>
-      </div>
-    {% endfor %}
-  </div>
-
-  <h2>⚔️ Recent Battles</h2>
-  <div id="battles-section"></div>
-
-  <script>
-    async function loadPlayerBattles() {
-      const tag = '{{ data.tag }}'.replace('#', '');
-      const res = await fetch('/api/player/' + tag + '/battles');
-      const battles = await res.json();
-      const section = document.getElementById('battles-section');
-      
-      section.innerHTML = battles.map(b => `
-        <div class="battle-row ${b.result}">
-          <div>
-            <strong>${b.result.toUpperCase()}</strong> vs ${b.opp_name}<br>
-            <small>${b.battle_time}</small>
-          </div>
-          <div class="deck-images">
-            ${b.team_cards.map(c => `<img src="${c.iconUrls.medium}" title="${c.name}">`).join('')}
-          </div>
-        </div>
-      `).join('');
-    }
-    loadPlayerBattles();
-  </script>
 </body>
 </html>
 """
@@ -1393,6 +1357,33 @@ document.addEventListener('DOMContentLoaded', function() {
 
   loadDiagnostics();
 });
+
+async function previewTemplate() {
+  var html = document.getElementById('editor-html-content').value.trim();
+  if (!html) { toast('Nothing to preview', 'err'); return; }
+
+  try {
+    var body = new FormData();
+    body.set('template_name', document.getElementById('editor-template-name').value);
+    body.set('html_content', html);
+    
+    var res = await fetch('/admin/preview', { method: 'POST', body: body });
+    if (!res.ok) throw new Error('Render Error: ' + (await res.text()));
+    
+    var rendered = await res.text();
+    // Instead of blob URL, let's open in a new window and write content directly
+    var win = window.open('', '_blank');
+    if (win) {
+      win.document.open();
+      win.document.write(rendered);
+      win.document.close();
+    } else {
+      toast('Pop-up blocked! Allow pop-ups for previews.', 'err');
+    }
+  } catch(e) {
+    toast('Preview failed: ' + e.message, 'err');
+  }
+}
 
 async function deployTemplate() {
   // FIX: guard against double-clicks during an in-flight POST
