@@ -1,5 +1,3 @@
-# templates.py
-
 DEFAULT_ROSTER_HTML = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -23,15 +21,28 @@ DEFAULT_ROSTER_HTML = r"""
   .main-col { flex: 2; min-width: 320px; }
   .side-col { flex: 1; min-width: 260px; }
   h2 { color: #fff; font-size: 1.1rem; font-weight: 700; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid #1e2530; }
-  .player-card { background: #161b22; border: 1px solid #1e2530; border-radius: 10px; padding: 14px 18px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; text-decoration: none; transition: border-color 0.2s, transform 0.15s; gap: 12px; flex-wrap: wrap; }
+  
+  .player-card { background: #161b22; border: 1px solid #1e2530; border-radius: 10px; padding: 14px 18px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; transition: border-color 0.2s, transform 0.15s; gap: 12px; flex-wrap: wrap; }
   .player-card:hover { border-color: #45a29e; transform: translateY(-1px); }
-  .p-left { display: flex; flex-direction: column; gap: 3px; }
-  .p-name { font-size: 1rem; font-weight: 700; color: #fff; }
-  .p-role { font-size: 0.75rem; color: #6b7785; }
-  .p-right { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+  .p-left { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+  .p-name { font-size: 1rem; font-weight: 700; color: #fff; text-decoration: none; }
+  .p-name:hover { text-decoration: underline; color: #45a29e; }
+  
+  /* Role Styling */
+  .role-leader { color: #f1c40f; font-weight: 800; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .role-coleader { color: #e67e22; font-weight: 700; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .role-elder { color: #3498db; font-size: 0.75rem; font-weight: 600; }
+  .role-member { color: #6b7785; font-size: 0.75rem; }
+
+  .p-right { display: flex; align-items: center; gap: 20px; }
+  .p-stats-col { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
   .p-trophies { font-size: 1rem; font-weight: 700; color: #f1c40f; }
   .p-stats-row { display: flex; gap: 12px; font-size: 0.75rem; color: #6b7785; }
   .p-stats-row span { color: #a0aab5; }
+  
+  .btn-action { background: #252d38; border: 1px solid #303a48; color: #fff; padding: 6px 12px; border-radius: 5px; font-size: 0.75rem; text-decoration: none; font-weight: bold; transition: background 0.2s; white-space: nowrap; }
+  .btn-action:hover { background: #45a29e; border-color: #45a29e; color: #000; }
+
   .hof-card { background: #161b22; border: 1px solid #1e2530; border-left: 3px solid var(--hof-color, #45a29e); border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }
   .hof-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #6b7785; margin-bottom: 4px; font-weight: 700; }
   .hof-name { font-size: 1rem; color: #fff; font-weight: 700; margin-bottom: 2px; }
@@ -52,34 +63,52 @@ DEFAULT_ROSTER_HTML = r"""
         <a href="/login" class="btn btn-discord">Log in with Discord</a>
       {% endif %}
     </div>
-  <div class="hero-sub">{{ players | length }} members &middot; Click a name to view their profile</div>
+  <div class="hero-sub">{{ players | length }} members &middot; Click a name for analytics or log for battles</div>
 </header>
 <div class="container">
   <div class="main-col">
     {% if error %}<div class="error-banner">⚠️ {{ error }}</div>{% endif %}
     {% for p in players %}
-    <a href="/player/{{ p.clean_tag }}" class="player-card">
+    <div class="player-card">
       <div class="p-left">
-        <div class="p-name cr-name">{{ p.name }}</div>
-        <div class="p-role">{{ p.role | title }}</div>
+        <a href="/player/{{ p.clean_tag }}" class="p-name cr-name">{{ p.name }}</a>
+        <div class="role-{{ p.role | lower }}">{{ p.role | replace('coLeader', 'Co-Leader') | title }}</div>
       </div>
       <div class="p-right">
-        <div class="p-trophies">🏆 {{ p.trophies }}</div>
-        <div class="p-stats-row">
-          <div>⭐ <span>{{ p.fame | default(0) }}</span></div>
-          <div>🔥 <span>{{ p.current_streak | default(0) }}</span></div>
-          <div>⚔️ <span>{{ p.warDayWins | default(0) }}</span></div>
+        <div class="p-stats-col">
+          <div class="p-trophies">🏆 {{ p.trophies }}</div>
+          <div class="p-stats-row">
+            <div title="Fame">⭐ <span>{{ p.fame | default(0) }}</span></div>
+            <div title="Win Streak">🔥 <span>{{ p.current_streak | default(0) }}</span></div>
+            <div title="War Wins">⚔️ <span>{{ p.warDayWins | default(0) }}</span></div>
+          </div>
         </div>
+        <a href="/battles/{{ p.clean_tag }}" class="btn-action" title="View Battle Log">📜 Log</a>
       </div>
-    </a>
+    </div>
     {% endfor %}
   </div>
   <div class="side-col">
     <h2>Hall of Fame</h2>
-    <div class="hof-card" style="--hof-color: #3498db;">
+    <div class="hof-card" style="--hof-color: #f1c40f;">
       <div class="hof-label">Top Pusher</div>
       <div class="hof-name cr-name">{{ top_pusher.name if top_pusher else 'N/A' }}</div>
       <div class="hof-stat">🏆 {{ top_pusher.trophies if top_pusher else 0 }} Trophies</div>
+    </div>
+    <div class="hof-card" style="--hof-color: #2ecc71;">
+      <div class="hof-label">Top Donator</div>
+      <div class="hof-name cr-name">{{ top_donator.name if top_donator else 'N/A' }}</div>
+      <div class="hof-stat">🎁 {{ top_donator.donations if top_donator else 0 }} Donations</div>
+    </div>
+    <div class="hof-card" style="--hof-color: #9b59b6;">
+      <div class="hof-label">War Hero</div>
+      <div class="hof-name cr-name">{{ war_hero.name if war_hero else 'N/A' }}</div>
+      <div class="hof-stat">⚔️ {{ war_hero.warDayWins if war_hero else 0 }} War Wins</div>
+    </div>
+    <div class="hof-card" style="--hof-color: #e74c3c;">
+      <div class="hof-label">On Fire</div>
+      <div class="hof-name cr-name">{{ top_streak.name if top_streak else 'N/A' }}</div>
+      <div class="hof-stat">🔥 {{ top_streak.current_streak if top_streak else 0 }} Win Streak</div>
     </div>
   </div>
 </div>
@@ -93,26 +122,58 @@ DEFAULT_PUBLIC_BATTLES_HTML = r"""
 <head>
   <title>Battle Log for #{{ tag }}</title>
   <style>
-    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 20px; }
+    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #45a29e; text-decoration: none; font-weight: bold; background: #1a1a1a; padding: 8px 16px; border-radius: 5px; }
+    .nav a:hover { background: #222; }
     .battle-row { background: #1a1a1a; padding: 20px; margin-bottom: 15px; border-radius: 8px; border-left: 5px solid #444; }
     .win { border-left-color: #2ecc71; }
     .loss { border-left-color: #e74c3c; }
-    .deck-grid { display: flex; gap: 4px; margin-top: 10px; }
-    .deck-grid img { width: 32px; height: 38px; object-fit: contain; background: #222; border-radius: 4px; }
+    .battle-header { display: flex; justify-content: space-between; margin-bottom: 15px; align-items: flex-start; }
+    .battle-title { font-size: 1.1rem; }
+    .deck-container { display: flex; gap: 30px; flex-wrap: wrap; }
+    .deck-side { display: flex; flex-direction: column; gap: 8px; }
+    .deck-label { font-size: 0.8rem; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
+    .deck-grid { display: flex; gap: 4px; }
+    .deck-grid img { width: 40px; height: 48px; object-fit: contain; background: #222; border-radius: 4px; border: 1px solid #333; }
   </style>
 </head>
 <body>
+  <div class="nav"><a href="/">← Back to Roster</a></div>
   <h1>Battle Log: #{{ tag }}</h1>
   {% for b in battles %}
     <div class="battle-row {{ b.result }}">
-      <strong>{{ b.result | upper }}</strong> vs {{ b.opp_name }} ({{ b.opp_clan }})
-      <br><small>{{ b.battle_time.replace('T', ' ').substring(0, 16) }}</small>
-      <div class="deck-grid">
-        {% for card in b.team_cards %}
-            <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
-        {% endfor %}
+      <div class="battle-header">
+        <div class="battle-title">
+          <strong class="{{ b.result }}" style="color: {% if b.result == 'win' %}#2ecc71{% elif b.result == 'loss' %}#e74c3c{% else %}#f1c40f{% endif %}">{{ b.result | upper }}</strong> 
+          vs {{ b.opp_name }} ({{ b.opp_clan | default('No Clan') }})
+        </div>
+        <div>
+          <small style="color: #888;">{{ b.battle_time.replace('T', ' ').substring(0, 16) }}</small><br>
+          <small style="color: #aaa;">Score: {{ b.team_crowns | default(0) }} - {{ b.opp_crowns | default(0) }}</small>
+        </div>
+      </div>
+      <div class="deck-container">
+        <div class="deck-side">
+          <div class="deck-label">Team Deck</div>
+          <div class="deck-grid">
+            {% for card in b.team_cards %}
+                <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
+            {% endfor %}
+          </div>
+        </div>
+        <div class="deck-side">
+          <div class="deck-label">Opponent Deck</div>
+          <div class="deck-grid">
+            {% for card in b.opponent_cards %}
+                <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
+            {% endfor %}
+          </div>
+        </div>
       </div>
     </div>
+  {% else %}
+    <div style="background: #1a1a1a; padding: 20px; border-radius: 8px; text-align: center; color: #888;">No recent battles found.</div>
   {% endfor %}
 </body>
 </html>
@@ -124,17 +185,48 @@ DEFAULT_PLAYER_HTML = r"""
 <head>
   <title>{{ data.name }} - Analytics</title>
   <style>
-    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 40px; }
-    .deck-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; }
-    .card-box img { width: 100%; max-width: 80px; display: block; margin: auto; }
-    .battle-row { background: #1a1a1a; padding: 15px; margin-bottom: 10px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
-    .deck-images { display: flex; gap: 4px; }
-    .deck-images img { width: 35px; height: 42px; object-fit: contain; }
+    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 40px; max-width: 1000px; margin: 0 auto; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #45a29e; text-decoration: none; font-weight: bold; background: #1a1a1a; padding: 8px 16px; border-radius: 5px; }
+    .nav a:hover { background: #222; }
+    
+    .header-section { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 20px; }
+    
+    .stats-header { display: flex; gap: 20px; background: #1a1a1a; padding: 20px; border-radius: 8px; flex: 1; min-width: 300px; justify-content: space-around; }
+    .stat-box { text-align: center; display: flex; flex-direction: column; gap: 5px; }
+    .stat-val { font-size: 1.5rem; font-weight: bold; color: #fff; }
+    .stat-label { font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+
+    .deck-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; background: #1a1a1a; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
+    .card-box { text-align: center; font-size: 0.8rem; color: #aaa; }
+    .card-box img { width: 100%; max-width: 70px; display: block; margin: 0 auto 5px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
+    
+    .battle-row { background: #1a1a1a; padding: 15px; margin-bottom: 10px; border-radius: 8px; display: flex; flex-direction: column; gap: 12px; border-left: 4px solid #444; }
+    .battle-row.win { border-left-color: #2ecc71; }
+    .battle-row.loss { border-left-color: #e74c3c; }
+    .battle-info { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 10px; }
+    .side-decks { display: flex; gap: 30px; flex-wrap: wrap; }
+    .deck-images { display: flex; gap: 3px; margin-top: 5px; }
+    .deck-images img { width: 35px; height: 42px; object-fit: contain; background: #222; border-radius: 4px; border: 1px solid #333; }
   </style>
 </head>
 <body>
-  <h1>{{ data.name }} <small>{{ data.tag }}</small></h1>
-  <a href="/battles/{{ data.tag | replace('#','') }}" style="background: #45a29e; color: white; padding: 10px; border-radius: 5px; text-decoration: none;">📜 View Full Public Battle Log</a>
+  <div class="nav"><a href="/">← Back to Roster</a></div>
+  
+  <div class="header-section">
+    <div>
+      <h1 style="margin: 0;">{{ data.name }}</h1>
+      <small style="color: #888; font-size: 1.1rem;">{{ data.tag }}</small>
+    </div>
+    <a href="/battles/{{ data.tag | replace('#','') }}" style="background: #45a29e; color: white; padding: 12px 20px; border-radius: 5px; text-decoration: none; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">📜 View Full Public Battle Log</a>
+  </div>
+
+  <div class="stats-header">
+    <div class="stat-box"><span class="stat-val">🏆 {{ data.trophies | default(0) }}</span><span class="stat-label">Trophies</span></div>
+    <div class="stat-box"><span class="stat-val">⭐ {{ data.fame | default(0) }}</span><span class="stat-label">War Fame</span></div>
+    <div class="stat-box"><span class="stat-val">⚔️ {{ data.warDayWins | default(0) }}</span><span class="stat-label">War Wins</span></div>
+    <div class="stat-box"><span class="stat-val">🔥 {{ data.current_streak | default(0) }}</span><span class="stat-label">Win Streak</span></div>
+  </div>
   
   <h2>🃏 Current Battle Deck</h2>
   <div class="deck-grid">
@@ -143,29 +235,64 @@ DEFAULT_PLAYER_HTML = r"""
         <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
         <div>{{ card.name }}</div>
       </div>
+    {% else %}
+      <div style="grid-column: span 8; text-align: center; color: #888;">No current deck data available.</div>
     {% endfor %}
   </div>
 
   <h2>⚔️ Recent Battles</h2>
-  <div id="battles-section"></div>
+  <div id="battles-section"><div style="color: #888;">Loading battle data...</div></div>
+  
   <script>
     async function loadPlayerBattles() {
       const tag = '{{ data.tag }}'.replace('#', '');
-      const res = await fetch('/api/player/' + tag + '/battles');
-      const battles = await res.json();
-      document.getElementById('battles-section').innerHTML = battles.map(b => `
-        <div class="battle-row ${b.result}">
-          <div><strong>${b.result.toUpperCase()}</strong> vs ${b.opp_name}<br><small>${b.battle_time}</small></div>
-          <div class="deck-images">${b.team_cards.map(c => `<img src="${c.iconUrls.medium}" title="${c.name}">`).join('')}</div>
-        </div>
-      `).join('');
+      try {
+        const res = await fetch('/api/player/' + tag + '/battles');
+        if (!res.ok) throw new Error('Failed to fetch');
+        const battles = await res.json();
+        
+        if (battles.length === 0) {
+            document.getElementById('battles-section').innerHTML = '<div style="background: #1a1a1a; padding: 20px; border-radius: 8px; color: #888; text-align: center;">No recent battles logged.</div>';
+            return;
+        }
+
+        document.getElementById('battles-section').innerHTML = battles.map(b => {
+          const resultColor = b.result === 'win' ? '#2ecc71' : b.result === 'loss' ? '#e74c3c' : '#f1c40f';
+          const oppCards = b.opponent_cards || [];
+          return `
+            <div class="battle-row ${b.result}">
+              <div class="battle-info">
+                <div>
+                  <strong style="color: ${resultColor}; text-transform: uppercase;">${b.result}</strong> vs ${b.opp_name || 'Unknown'} 
+                  <span style="color: #666; font-size: 0.8rem; margin-left: 10px;">${b.type || 'Battle'}</span>
+                </div>
+                <div style="text-align: right;">
+                  <small style="color: #aaa;">Score: ${b.team_crowns ?? '-'} - ${b.opp_crowns ?? '-'}</small><br>
+                  <small style="color: #666;">${b.battle_time ? b.battle_time.replace('T', ' ').substring(0, 16) : ''}</small>
+                </div>
+              </div>
+              <div class="side-decks">
+                <div>
+                  <small style="color: #888; text-transform: uppercase;">Your Deck</small>
+                  <div class="deck-images">${(b.team_cards || []).map(c => `<img src="${c.iconUrls.medium}" title="${c.name}">`).join('')}</div>
+                </div>
+                <div>
+                  <small style="color: #888; text-transform: uppercase;">Opponent Deck</small>
+                  <div class="deck-images">${oppCards.map(c => `<img src="${c.iconUrls.medium}" title="${c.name}">`).join('')}</div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (err) {
+        document.getElementById('battles-section').innerHTML = '<div style="color: #e74c3c;">Failed to load battles.</div>';
+      }
     }
     loadPlayerBattles();
   </script>
 </body>
 </html>
 """
-
 
 DEFAULT_LINK_HTML = r"""
 <!DOCTYPE html>
@@ -195,7 +322,6 @@ DEFAULT_LINK_HTML = r"""
 </body>
 </html>
 """
-################################0000000000000000000000000000000000000000000000000000000000000000000000000000#####################################################################################################
 
 DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -269,7 +395,7 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
   .diag-card-title { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #fff; }
   .status-pill { font-family: var(--font-mono); font-size: 10px; padding: 3px 9px; border-radius: 20px; letter-spacing: 1px; text-transform: uppercase; font-weight: 700; }
   .pill-ok      { background: rgba(0,224,150,0.12);  color: var(--ok);   border: 1px solid rgba(0,224,150,0.3); }
-  .pill-warn    { background: rgba(255,170,0,0.12);   color: var(--warn); border: 1px solid rgba(255,170,0,0.3); }
+  .pill-warn    { background: rgba(255,170,0,0.12);  color: var(--warn); border: 1px solid rgba(255,170,0,0.3); }
   .pill-err     { background: rgba(255,61,113,0.12);  color: var(--err);  border: 1px solid rgba(255,61,113,0.3); }
   .pill-loading { background: rgba(255,255,255,0.05); color: var(--dim);  border: 1px solid var(--border); }
   .diag-body { padding: 14px 16px; }
@@ -498,6 +624,7 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
     <button class="nav-btn" onclick="showTab('harvest', this)"><span class="nav-icon">📡</span>Harvest Log</button>
     <button class="nav-btn" onclick="showTab('csv', this)"><span class="nav-icon">📄</span>CSV Export</button>
     <button class="nav-btn" onclick="showTab('editor', this)"><span class="nav-icon">🎨</span>UI Editor</button>
+    <button class="nav-btn" onclick="showTab('users', this)"><span class="nav-icon">👤</span>User Access</button>
     <div class="nav-section">Danger Zone</div>
     <button class="nav-btn" onclick="showTab('admin', this)"><span class="nav-icon">⚙️</span>Admin Tools</button>
   </nav>
@@ -745,6 +872,28 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
 
       </div><!-- /editor-shell -->
     </div>
+    
+    <!-- ── USER ACCESS ── -->
+    <div class="tab-pane" id="tab-users">
+      <div class="page-header">
+        <div class="page-title">User Access</div>
+        <div class="page-sub">Manage Site Administration Privileges</div>
+      </div>
+      <form method="POST" action="/admin/users/update" class="diag-card" style="padding:20px; max-width: 400px;">
+        <div style="margin-bottom: 15px;">
+            <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">Discord User ID</label>
+            <input type="text" name="discord_id" placeholder="e.g. 123456789012345678" class="form-input" style="width: 100%; margin-top: 5px;" required>
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">Status</label>
+            <select name="status" class="form-select" style="width: 100%; margin-top: 5px;">
+                <option value="admin">Promote to Admin</option>
+                <option value="member">Demote to Member</option>
+            </select>
+        </div>
+        <button type="submit" class="btn-refresh" style="width: 100%; justify-content: center;">Update Status</button>
+      </form>
+    </div>
 
     <!-- ── ADMIN TOOLS ── -->
     <div class="tab-pane" id="tab-admin">
@@ -796,11 +945,11 @@ DEFAULT_ADMIN_HTML = r"""<!DOCTYPE html>
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
 var allBattles     = [];
-var filteredBattles = [];   // FIX: track the filtered set separately for modal indexing
+var filteredBattles = [];   
 var _logLines      = [];
 
 // Editor state
-var editorOriginal   = '';   // the snapshot loaded from server — used for diff
+var editorOriginal   = '';   
 var editorDirty      = false;
 var editorDeploying  = false;
 var editorTemplateName = '';
@@ -1048,7 +1197,7 @@ async function loadBattles() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     var data = await res.json();
     allBattles = Array.isArray(data) ? data : (data.battles || []);
-    filteredBattles = allBattles.slice(); // FIX: initialise filtered to full set
+    filteredBattles = allBattles.slice(); 
     document.getElementById('battles-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
     renderBattles(filteredBattles);
     toast('Loaded ' + allBattles.length + ' battle records.', 'ok');
@@ -1059,7 +1208,6 @@ async function loadBattles() {
 }
 
 function renderBattles(battles) {
-  // FIX: store the currently rendered set so showBattleDetails uses the right index
   filteredBattles = battles;
   var tbody = document.getElementById('battles-body');
   if (!battles.length) {
@@ -1096,11 +1244,10 @@ function filterBattles() {
     var matchResult = !result || b.result === result;
     return matchText && matchResult;
   });
-  renderBattles(filtered); // FIX: filteredBattles updated inside renderBattles
+  renderBattles(filtered);
 }
 
 function showBattleDetails(i) {
-  // FIX: index into filteredBattles (the currently visible set), not allBattles
   var b = filteredBattles[i];
   if (!b) return;
   var teamCards = b.team_cards || [];
@@ -1164,14 +1311,12 @@ async function handleCustomCSVExport() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     var records = await res.json();
     if (!Array.isArray(records)) throw new Error('Invalid response format.');
-    // FIX: guard against empty records array before accessing records[0]
+    
     if (!records.length) { toast('No records returned.', 'err'); return; }
 
     var wantWinRate = document.getElementById('formula-winrate').checked;
     var wantWarPart = document.getElementById('formula-warpart').checked;
 
-    // FIX: build computed columns into each row first, THEN derive headers,
-    // so headers and row keys always stay in sync
     records.forEach(function(row) {
       if (wantWinRate) {
         var w = row.totalWins || 0, l = row.totalLosses || 0;
@@ -1235,7 +1380,6 @@ function _editorSetButtons(hasContent) {
 }
 
 function _editorUpdateStatusBar(opts) {
-  // opts: { state, dotClass, template, source, loadTime }
   var dot   = document.getElementById('sb-dot');
   var state = document.getElementById('sb-state');
   if (dot   && opts.dotClass) dot.className = 'sb-dot ' + opts.dotClass;
@@ -1265,7 +1409,6 @@ function _editorUpdateMetrics(text) {
 }
 
 function onTemplateChange() {
-  // Reset editor when a different template is selected from the dropdown
   var ta = document.getElementById('editor-html-content');
   ta.value = '';
   editorOriginal   = '';
@@ -1278,7 +1421,6 @@ function onTemplateChange() {
   document.getElementById('sb-template').style.display   = 'none';
   document.getElementById('sb-source-item').style.display = 'none';
   document.getElementById('sb-time-item').style.display   = 'none';
-  // Close diff panel if open
   var dp = document.getElementById('diff-panel');
   if (dp) dp.classList.remove('open');
   document.getElementById('btn-diff').disabled = true;
@@ -1297,7 +1439,7 @@ async function fetchTemplateForEditor(source) {
 
     var ta = document.getElementById('editor-html-content');
     ta.value       = data.html;
-    editorOriginal = data.html;  // snapshot for diff
+    editorOriginal = data.html;  
     editorDirty    = false;
     editorTemplateName = name;
 
@@ -1311,7 +1453,6 @@ async function fetchTemplateForEditor(source) {
     });
     _editorUpdateMetrics(data.html);
 
-    // Close diff panel on fresh load
     document.getElementById('diff-panel').classList.remove('open');
     document.getElementById('btn-diff').disabled = false;
 
@@ -1324,7 +1465,6 @@ async function fetchTemplateForEditor(source) {
   }
 }
 
-// Track dirty state as user types
 document.addEventListener('DOMContentLoaded', function() {
   var ta = document.getElementById('editor-html-content');
   if (!ta) return;
@@ -1338,13 +1478,11 @@ document.addEventListener('DOMContentLoaded', function() {
       editorDirty = false;
       _editorUpdateStatusBar({ dotClass: 'loaded', state: 'Loaded — no unsaved changes' });
     }
-    // Refresh diff if panel is open
     if (document.getElementById('diff-panel').classList.contains('open')) {
       renderDiff(editorOriginal, ta.value);
     }
   });
 
-  // Tab key inserts 2 spaces instead of jumping focus
   ta.addEventListener('keydown', function(e) {
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -1358,35 +1496,7 @@ document.addEventListener('DOMContentLoaded', function() {
   loadDiagnostics();
 });
 
-async function previewTemplate() {
-  var html = document.getElementById('editor-html-content').value.trim();
-  if (!html) { toast('Nothing to preview', 'err'); return; }
-
-  try {
-    var body = new FormData();
-    body.set('template_name', document.getElementById('editor-template-name').value);
-    body.set('html_content', html);
-    
-    var res = await fetch('/admin/preview', { method: 'POST', body: body });
-    if (!res.ok) throw new Error('Render Error: ' + (await res.text()));
-    
-    var rendered = await res.text();
-    // Instead of blob URL, let's open in a new window and write content directly
-    var win = window.open('', '_blank');
-    if (win) {
-      win.document.open();
-      win.document.write(rendered);
-      win.document.close();
-    } else {
-      toast('Pop-up blocked! Allow pop-ups for previews.', 'err');
-    }
-  } catch(e) {
-    toast('Preview failed: ' + e.message, 'err');
-  }
-}
-
 async function deployTemplate() {
-  // FIX: guard against double-clicks during an in-flight POST
   if (editorDeploying) return;
   var name = document.getElementById('editor-template-name').value;
   var html = document.getElementById('editor-html-content').value.trim();
@@ -1406,7 +1516,6 @@ async function deployTemplate() {
     var res = await fetch('/admin/update-html', { method: 'POST', body: body });
     if (!res.ok) throw new Error('HTTP ' + res.status);
 
-    // Mark clean after successful deploy
     editorOriginal = html;
     editorDirty    = false;
     _editorUpdateStatusBar({ dotClass: 'loaded', state: 'Deployed successfully', loadTime: new Date().toLocaleTimeString() });
@@ -1423,14 +1532,11 @@ async function deployTemplate() {
   }
 }
 
-// FIX: previewTemplate sends content via fetch + blob URL instead of a hidden
-// form POST, avoiding potential truncation of large templates by the browser
 async function previewTemplate() {
   var html = document.getElementById('editor-html-content').value.trim();
   if (!html) { toast('Nothing to preview — editor is empty.', 'err'); return; }
 
   try {
-    // Ask the server to render the template with dummy context and return HTML
     var body = new FormData();
     body.set('template_name', document.getElementById('editor-template-name').value);
     body.set('html_content',  html);
@@ -1440,7 +1546,6 @@ async function previewTemplate() {
     var blob = new Blob([rendered], { type: 'text/html' });
     var url  = URL.createObjectURL(blob);
     var win  = window.open(url, '_blank');
-    // Revoke after a short delay to let the new tab load
     setTimeout(function() { URL.revokeObjectURL(url); }, 5000);
     if (!win) toast('Pop-up blocked — allow pop-ups for previews.', 'err');
   } catch(e) {
@@ -1448,13 +1553,10 @@ async function previewTemplate() {
   }
 }
 
-// FIX: resetTemplate awaits the load, then asks before deploying — prevents
-// deploying stale content if the user cancels the second confirm
 async function resetTemplate() {
   var name = document.getElementById('editor-template-name').value;
   if (!confirm('Load the default for "' + name + '"? This will replace the editor content.')) return;
   await fetchTemplateForEditor('default');
-  // fetchTemplateForEditor populates the textarea; ask before deploying
   if (confirm('Default loaded. Deploy it to overwrite the live template?')) {
     await deployTemplate();
   }
@@ -1466,7 +1568,6 @@ function copyEditorToClipboard() {
   navigator.clipboard.writeText(ta.value)
     .then(function() { toast('Copied to clipboard.', 'ok'); })
     .catch(function() {
-      // Fallback for older browsers
       ta.select();
       document.execCommand('copy');
       toast('Copied to clipboard.', 'ok');
@@ -1499,7 +1600,6 @@ function renderDiff(original, current) {
     return;
   }
 
-  // Line-by-line diff (LCS-based, lightweight)
   var aLines = original.split('\n');
   var bLines = current.split('\n');
   var result = lineDiff(aLines, bLines);
@@ -1511,11 +1611,8 @@ function renderDiff(original, current) {
   container.innerHTML = html || '<span class="diff-empty">Empty diff result.</span>';
 }
 
-// Lightweight Myers-inspired line diff (patience diff simplified)
 function lineDiff(a, b) {
-  // Build LCS table
   var m = a.length, n = b.length;
-  // For large files cap context to avoid freezing the browser
   if (m > 2000 || n > 2000) {
     return [{ type: 'ctx', line: '(diff suppressed — file too large for inline diff)' }];
   }
@@ -1526,7 +1623,6 @@ function lineDiff(a, b) {
       dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
     }
   }
-  // Backtrack
   var result = [], i = m, j = n;
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && a[i-1] === b[j-1]) {
@@ -1540,7 +1636,6 @@ function lineDiff(a, b) {
       i--;
     }
   }
-  // Collapse unchanged runs to ±3 context lines around changes
   var CONTEXT = 3;
   var changed = result.map(function(d, idx) { return d.type !== 'ctx' ? idx : -1; }).filter(function(x){ return x >= 0; });
   if (!changed.length) return [{ type: 'ctx', line: '(no changes)' }];
@@ -1556,7 +1651,6 @@ function lineDiff(a, b) {
   return out;
 }
 
-// ── Keyboard ──────────────────────────────────────────────────────────────────
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeModal();
 });
