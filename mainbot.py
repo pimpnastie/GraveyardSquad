@@ -551,7 +551,20 @@ def preview_template():
         "top_streak": {"name": "TestPlayer", "current_streak": 3},
         "top_war": {"name": "TestPlayer", "warDayWins": 15},
         "clan_tag": CLAN_TAG,
-        "max_lvl": MAX_CARD_LEVEL
+        "max_lvl": MAX_CARD_LEVEL,
+        "session": {
+            "discord_name": "TestAdmin",
+            "is_admin_user": True,
+            "discord_id": "TEST_ID"
+        }
+    
+    
+    try:
+        # Pass the context to the renderer
+        return render_sandboxed(html, **dummy_context)
+    except Exception as e:
+        # This will now print the exact missing variable or error in the preview window
+        return f"<h3>Preview Render Error:</h3><p>{str(e)}</p>", 500
     }
  
 # ── /admin/diagnostics ────────────────────────────────────────────────────
