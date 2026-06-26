@@ -686,6 +686,23 @@ def update_html():
         return redirect("/admin?success=UI+Code+Deployed+Live!")
     return redirect("/admin?error=Invalid+Template+Name")
 
+# ── Public /battles/<tag> ──────────────────────────────────────────────────
+@app.route("/battles/<tag>")
+def public_battle_log(tag):
+    clean_t = clean_tag(tag)
+    # Fetch the last 20 battles from your DB (not the API)
+    battles = list(db_sync["battle_history"]
+                   .find({"player_tag": clean_t})
+                   .sort("battle_time", -1)
+                   .limit(20))
+    
+    # Render a public template (you'll need to create a 'public_battles' template)
+    return render_sandboxed(
+        get_template("public_battles"),
+        tag=clean_t,
+        battles=battles
+    )
+
 @app.route("/admin/export/custom", methods=["POST"])
 def export_custom_csv():
     if not is_admin(): return "Unauthorized", 403

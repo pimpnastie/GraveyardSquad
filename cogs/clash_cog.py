@@ -402,14 +402,18 @@ class ClashRoyale(commands.Cog):
                     battle_id = f"{tag}_{battle['battleTime']}"
                     team = battle.get("team", [{}])[0]
                     opp  = battle.get("opponent", [{}])[0]
-                    doc  = {
+                    # Inside run_harvest_logic, inside the battle log loop:
+                    doc = {
                         "player_tag":      tag,
                         "player_name":     m.get("name", ""),
                         "battle_time":     battle["battleTime"],
                         "result":          "win" if team.get("crowns", 0) > opp.get("crowns", 0) else "loss",
                         "team_crowns":     team.get("crowns", 0),
                         "opp_crowns":      opp.get("crowns", 0),
-                        "team_cards":      team.get("cards", []),
+                        "opp_name":        opp.get("name", "Unknown"),
+                        "type":            battle.get("type", "PvP"),
+                        # IMPORTANT: Save the full objects!
+                        "team_cards":      team.get("cards", []), 
                         "opponent_cards":  opp.get("cards", []),
                     }
                     battle_ops.append(

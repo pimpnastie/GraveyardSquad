@@ -1,5 +1,36 @@
 # templates.py
 
+DEFAULT_PUBLIC_BATTLES_HTML = r"""
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Battle Log for #{{ tag }}</title>
+  <style>
+    body { background: #0f0f0f; color: #eee; font-family: sans-serif; padding: 20px; }
+    .battle-row { background: #1a1a1a; padding: 15px; margin-bottom: 10px; border-radius: 8px; border-left: 4px solid #444; }
+    .win { border-left-color: #2ecc71; }
+    .loss { border-left-color: #e74c3c; }
+    .deck-grid { display: flex; gap: 4px; margin-top: 8px; }
+    .deck-grid img { width: 32px; height: 38px; object-fit: contain; }
+  </style>
+</head>
+<body>
+  <h1>Public Battle Log: #{{ tag }}</h1>
+  {% for b in battles %}
+    <div class="battle-row {{ b.result }}">
+      <strong>{{ b.result | upper }}</strong> vs {{ b.opp_name }} 
+      <br><small>{{ b.battle_time }}</small>
+      <div class="deck-grid">
+        {% for card in b.team_cards %}
+            <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
+        {% endfor %}
+      </div>
+    </div>
+  {% endfor %}
+</body>
+</html>
+"""
+
 DEFAULT_ROSTER_HTML = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -152,200 +183,51 @@ DEFAULT_PLAYER_HTML = r"""
 <head>
   <title>{{ data.name }} - Analytics</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0f0f0f; color: #eee; font-family: 'Segoe UI', sans-serif; padding: 40px 30px; max-width: 1000px; margin: auto; }
-    a.back { color: #f1c40f; text-decoration: none; font-weight: bold; font-size: 0.9rem; }
-    a.back:hover { text-decoration: underline; }
-    .header { border-bottom: 2px solid #f1c40f; padding-bottom: 14px; margin: 20px 0 30px; display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
-    .header h1 { font-size: 1.8rem; }
-    .header .tag { color: #5dade2; font-size: 1rem; font-weight: normal; margin-left: 8px; }
-    .header .clan-badge { background: #1e1e1e; border: 1px solid #333; border-radius: 6px; padding: 6px 14px; font-size: 0.85rem; color: #ccc; }
-    .header .clan-badge strong { color: #f1c40f; }
-    h2 { color: #f1c40f; margin: 30px 0 14px; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 1px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
-    .stat-box { background: #1a1a1a; padding: 18px 20px; border-radius: 10px; border: 1px solid #2a2a2a; }
-    .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-    .value { font-size: 1.6rem; font-weight: bold; color: #f1c40f; }
-    .value.blue  { color: #5dade2; }
-    .value.green { color: #2ecc71; }
-    .value.red   { color: #e74c3c; }
-    .value.white { color: #eee; }
-    .deck-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-    @media (max-width: 600px) { .deck-grid { grid-template-columns: repeat(2, 1fr); } }
-    .card-box { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 14px 10px; text-align: center; }
-    .card-box .card-name { font-size: 0.82rem; font-weight: bold; margin-bottom: 5px; }
-    .card-box .card-level { display: inline-block; background: #2a2a2a; color: #aaa; font-size: 0.75rem; border-radius: 4px; padding: 2px 7px; }
-    .card-box.maxed { border-color: #f1c40f !important; }
-    .card-box.maxed .card-level { color: #f1c40f; }
-    .battle-row { display: flex; align-items: center; justify-content: space-between; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
-    .battle-row.win  { border-left: 3px solid #2ecc71; }
-    .battle-row.loss { border-left: 3px solid #e74c3c; }
-    .battle-row.draw { border-left: 3px solid #888; }
-    .battle-type { font-size: 0.72rem; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
-    .battle-opp  { font-size: 0.95rem; font-weight: bold; color: #eee; }
-    .battle-score { font-size: 1.1rem; font-weight: bold; text-align: right; }
-    .battle-score.win  { color: #2ecc71; }
-    .battle-score.loss { color: #e74c3c; }
-    .battle-score.draw { color: #aaa; }
-    .battle-time { font-size: 0.75rem; color: #555; }
-    .no-battles { color: #555; font-style: italic; padding: 20px 0; }
+    /* ... (Your existing dark-mode CSS) ... */
+    .deck-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; }
+    .card-box img { width: 100%; max-width: 80px; display: block; margin: auto; }
+    .battle-row { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .deck-images { display: flex; gap: 4px; }
+    .deck-images img { width: 35px; height: 42px; object-fit: contain; }
   </style>
 </head>
 <body>
-
-  <a class="back" href="/">← Back to Roster</a>
-
-  <div class="header">
-    <div>
-      <h1>{{ data.name }}<span class="tag">{{ data.tag }}</span></h1>
-    </div>
-    {% if data.clan %}
-      <div class="clan-badge">🛡️ <strong>{{ data.clan.name }}</strong> &nbsp;·&nbsp; {{ data.role | replace('_', ' ') | title }}</div>
-    {% else %}
-      <div class="clan-badge">No Clan</div>
-    {% endif %}
-  </div>
-
-  <h2>📈 Progression</h2>
-  <div class="grid">
-    <div class="stat-box">
-      <div class="label">XP Level</div>
-      <div class="value white">⭐ {{ data.expLevel }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">Current Trophies</div>
-      <div class="value blue">🏆 {{ data.trophies }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">Best Trophies</div>
-      <div class="value blue">🏅 {{ data.bestTrophies }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">Arena</div>
-      <div class="value white" style="font-size:1rem; padding-top:4px;">{{ data.arena.name if data.arena else '—' }}</div>
-    </div>
-  </div>
-
-  <h2>⚔️ Battle Stats</h2>
-  <div class="grid">
-    <div class="stat-box">
-      <div class="label">Total Wins</div>
-      <div class="value green">{{ data.wins }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">Losses</div>
-      <div class="value red">{{ data.losses }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">3-Crown Wins</div>
-      <div class="value green">👑 {{ data.threeCrownWins }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">Total Battles</div>
-      <div class="value white">{{ data.battleCount }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">Current Win Streak</div>
-      <div class="value {% if data.current_streak > 4 %}green{% elif data.current_streak > 0 %}white{% else %}red{% endif %}">
-        🔥 {{ data.current_streak | default(0) }}
-      </div>
-    </div>
-    <div class="stat-box">
-      <div class="label">Win Rate</div>
-      {% set total = data.wins + data.losses %}
-      <div class="value {% if total > 0 and (data.wins / total * 100) >= 50 %}green{% else %}red{% endif %}">
-        {% if total > 0 %}{{ "%.1f" | format(data.wins / total * 100) }}%{% else %}—{% endif %}
-      </div>
-    </div>
-  </div>
-
-  <h2>🎁 Social & Misc</h2>
-  <div class="grid">
-    <div class="stat-box">
-      <div class="label">Donations (Season)</div>
-      <div class="value white">{{ data.donations | default(0) }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">Donations Received</div>
-      <div class="value white">{{ data.donationsReceived | default(0) }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">War Day Wins</div>
-      <div class="value white">⚔️ {{ data.warDayWins | default(0) }}</div>
-    </div>
-    <div class="stat-box">
-      <div class="label">3-Crown Win Rate</div>
-      {% if data.wins > 0 %}
-        <div class="value {% if (data.threeCrownWins / data.wins * 100) >= 30 %}green{% else %}white{% endif %}">
-          {{ "%.1f" | format(data.threeCrownWins / data.wins * 100) }}%
-        </div>
-      {% else %}
-        <div class="value white">—</div>
-      {% endif %}
-    </div>
-    <div class="stat-box">
-      <div class="label">Favourite Card</div>
-      <div class="value white" style="font-size:1rem; padding-top:4px;">
-        {{ data.currentFavouriteCard.name if data.currentFavouriteCard else '—' }}
-      </div>
-    </div>
-  </div>
-
+  <h1>{{ data.name }} <small>{{ data.tag }}</small></h1>
+  
   <h2>🃏 Current Battle Deck</h2>
   <div class="deck-grid">
     {% for card in data.currentDeck %}
-      <div class="card-box {% if card.level >= max_lvl %}maxed{% endif %}">
-        <div class="card-name">{{ card.name }}</div>
-        <span class="card-level">Lvl {{ card.level }}{% if card.level >= max_lvl %} ✓{% endif %}</span>
+      <div class="card-box">
+        <img src="{{ card.iconUrls.medium }}" title="{{ card.name }}">
+        <div>{{ card.name }}</div>
       </div>
     {% endfor %}
   </div>
 
   <h2>⚔️ Recent Battles</h2>
-  <div id="battles-section">
-    <div class="no-battles">Loading recent battles...</div>
-  </div>
+  <div id="battles-section"></div>
 
   <script>
     async function loadPlayerBattles() {
-      const tag = {{ data.tag | tojson }};
-      const cleanTag = tag.replace('#', '');
+      const tag = '{{ data.tag }}'.replace('#', '');
+      const res = await fetch('/api/player/' + tag + '/battles');
+      const battles = await res.json();
       const section = document.getElementById('battles-section');
-      try {
-        const res = await fetch('/api/player/' + cleanTag + '/battles');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const battles = await res.json();
-        if (!Array.isArray(battles) || battles.length === 0) {
-          section.innerHTML = '<div class="no-battles">No battles found. Run a harvest to populate battle history.</div>';
-          return;
-        }
-        section.innerHTML = battles.map(function(b) {
-          var cls = b.result || 'draw';
-          var time = b.battle_time ? b.battle_time.replace('T', ' ').substring(0, 16) : '—';
-          var oppName = b.opp_name || 'Unknown';
-          var oppTag = b.opp_tag || '';
-          var tc = b.team_crowns != null ? b.team_crowns : '—';
-          var oc = b.opp_crowns != null ? b.opp_crowns : '—';
-          var type = b.type || 'PvP';
-          return '<div class="battle-row ' + cls + '">'
-            + '<div>'
-            + '<div class="battle-type">' + type + '</div>'
-            + '<div class="battle-opp">vs ' + oppName + ' <span style="color:#555;font-size:0.8rem;">' + oppTag + '</span></div>'
-            + '<div class="battle-time">' + time + '</div>'
-            + '</div>'
-            + '<div class="battle-score ' + cls + '">'
-            + tc + ' – ' + oc
-            + '<div style="font-size:0.8rem;font-weight:normal;">' + cls.toUpperCase() + '</div>'
-            + '</div>'
-            + '</div>';
-        }).join('');
-      } catch(e) {
-        section.innerHTML = '<div class="no-battles">Error loading battles: ' + e.message + '</div>';
-      }
+      
+      section.innerHTML = battles.map(b => `
+        <div class="battle-row ${b.result}">
+          <div>
+            <strong>${b.result.toUpperCase()}</strong> vs ${b.opp_name}<br>
+            <small>${b.battle_time}</small>
+          </div>
+          <div class="deck-images">
+            ${b.team_cards.map(c => `<img src="${c.iconUrls.medium}" title="${c.name}">`).join('')}
+          </div>
+        </div>
+      `).join('');
     }
-    document.addEventListener('DOMContentLoaded', loadPlayerBattles);
+    loadPlayerBattles();
   </script>
-
 </body>
 </html>
 """
