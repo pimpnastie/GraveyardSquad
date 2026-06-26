@@ -255,28 +255,28 @@ class ClashRoyale(commands.Cog):
             mainbot._harvest_meta["status"] = "failed: clan API returned nothing"
             return
 
-    snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-    members = clan_data.get("memberList", [])
-    
-    # 2. War participant lookup — handles both API response shapes
-    war_participants = {}
-    if war_data:
-        if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
-            war_participants = {
-                p["tag"].replace("#", "").upper(): p
-                for p in war_data["clan"]["participants"]
-            }
-        else:
-            for clan in war_data.get("clans", []):
-                if clan and clan.get("tag", "").replace("#", "").upper() == self.clan_tag.upper():
-                    war_participants = {
-                        p["tag"].replace("#", "").upper(): p
-                        for p in clan.get("participants", [])
-                    }
-                    break
+        snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        members = clan_data.get("memberList", [])
+        
+        # 2. War participant lookup — handles both API response shapes
+        war_participants = {}
+        if war_data:
+            if "clan" in war_data and war_data["clan"] and "participants" in war_data["clan"]:
+                war_participants = {
+                    p["tag"].replace("#", "").upper(): p
+                    for p in war_data["clan"]["participants"]
+                }
+            else:
+                for clan in war_data.get("clans", []):
+                    if clan and clan.get("tag", "").replace("#", "").upper() == self.clan_tag.upper():
+                        war_participants = {
+                            p["tag"].replace("#", "").upper(): p
+                            for p in clan.get("participants", [])
+                        }
+                        break
 
-    snapshot_ops, profile_ops, battle_ops = [], [], []
-    sem = asyncio.Semaphore(5)
+        snapshot_ops, profile_ops, battle_ops = [], [], []
+        sem = asyncio.Semaphore(5)
 
     async def harvest_member(member):
         tag = member["tag"].replace("#", "").upper()
