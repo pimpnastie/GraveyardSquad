@@ -98,18 +98,19 @@ _restore_harvest_meta()  # ← now called after definition
 # ---------------------------------------------------------------------------
 # 2. DATA ENRICHMENT & STREAK LOGIC
 # ---------------------------------------------------------------------------
+
 def calculate_streak(battles):
-    sorted_battles = sorted(battles, key=lambda x: x.get('utcTime', ''), reverse=True)
+    # Sort by battle_time descending to get newest matches first
+    sorted_battles = sorted(battles, key=lambda x: x.get('battle_time', ''), reverse=True)
     streak = 0
     for b in sorted_battles:
-        if b.get('type') == 'PvP':
-            if b.get('result') == 'win':
-                streak += 1
-            else:
-                break
+        if b.get('result') == 'win':
+            streak += 1
+        elif b.get('result') == 'loss':
+            break
     return streak
 
-def _enrich_members(raw_members, profiles, war_parts):
+def _enrich_members(raw_members, battles_map, snap_map, war_parts):
     players = []
     seen = set()
     for m in raw_members:
@@ -120,16 +121,16 @@ def _enrich_members(raw_members, profiles, war_parts):
         # Clean the name
         m['name'] = re.sub(r"<c\d?>|</c>", "", m.get("name", "Unknown"), flags=re.IGNORECASE)
         
-        # Merge with database profile (defaulting to 0/empty to prevent UI crashes)
-        p = profiles.get(tag, {})
+        # Pull records from our newly aligned database maps
+        player_battles = battles_map.get(tag, [])
+        player_snap = snap_map.get(tag, {})
         
-        # Ensure every field used by the templates exists
-        m['current_streak'] = calculate_streak(p.get('battles', []))
-        m['warDayWins'] = p.get('warDayWins', 0)
+        m['current_streak'] = calculate_streak(player_battles)
+        m['warDayWins'] = player_snap.get('warDayWins', 0)
         m['fame'] = war_parts.get(tag, {}).get('fame', 0)
-        m['donations'] = p.get('donations', m.get('donations', 0)) # Try DB, fall back to snapshot
+        m['donations'] = m.get('donations', 0) 
         m['clean_tag'] = tag
-        m['role'] = m.get('role', 'member') # Ensure role exists
+        m['role'] = m.get('role', 'member')
         
         players.append(m)
     return sorted(players, key=lambda x: x.get('trophies', 0), reverse=True)
@@ -243,6 +244,7 @@ def render_sandboxed(template_str: str, **context) -> str:
 @app.route("/")
 def index():
     try:
+        # 1. Try to Fetch Live Clan Roster
         clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
         is_fallback = False
         error_msg = None
@@ -267,14 +269,27 @@ def index():
                     "trophies": doc.get("trophies", 0),
                     "role": doc.get("role", "member"),
                     "donations": doc.get("donations", 0),
-                    "fame": 0,
+                    "fame": 0,                            
                     "current_streak": 0
                 })
         
         member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
-        db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
-        profiles_map = {p["_id"]: p for p in db_profiles}
         
+        # 2. FIXED: Map Streaks from battle_history & War Wins from historical_snapshots
+        all_battles = list(db_sync["battle_history"].find({"player_tag": {"$in": member_tags}}))
+        battles_map = {}
+        for b in all_battles:
+            t = b["player_tag"]
+            if t not in battles_map: battles_map[t] = []
+            battles_map[t].append(b)
+            
+        latest_snapshot_meta = db_sync["historical_snapshots"].find_one(sort=[("date", -1)])
+        snap_map = {}
+        if latest_snapshot_meta:
+            snap_docs = list(db_sync["historical_snapshots"].find({"date": latest_snapshot_meta["date"], "tag": {"$in": member_tags}}))
+            snap_map = {doc["tag"]: doc for doc in snap_docs}
+        
+        # 3. Fetch War Data
         war_participants = {}
         if not is_fallback:
             war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
@@ -287,7 +302,9 @@ def index():
                             war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
                             break
         
-        players = _enrich_members(raw_members, profiles_map, war_participants)
+        # 4. Enrich & Sort
+        players = _enrich_members(raw_members, battles_map, snap_map, war_participants)
+        
         top_pusher = max(players, key=lambda x: x.get("trophies", 0)) if players else None
         top_streak = max(players, key=lambda x: x.get("current_streak", 0)) if players else None
         top_war = max(players, key=lambda x: x.get("warDayWins", 0)) if players else None
@@ -298,7 +315,7 @@ def index():
             top_pusher=top_pusher,
             top_streak=top_streak,
             top_war=top_war,
-            error=error_msg
+            error=error_msg 
         )
     except Exception as e:
         log.exception("Index route crash prevented gracefully.")
@@ -350,16 +367,33 @@ def api_get_battles():
 
 @app.route("/admin/api/war")
 def api_get_war():
-    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    if not is_admin(): 
+        return jsonify({"error": "unauthorized"}), 403
+        
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") # Fetch live roster to cross-reference
+    
     if not war_data:
         return jsonify({"error": "Failed to fetch war data from CR API."}), 500
+        
+    # Filter participants to only include current members
+    if clan_data and "memberList" in clan_data and war_data.get("clan", {}).get("participants"):
+        current_tags = {clean_tag(m["tag"]) for m in clan_data["memberList"]}
+        filtered_participants = [
+            p for p in war_data["clan"]["participants"] 
+            if clean_tag(p["tag"]) in current_tags
+        ]
+        war_data["clan"]["participants"] = filtered_participants
+        
     return jsonify(war_data)
 
 @app.route("/player/<tag>")
 def player_profile(tag):
     clean_t = clean_tag(tag)
+    
+    # 1. Fetch live data from the Clash Royale API
     player_data = fetch_cr_api(f"players/%23{clean_t}")
+    
     if not player_data:
         return render_sandboxed(
             get_template("player"), 
@@ -367,16 +401,22 @@ def player_profile(tag):
             error=f"Could not find player with tag #{clean_t}"
         ), 404
 
-    db_profile = db_sync["player_profiles"].find_one({"_id": clean_t})
-    if db_profile and "battles" in db_profile:
-        player_data["current_streak"] = calculate_streak(db_profile.get("battles", []))
-    else:
-        player_data["current_streak"] = 0
+    # 2. FIXED: Pull directly from battle_history to calculate the accurate Win Streak
+    player_battles = list(db_sync["battle_history"].find({"player_tag": clean_t}))
+    player_data["current_streak"] = calculate_streak(player_battles)
 
+    # 3. FIXED: Pull from historical_snapshots to populate War Day Wins
+    latest_snap = db_sync["historical_snapshots"].find_one({"tag": clean_t}, sort=[("date", -1)])
+    if latest_snap:
+        player_data["warDayWins"] = latest_snap.get("warDayWins", 0)
+    else:
+        player_data["warDayWins"] = player_data.get("warDayWins", 0) # Fallback to live API legacy stat if any
+
+    # 4. Render template
     return render_sandboxed(
         get_template("player"),
-        data=player_data,
-        max_lvl=MAX_CARD_LEVEL,
+        data=player_data,          
+        max_lvl=MAX_CARD_LEVEL,    
         clan_tag=CLAN_TAG
     )
 

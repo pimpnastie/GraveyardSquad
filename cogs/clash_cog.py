@@ -406,26 +406,9 @@ class ClashRoyale(commands.Cog):
                         "player_tag":      tag,
                         "player_name":     m.get("name", ""),
                         "battle_time":     battle["battleTime"],
-                        "type":            battle.get("type", "Unknown"),
-                        "game_mode":       battle.get("gameMode", {}).get("name", "Unknown"),
-                        "arena":           battle.get("arena", {}).get("name", "Unknown"),
-                        "deck_selection":  battle.get("deckSelection", "Unknown"),
-                        
-                        # Match Results
                         "result":          "win" if team.get("crowns", 0) > opp.get("crowns", 0) else "loss",
                         "team_crowns":     team.get("crowns", 0),
                         "opp_crowns":      opp.get("crowns", 0),
-                        
-                        # Trophy Tracking (Only exists for ladder/ranked matches)
-                        "starting_trophies": team.get("startingTrophies", 0),
-                        "trophy_change":     team.get("trophyChange", 0),
-                        
-                        # Opponent Info
-                        "opp_name":        opp.get("name", "Unknown"),
-                        "opp_tag":         opp.get("tag", ""),
-                        "opp_clan":        opp.get("clan", {}).get("name", "No Clan"),
-                        
-                        # Card Arrays
                         "team_cards":      team.get("cards", []),
                         "opponent_cards":  opp.get("cards", []),
                     }
