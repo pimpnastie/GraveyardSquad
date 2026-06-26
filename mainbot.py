@@ -28,7 +28,7 @@ import redis as sync_redis
 from jinja2.sandbox import SandboxedEnvironment
 
 # Import detached frontend templates
-from templates import DEFAULT_ROSTER_HTML, DEFAULT_LINK_HTML, DEFAULT_PLAYER_HTML, DEFAULT_ADMIN_HTML
+from templates import DEFAULT_ROSTER_HTML, DEFAULT_LINK_HTML, DEFAULT_PLAYER_HTML, DEFAULT_ADMIN_HTML, DEFAULT_PUBLIC_BATTLES_HTML
 
 # ---------------------------------------------------------------------------
 # 1. SETUP
@@ -256,7 +256,6 @@ def index():
             is_fallback = True
             error_msg = "Live API unreachable. Displaying cached data from the latest snapshot."
             
-            # Explicitly pass empty {} filter to ensure find_one(sort) works in all PyMongo versions
             latest_snap = db_sync["historical_snapshots"].find_one({}, sort=[("date", -1)])
             if not latest_snap:
                 return render_sandboxed(get_template("roster"), players=[], error="Clash Royale API connection failed and no database backups exist yet.")
@@ -269,13 +268,13 @@ def index():
                     "trophies": doc.get("trophies", 0),
                     "role": doc.get("role", "member"),
                     "donations": doc.get("donations", 0),
-                    "fame": 0,                            
+                    "fame": 0,                                    
                     "current_streak": 0
                 })
         
         member_tags = [clean_tag(m.get("tag", "")) for m in raw_members if m.get("tag")]
         
-        # 2. Map Streaks from battle_history & War Wins from historical_snapshots
+        # 2. Map Streaks & War Wins
         all_battles = list(db_sync["battle_history"].find({"player_tag": {"$in": member_tags}}))
         battles_map = {}
         for b in all_battles:
@@ -308,19 +307,37 @@ def index():
         
         top_pusher = max(players, key=lambda x: x.get("trophies", 0)) if players else None
         top_streak = max(players, key=lambda x: x.get("current_streak", 0)) if players else None
-        top_war = max(players, key=lambda x: x.get("warDayWins", 0)) if players else None
+        war_hero = max(players, key=lambda x: x.get("warDayWins", 0)) if players else None
+        top_donator = max(players, key=lambda x: x.get("donations", 0)) if players else None
 
         return render_sandboxed(
             get_template("roster"),
             players=players,
             top_pusher=top_pusher,
             top_streak=top_streak,
-            top_war=top_war,
+            war_hero=war_hero,
+            top_donator=top_donator,
             error=error_msg 
         )
     except Exception as e:
         log.exception("Index route crash prevented gracefully.")
         return render_sandboxed(get_template("roster"), players=[], error=f"Internal Server Error: {str(e)}")
+
+
+@app.route("/battles/<tag>")
+def public_battle_log(tag):
+    clean_t = clean_tag(tag)
+    battles = list(db_sync["battle_history"]
+                   .find({"player_tag": clean_t})
+                   .sort("battle_time", -1)
+                   .limit(20))
+    
+    # Force registration check for system fallback strings
+    return render_sandboxed(
+        get_template("public_battles"),
+        tag=clean_t,
+        battles=battles
+    )
 
 @app.route("/favicon.ico")
 def favicon():
@@ -680,7 +697,9 @@ def update_html():
     if not is_admin(): return "Unauthorized", 403
     template_name = request.form.get("template_name")
     html_content = request.form.get("html_content")
-    if template_name in ["roster", "player", "link", "admin"]:
+    
+    # Change this line right here:
+    if template_name in ["roster", "player", "link", "admin", "public_battles"]:
         db_sync["config"].update_one({"_id": "html_templates"}, {"$set": {template_name: html_content}}, upsert=True)
         invalidate_template_cache()
         return redirect("/admin?success=UI+Code+Deployed+Live!")
