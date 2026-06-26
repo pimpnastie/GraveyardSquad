@@ -506,6 +506,7 @@ def api_get_snapshot(date):
         return jsonify({"error": "Internal server error while fetching snapshot."}), 500
         
 # ── /admin/preview ─────────────────────────────────────────────────────────
+# ── /admin/preview ─────────────────────────────────────────────────────────
 @app.route("/admin/preview", methods=["POST"])
 def preview_template():
     if not is_admin():
@@ -514,11 +515,12 @@ def preview_template():
     html = request.form.get("html", "")
     template_name = request.form.get("template", "roster")
     
-    # Safe validation check
+    # Safe validation check before execution
     ok, message, line = validate_jinja_syntax(html)
     if not ok:
         return f"<h3>Syntax Error on line {line}</h3><p>{message}</p>", 400
         
+    # Provide dummy context specific to testing
     dummy_context = {
         "players": [
             {"name": "TestPlayer", "trophies": 5500, "role": "leader", "current_streak": 3, "fame": 2000, "warDayWins": 15, "donations": 400, "clean_tag": "XXXX"}
@@ -560,10 +562,10 @@ def preview_template():
     }
     
     try:
-        # This will now always return a string response
+        # Pass the context to the renderer
         return render_sandboxed(html, **dummy_context)
     except Exception as e:
-        # This catches rendering crashes and returns an error response instead of None
+        # This will now print the exact missing variable or error in the preview window
         return f"<h3>Preview Render Error:</h3><p>{str(e)}</p>", 500
  
 # ── /admin/diagnostics ────────────────────────────────────────────────────
