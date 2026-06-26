@@ -510,15 +510,15 @@ def api_get_snapshot(date):
 def preview_template():
     if not is_admin():
         return "Unauthorized", 403
+    
     html = request.form.get("html", "")
     template_name = request.form.get("template", "roster")
     
-    # Safe validation check before execution
+    # Safe validation check
     ok, message, line = validate_jinja_syntax(html)
     if not ok:
         return f"<h3>Syntax Error on line {line}</h3><p>{message}</p>", 400
         
-    # Provide dummy context specific to testing
     dummy_context = {
         "players": [
             {"name": "TestPlayer", "trophies": 5500, "role": "leader", "current_streak": 3, "fame": 2000, "warDayWins": 15, "donations": 400, "clean_tag": "XXXX"}
@@ -557,15 +557,14 @@ def preview_template():
             "is_admin_user": True,
             "discord_id": "TEST_ID"
         }
-    
+    }
     
     try:
-        # Pass the context to the renderer
+        # This will now always return a string response
         return render_sandboxed(html, **dummy_context)
     except Exception as e:
-        # This will now print the exact missing variable or error in the preview window
+        # This catches rendering crashes and returns an error response instead of None
         return f"<h3>Preview Render Error:</h3><p>{str(e)}</p>", 500
-    }
  
 # ── /admin/diagnostics ────────────────────────────────────────────────────
 @app.route("/admin/diagnostics")
