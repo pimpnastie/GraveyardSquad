@@ -195,21 +195,23 @@ def _get_cached_system_config() -> dict:
         return {}
 
 def is_admin() -> bool:
+    # Check if the user is authenticated
     if "discord_id" not in session:
         return False
+    
     discord_id = str(session.get("discord_id"))
-    if discord_id in ["751975709643112569"]: 
+    
+    # Hardcoded ID check (as requested)
+    if discord_id == "751975709643112569": 
         return True
+    
+    # Env Var check
     master_admin = os.getenv("MASTER_ADMIN_ID", "")
     if master_admin and discord_id == master_admin:
         return True
-    sys_config_db = _get_cached_system_config()
-    allowed_roles = sys_config_db.get("admin_role_ids", [])
-    allowed_users = sys_config_db.get("admin_user_ids", [])
-    if discord_id in allowed_users:
-        return True
-    user_roles = session.get("user_roles", [])
-    return any(str(role_id) in allowed_roles for role_id in user_roles)
+        
+    # Optional: check DB-based roles if implemented
+    return session.get("is_admin_user", False)
 
 def get_template(template_name: str) -> str:
     with _cache_lock:
@@ -327,6 +329,33 @@ def index():
 @app.route("/favicon.ico")
 def favicon():
     return "", 204
+    
+@app.route("/login")
+def login():
+    # Redirect to your Discord OAuth2 URL
+    return redirect("https://graveyardbot.onrender.com/callback")
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/")
+
+@app.route("/callback")
+def callback():
+    # 1. Exchange code for token (using your existing logic)
+    # 2. Get user info from Discord
+    discord_id = user_info['id']
+    
+    # 3. Check against your Master Admin ID
+    master_id = os.environ.get("MASTER_ADMIN_ID")
+    is_admin_user = (str(discord_id) == str(master_id))
+    
+    # 4. Set session keys
+    session['discord_id'] = discord_id
+    session['discord_name'] = user_info['username']
+    session['is_admin_user'] = is_admin_user
+    
+    return redirect("/")
     
 # ── /admin/api/battles ─────────────────────────────────────────────────────
 @app.route("/admin/api/battles")
