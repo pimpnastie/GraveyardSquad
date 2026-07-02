@@ -230,7 +230,7 @@ class ClashRoyale(commands.Cog):
         asyncio.create_task(self._cache_cards())
 
     def cog_unload(self):
-        self.reminder_loop.cancel()
+        # NOTE: If you have a reminder_loop, you'll want to cancel it here too
         self.daily_snapshot_loop.cancel()
 
     # ── Cache helpers ─────────────────────────────────────────────────────────
@@ -361,21 +361,35 @@ class ClashRoyale(commands.Cog):
 
         snapshot_ops = []
         battle_ops   = []
+        profile_ops  = [] # Added to save comprehensive player data for the web UI
         sem = asyncio.Semaphore(CONCURRENT_REQUESTS)
 
         async def harvest_member(member):
             tag = member["tag"].replace("#", "").upper()
             async with sem:
-                profile, blog = await asyncio.gather(
+                # Upgraded to pull all 3 endpoints concurrently
+                profile, blog, chests = await asyncio.gather(
                     self.bot.async_fetch_cr_api(f"players/%23{tag}"),
                     self.bot.async_fetch_cr_api(f"players/%23{tag}/battlelog"),
+                    self.bot.async_fetch_cr_api(f"players/%23{tag}/upcomingchests")
                 )
-            return tag, member, profile, blog
+            return tag, member, profile, blog, chests
 
         results = await asyncio.gather(*(harvest_member(m) for m in members))
 
-        for tag, m, profile, blog in results:
-            # Daily snapshot
+        for tag, m, profile, blog, chests in results:
+            # 1. Update Comprehensive Player Profile Master Record
+            if profile:
+                profile_doc = {**profile}
+                if chests and "items" in chests:
+                    profile_doc["upcoming_chests"] = chests["items"]
+                profile_doc["last_updated"] = datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
+                
+                profile_ops.append(
+                    UpdateOne({"_id": tag}, {"$set": profile_doc}, upsert=True)
+                )
+
+            # 2. Daily snapshot
             flat = {
                 "date":     snapshot_date,
                 "name":     m.get("name", ""),
@@ -394,7 +408,7 @@ class ClashRoyale(commands.Cog):
                 UpdateOne({"tag": tag, "date": snapshot_date}, {"$set": flat}, upsert=True)
             )
 
-            # Battle history
+            # 3. Battle history
             if blog and isinstance(blog, list):
                 for battle in blog:
                     if not battle.get("battleTime"):
@@ -402,7 +416,6 @@ class ClashRoyale(commands.Cog):
                     battle_id = f"{tag}_{battle['battleTime']}"
                     team = battle.get("team", [{}])[0]
                     opp  = battle.get("opponent", [{}])[0]
-                    # Inside run_harvest_logic, inside the battle log loop:
                     doc = {
                         "player_tag":      tag,
                         "player_name":     m.get("name", ""),
@@ -412,7 +425,6 @@ class ClashRoyale(commands.Cog):
                         "opp_crowns":      opp.get("crowns", 0),
                         "opp_name":        opp.get("name", "Unknown"),
                         "type":            battle.get("type", "PvP"),
-                        # IMPORTANT: Save the full objects!
                         "team_cards":      team.get("cards", []), 
                         "opponent_cards":  opp.get("cards", []),
                     }
@@ -420,6 +432,8 @@ class ClashRoyale(commands.Cog):
                         UpdateOne({"_id": battle_id}, {"$set": doc}, upsert=True)
                     )
 
+        if profile_ops:
+            await self.db["player_profiles"].bulk_write(profile_ops, ordered=False)
         if snapshot_ops:
             await self.db["historical_snapshots"].bulk_write(snapshot_ops, ordered=False)
         if battle_ops:
@@ -427,6 +441,7 @@ class ClashRoyale(commands.Cog):
 
         log.info(f"✅ Harvest complete in {round(time.monotonic() - harvest_start, 1)}s — "
                  f"{len(members)} members, {len(battle_ops)} battle records.")
+
     # ── Loops ─────────────────────────────────────────────────────────────────
 
     @tasks.loop(time=dt_time(hour=23, minute=55, tzinfo=zoneinfo.ZoneInfo("America/New_York")))
@@ -533,6 +548,38 @@ class ClashRoyale(commands.Cog):
         msg = await ctx.send("🌾 Harvest started…")
         await self.run_harvest_logic()
         await msg.edit(content="✅ Harvest complete.")
+
+    @commands.command(name="cardstats")
+    async def cardstats(self, ctx, *, target: str = None):
+        """Fetches maxed and elite card statistics for a player."""
+        tag = None
+        if target:
+            tag = target.upper().lstrip("#")
+        else:
+            user_doc = await self.users.find_one({"discord_id": ctx.author.id})
+            if user_doc:
+                tag = user_doc.get("cr_tag", "").upper().lstrip("#")
+        
+        if not tag:
+            await ctx.send("❌ Please provide a player tag, e.g. `!cardstats #ABC123`, or link your account first.")
+            return
+            
+        async with ctx.typing():
+            # Use your existing cache helper to fetch the profile
+            profile = await self._get_player_data(tag)
+            
+        if not profile:
+            await ctx.send(f"❌ Could not find data for tag `#{tag}`.")
+            return
+            
+        cards_maxed = sum(1 for c in profile.get("cards", []) if c.get("level", 1) >= 14)
+        cards_elite = sum(1 for c in profile.get("cards", []) if c.get("level", 1) == 15)
+        
+        embed = discord.Embed(title=f"📈 Card Stats | {profile.get('name', 'Unknown')}", color=0x2ECC71)
+        embed.add_field(name="Maxed Cards (Lvl 14+)", value=str(cards_maxed))
+        embed.add_field(name="Elite Cards (Lvl 15)", value=str(cards_elite))
+        
+        await ctx.send(embed=embed)
 
 
 async def setup(bot):

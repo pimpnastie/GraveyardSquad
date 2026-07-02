@@ -67,7 +67,8 @@ redis_sync_client = sync_redis.from_url(os.getenv("REDIS_URL", "redis://localhos
 
 cr_api_session = requests.Session()
 cr_api_session.headers.update({
-    "User-Agent": "GraveyardBot/1.0"
+    "User-Agent": "GraveyardBot/1.2 (Comprehensive Harvester)",
+    "Cache-Control": "max-age=300"
 })
 
 _cache_lock = threading.Lock()
@@ -99,11 +100,11 @@ _restore_harvest_meta()
 # 2. DATA ENRICHMENT & STREAK LOGIC
 # ---------------------------------------------------------------------------
 def calculate_streak(battles):
-    sorted_battles = sorted(battles, key=lambda x: x.get('utcTime', ''), reverse=True)
+    sorted_battles = sorted(battles, key=lambda x: x.get('battle_time', x.get('utcTime', '')), reverse=True)
     streak = 0
     for b in sorted_battles:
-        if b.get('type') == 'PvP':
-            if b.get('result') == 'win':
+        if b.get('type') == 'PvP' or b.get('type') == 'clanWarWarDay':
+            if b.get('result') == 'win' or b.get('team_crowns', 0) > b.get('opp_crowns', 0):
                 streak += 1
             else:
                 break
@@ -118,12 +119,11 @@ def _enrich_members(raw_members, profiles, war_parts):
         seen.add(tag)
         m['name'] = re.sub(r"<c\d?>|</c>", "", m.get("name", "Unknown"), flags=re.IGNORECASE)
         p = profiles.get(tag, {})
-        m['current_streak'] = calculate_streak(p.get('battles', []))
         
-        # FIX: Ensure it falls back properly to database profile data if snapshot misses it
+        # Calculate streak from the database battles array or the standalone collection
+        m['current_streak'] = calculate_streak(p.get('battles', []))
         m['warDayWins'] = p.get('warDayWins', m.get('warDayWins', 0)) 
         m['donations'] = p.get('donations', m.get('donations', 0))
-        
         m['fame'] = war_parts.get(tag, {}).get('fame', 0)
         m['clean_tag'] = tag
         m['role'] = m.get('role', 'member')
@@ -229,11 +229,8 @@ def invalidate_template_cache() -> None:
 def render_sandboxed(template_str: str, **context) -> str:
     """Safely renders HTML content, blocking remote server code injection vectors."""
     template = sandbox_env.from_string(template_str)
-    
-    # Automatically inject Flask's session object for UI logic
     if "session" not in context:
         context["session"] = session
-        
     return template.render(**context)
 
 # ---------------------------------------------------------------------------
@@ -242,29 +239,23 @@ def render_sandboxed(template_str: str, **context) -> str:
 @app.route("/")
 def index():
     try:
-        # 1. Try to Fetch Live Clan Roster
         clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
         is_fallback = False
         error_msg = None
         raw_members = []
         
-        # Check if live data is valid
         if clan_data and "memberList" in clan_data:
             raw_members = clan_data["memberList"]
         else:
-            # 🛑 FALLBACK LOGIC: Live API failed, pull from the latest DB snapshot
             log.warning("Live CR API unreachable. Falling back to latest DB snapshot.")
             is_fallback = True
             error_msg = "Live API unreachable. Displaying cached data from the latest snapshot."
             
-            # Find the most recent date we have a snapshot for
             latest_snap = db_sync["historical_snapshots"].find_one(sort=[("date", -1)])
             
             if not latest_snap:
-                # If we have NO live data and NO backups, we have to bail out
                 return render_sandboxed(get_template("roster"), players=[], error="Clash Royale API connection failed and no database backups exist yet.")
             
-            # Reconstruct the member list from the snapshot documents
             backup_docs = list(db_sync["historical_snapshots"].find({"date": latest_snap["date"]}))
             for doc in backup_docs:
                 raw_members.append({
@@ -279,11 +270,9 @@ def index():
         
         member_tags = [clean_tag(m["tag"]) for m in raw_members if "tag" in m]
         
-        # 2. Grab Database Profiles for Streaks/Stats
         db_profiles = list(db_sync["player_profiles"].find({"_id": {"$in": member_tags}}))
         profiles_map = {p["_id"]: p for p in db_profiles}
         
-        # 3. Fetch War Data (Only if we aren't already in fallback mode)
         war_participants = {}
         if not is_fallback:
             war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
@@ -296,10 +285,8 @@ def index():
                             war_participants = {clean_tag(p["tag"]): p for p in clan.get("participants", [])}
                             break
         
-        # 4. Enrich & Sort
         players = _enrich_members(raw_members, profiles_map, war_participants)
         
-        # 5. Calculate Hall of Fame
         top_pusher = max(players, key=lambda x: x.get("trophies", 0)) if players else None
         top_streak = max(players, key=lambda x: x.get("current_streak", 0)) if players else None
         top_war = max(players, key=lambda x: x.get("warDayWins", 0)) if players else None
@@ -334,12 +321,9 @@ def link_account():
         return redirect("/")
     return render_sandboxed(get_template("link"), name=session.get("discord_name", "User"))
 
-# ── /player/<tag> ────────────────────────────────────────────────────────
 @app.route("/player/<tag>")
 def player_profile(tag):
     clean_t = clean_tag(tag)
-    
-    # 1. Fetch live data from the Clash Royale API
     player_data = fetch_cr_api(f"players/%23{clean_t}")
     
     if not player_data:
@@ -349,7 +333,6 @@ def player_profile(tag):
             error=f"Could not find player with tag #{clean_t}"
         ), 404
 
-    # 2. Grab Database Profile to calculate the Win Streak
     db_profile = db_sync["player_profiles"].find_one({"_id": clean_t})
     if db_profile and "battles" in db_profile:
         player_data["current_streak"] = calculate_streak(db_profile.get("battles", []))
@@ -363,7 +346,78 @@ def player_profile(tag):
         clan_tag=CLAN_TAG
     )
 
-# ── /admin ────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# NEW DATA ENDPOINTS (CLAN META, LEADERBOARDS, HISTORY)
+# ---------------------------------------------------------------------------
+@app.route("/admin/api/meta")
+def api_clan_meta():
+    """Aggregates thousands of battle records to find the clan's true card win rates."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    
+    pipeline = [
+        {"$unwind": "$team_cards"},
+        {"$group": {
+            "_id": "$team_cards.name",
+            "total_games": {"$sum": 1},
+            "wins": {"$sum": {"$cond": [{"$eq": ["$result", "win"]}, 1, 0]}}
+        }},
+        {"$project": {
+            "card_name": "$_id",
+            "total_games": 1,
+            "wins": 1,
+            "win_rate": {"$round": [{"$multiply": [{"$divide": ["$wins", "$total_games"]}, 100]}, 1]}
+        }},
+        {"$match": {"total_games": {"$gte": 20}}}, # Filter out draft modes/low sample sizes
+        {"$sort": {"win_rate": -1}}
+    ]
+    try:
+        results = list(db_sync["battle_history"].aggregate(pipeline))
+        for r in results:
+            del r["_id"]
+        return jsonify(results)
+    except Exception as e:
+        log.error(f"Failed to aggregate clan meta: {e}")
+        return jsonify({"error": "Failed to process clan meta data."}), 500
+
+@app.route("/admin/api/war/history")
+def api_get_war_history():
+    """Returns the historical river race logs harvested by the cog."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    try:
+        history = list(db_sync["war_history"].find().sort("createdDate", -1).limit(10))
+        for h in history:
+            h["_id"] = str(h["_id"])
+        return jsonify(history)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/api/snapshots/seasons")
+def api_get_season_snapshots():
+    """Returns the specific daily snapshots flagged as 'is_season_end'."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    try:
+        snapshots = list(db_sync["historical_snapshots"].find({"is_season_end": True}).sort("date", -1))
+        for s in snapshots:
+            if "_id" in s:
+                del s["_id"]
+        return jsonify(snapshots)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/api/leaderboards")
+def api_get_leaderboards():
+    """Live fetches global and local Path of Legends rankings."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    global_rankings = fetch_cr_api("locations/global/rankings/players?limit=10")
+    us_rankings = fetch_cr_api("locations/57000249/rankings/players?limit=10") # 57000249 is US Location ID
+    return jsonify({
+        "global": global_rankings.get("items", []) if global_rankings else [],
+        "us": us_rankings.get("items", []) if us_rankings else []
+    })
+
+# ---------------------------------------------------------------------------
+# ADMIN ROUTES
+# ---------------------------------------------------------------------------
 @app.route("/admin")
 def admin_panel():
     if not is_admin():
@@ -373,7 +427,6 @@ def admin_panel():
         clan_tag=CLAN_TAG,
     )
 
-# ── /admin/api/battles ─────────────────────────────────────────────────────
 @app.route("/admin/api/battles")
 def api_get_battles():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -400,7 +453,6 @@ def api_player_battles(tag):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ── /admin/api/war ─────────────────────────────────────────────────────────
 @app.route("/admin/api/war")
 def api_get_war():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -408,28 +460,6 @@ def api_get_war():
     if not war_data: return jsonify({"error": "Failed to fetch war data."}), 500
     return jsonify(war_data)
 
-@app.route("/admin/api/war/previous")
-def api_get_war_previous():
-    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    log_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/riverracelog")
-    if log_data and "items" in log_data and len(log_data["items"]) > 0:
-        return jsonify(log_data["items"][0])
-    return jsonify({"error": "No previous war data found."}), 404
-
-@app.route("/admin/api/war/aggregate")
-def api_get_war_aggregate():
-    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    log_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/riverracelog")
-    total_fame = 0
-    if log_data and "items" in log_data:
-        for race in log_data["items"]:
-            for standing in race.get("standings", []):
-                clan = standing.get("clan", {})
-                if clean_tag(clan.get("tag", "")) == clean_tag(CLAN_TAG):
-                    total_fame += clan.get("fame", 0)
-    return jsonify({"total_fame": total_fame})
-
-# ── /admin/api/users ───────────────────────────────────────────────────────
 @app.route("/admin/api/users")
 def api_get_users():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -471,7 +501,6 @@ def update_user_status():
         db_sync["config"].update_one({"_id": "system_config"}, {"$set": {"admin_user_ids": admins}}, upsert=True)
     return redirect("/admin")
 
-# ── /admin/harvest/manual ──────────────────────────────────────────────────
 @app.route("/admin/harvest/manual", methods=["POST"])
 def manual_harvest():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -480,7 +509,6 @@ def manual_harvest():
         return jsonify({"message": "Manual Harvest initiated successfully! Please check diagnostics in 30 seconds."})
     return jsonify({"message": "Failed to send command. Redis offline."}), 500
 
-# ── /admin/api/template/<name> ─────────────────────────────────────────────
 @app.route("/admin/api/template/<name>")
 def api_get_template(name):
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -493,7 +521,6 @@ def api_get_template(name):
             return jsonify({"html": doc[name]})
         return jsonify({"html": globals().get(f"DEFAULT_{name.upper()}_HTML", "")})
 
-# ── /admin/api/snapshot/<date> ─────────────────────────────────────────────
 @app.route("/admin/api/snapshot/<date>")
 def api_get_snapshot(date):
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -508,8 +535,7 @@ def api_get_snapshot(date):
     except Exception as e:
         log.error(f"Error fetching snapshot for {date}: {e}")
         return jsonify({"error": "Internal server error."}), 500
-        
-# ── /admin/preview ─────────────────────────────────────────────────────────
+
 @app.route("/admin/preview", methods=["POST"])
 def preview_template():
     if not is_admin(): return "Unauthorized", 403
@@ -517,8 +543,7 @@ def preview_template():
     ok, message, line = validate_jinja_syntax(html)
     if not ok: return f"<h3>Syntax Error on line {line}</h3><p>{message}</p>", 400
     return "Preview syntax valid.", 200
- 
-# ── /admin/diagnostics ────────────────────────────────────────────────────
+
 @app.route("/admin/diagnostics")
 def admin_diagnostics():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
@@ -535,7 +560,7 @@ def admin_diagnostics():
             "mode": info.get("redis_mode", "N/A"), "redis_version": info.get("redis_version", "N/A"),
         }
     except Exception as e: result["redis"] = {"status": "error", "error": str(e)}
- 
+
     try:
         t0 = _time.monotonic()
         mongo_client_sync.admin.command("ping")
@@ -548,7 +573,7 @@ def admin_diagnostics():
             "profile_count":  db_sync["player_profiles"].estimated_document_count(),
         }
     except Exception as e: result["mongo"] = {"status": "error", "error": str(e)}
- 
+
     try:
         endpoint = f"https://proxy.royaleapi.dev/v1/clans/%23{CLAN_TAG}"
         t0 = _time.monotonic()
@@ -565,7 +590,7 @@ def admin_diagnostics():
             "status": api_status, "status_code": resp.status_code, "latency_ms": latency_ms, "endpoint_tested": endpoint,
         }
     except Exception as e: result["cr_api"] = {"status": "unreachable", "error": str(e)}
- 
+
     bot_inst = globals().get("_bot_instance")
     if bot_inst:
         try:
@@ -578,7 +603,7 @@ def admin_diagnostics():
             }
         except Exception as e: result["bot"] = {"connected": False, "error": str(e)}
     else: result["bot"] = {"connected": False, "error": "No bot instance"}
- 
+
     try:
         backend = "redis" if result.get("redis", {}).get("status") == "ok" else "mongo_fallback"
         with _cache_lock: html_entries = len(_HTML_CACHE)
@@ -588,7 +613,7 @@ def admin_diagnostics():
             total = db_sync["api_cache"].estimated_document_count()
         result["cache"] = {"backend": backend, "total_keys": total, "html_cache_entries": html_entries}
     except Exception as e: result["cache"] = {"error": str(e)}
- 
+
     harv = _harvest_meta.copy()
     try:
         history_dates = db_sync["historical_snapshots"].distinct("date")
@@ -603,13 +628,13 @@ def admin_diagnostics():
     except Exception as e:
         harv["history_dates"] = []
     result["harvest"] = harv
- 
+
     cog = bot_inst.cogs.get("ClashRoyale") if bot_inst else None
     if cog:
         next_snap = cog.daily_snapshot_loop.next_iteration.strftime("%Y-%m-%d %H:%M:%S UTC") if cog.daily_snapshot_loop.next_iteration else None
         result["tasks"] = {"snapshot_loop": "running" if cog.daily_snapshot_loop.is_running() else "stopped", "next_snapshot": next_snap}
     else: result["tasks"] = {"snapshot_loop": "cog not loaded"}
- 
+
     result["version"] = "1.2.0"
     result["environment"] = os.getenv("ENVIRONMENT", "production")
     result["hostname"] = platform.node()
@@ -651,6 +676,9 @@ def update_html():
         return redirect("/admin?success=UI+Code+Deployed+Live!")
     return redirect("/admin?error=Invalid+Template+Name")
 
+# ---------------------------------------------------------------------------
+# CSV EXPORT (NOW WITH BADGES & DEEP DATA)
+# ---------------------------------------------------------------------------
 @app.route("/admin/export/custom", methods=["POST"])
 def export_custom_csv():
     if not is_admin():
@@ -682,16 +710,29 @@ def export_custom_csv():
         "role":              lambda m, p, wp: m.get("role"),
         "expLevel":          lambda m, p, wp: m.get("expLevel"),
         "trophies":          lambda m, p, wp: m.get("trophies"),
+        # Path of legends data
+        "best_pol_rating":   lambda m, p, wp: p.get("bestPathOfLegendsSeasonResult", {}).get("rating", 0),
+        "current_pol_rank":  lambda m, p, wp: p.get("currentPathOfLegendsSeasonResult", {}).get("rank", "Unranked"),
+        # Financials and Donations
         "donations":         lambda m, p, wp: m.get("donations"),
-        "donationsReceived": lambda m, p, wp: m.get("donationsReceived"),
+        "starPoints":        lambda m, p, wp: p.get("starPoints", 0),
+        "totalDonations":    lambda m, p, wp: p.get("totalDonations", 0),
+        # War & Battles
         "fame":              lambda m, p, wp: wp.get("fame", 0),
-        "decksUsedToday":    lambda m, p, wp: wp.get("decksUsedToday", 0),
-        "decksRemaining":    lambda m, p, wp: wp.get("decksRemaining", 4),
-        "totalWins":         lambda m, p, wp: p.get("wins", 0),
-        "totalLosses":       lambda m, p, wp: p.get("losses", 0),
-        "current_streak":    lambda m, p, wp: p.get("current_streak", 0),
         "warDayWins":        lambda m, p, wp: p.get("warDayWins", 0),
+        "totalWins":         lambda m, p, wp: p.get("wins", 0),
+        "threeCrownWins":    lambda m, p, wp: p.get("threeCrownWins", 0),
+        "current_streak":    lambda m, p, wp: p.get("current_streak", 0),
+        # Chests & Cards
         "favoriteCard":      lambda m, p, wp: p.get("currentFavouriteCard", {}).get("name", "N/A"),
+        "next_magical_chest":lambda m, p, wp: next((c.get("index") for c in p.get("upcoming_chests", []) if "Magical" in c.get("name", "")), "N/A"),
+        "cards_maxed":       lambda m, p, wp: sum(1 for c in p.get("cards", []) if c.get("level", 1) >= 14),
+        "cards_elite":       lambda m, p, wp: sum(1 for c in p.get("cards", []) if c.get("level", 1) == 15),
+        # Badges and Achievements
+        "yearsPlayed":       lambda m, p, wp: next((b.get("progress", 0) for b in p.get("badges", []) if b.get("name") == "PlayedXYears"), 0),
+        "classic12Wins":     lambda m, p, wp: next((b.get("progress", 0) for b in p.get("badges", []) if b.get("name") == "Classic12Wins"), 0),
+        "grand12Wins":       lambda m, p, wp: next((b.get("progress", 0) for b in p.get("badges", []) if b.get("name") == "Grand12Wins"), 0),
+        "maxPathOfLegends":  lambda m, p, wp: next((b.get("level", 0) for b in p.get("badges", []) if b.get("name") == "PathOfLegends"), 0),
     }
     
     rows = []
@@ -712,11 +753,19 @@ def export_custom_csv():
         for row in rows:
             cw.writerow([row.get(f, "N/A") for f in selected_fields])
     else:
-        cw.writerow(["Name", "Tag", "Trophies", "Current Win Streak"])
+        cw.writerow(["Name", "Tag", "Trophies", "Current Win Streak", "Years Played", "Classic 12 Wins"])
         for m in members:
             tag = clean_tag(m["tag"])
             p = profiles_map.get(tag, {})
-            cw.writerow([m.get("name"), tag, m.get("trophies"), p.get("current_streak", 0)])
+            wp = war_participants.get(tag, {})
+            cw.writerow([
+                m.get("name"), 
+                tag, 
+                m.get("trophies"), 
+                p.get("current_streak", 0),
+                field_extractors["yearsPlayed"](m, p, wp),
+                field_extractors["classic12Wins"](m, p, wp)
+            ])
 
     output = si.getvalue()
     return app.response_class(
@@ -857,7 +906,6 @@ class GraveyardBot(commands.Bot):
             cog = self.get_cog("ClashRoyale")
             if cog:
                 log.info("⚡ Executing Manual Harvest trigger requested via UI...")
-                # Call underlying loop coroutine directly
                 self.loop.create_task(cog.daily_snapshot_loop.coro(cog))
 
     async def close(self):
