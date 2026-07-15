@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Graveyard Squad | Link Account</title>
+    <style>
+        /* Base Variables & Shell (Matches Roster) */
+        :root { 
+            --surface: #111418; --border: #1e2530; --accent: #00e5ff; 
+            --text: #c5c6c7; --dim: #888; --font-mono: monospace; 
+            --bg: #0b0c10;
+        }
+        body { 
+            background: var(--bg); color: var(--text); 
+            font-family: 'Segoe UI', system-ui, sans-serif; 
+            margin: 0; display: flex; flex-direction: column; min-height: 100vh;
+        }
+        a { text-decoration: none; color: inherit; transition: 0.2s; }
+        a:hover { opacity: 0.8; }
+
+        /* Simplified Topbar for Focus Mode */
+        .topbar { 
+            display: flex; align-items: center; padding: 12px 24px; 
+            background: var(--surface); border-bottom: 1px solid var(--border); 
+        }
+        .topbar-title { font-size: 20px; font-weight: 700; text-transform: uppercase; color: var(--accent); text-shadow: 0 0 10px rgba(0,229,255,0.2); }
+        .topbar-title span { color: var(--dim); font-weight: 400; }
+        .back-link { margin-left: auto; font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+        .back-link:hover { color: var(--accent); }
+
+        /* Centered Application Layout */
+        .portal-wrapper {
+            flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 20px;
+        }
+        .portal-grid {
+            display: grid; grid-template-columns: 1fr 1fr; max-width: 900px; width: 100%;
+            background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5); overflow: hidden;
+        }
+
+        /* Left Side: The Form */
+        .form-section { padding: 40px; }
+        .form-section h1 { margin: 0 0 10px 0; color: white; font-size: 28px; }
+        .form-section p { color: var(--dim); font-size: 15px; margin-bottom: 30px; line-height: 1.5; }
+        
+        .input-group { margin-bottom: 24px; position: relative; }
+        .input-group label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin-bottom: 8px; }
+        .input-group input {
+            width: 100%; box-sizing: border-box; padding: 14px 16px; background: var(--bg);
+            border: 2px solid var(--border); border-radius: 8px; color: white;
+            font-family: var(--font-mono); font-size: 18px; text-transform: uppercase;
+            outline: none; transition: 0.2s;
+        }
+        .input-group input:focus { border-color: var(--accent); box-shadow: 0 0 15px rgba(0,229,255,0.1); }
+        
+        .tag-helper { font-size: 12px; color: var(--dim); margin-top: 8px; display: block; }
+        
+        .submit-btn {
+            width: 100%; padding: 16px; background: var(--accent); color: #000;
+            border: none; border-radius: 8px; font-weight: 800; font-size: 15px;
+            text-transform: uppercase; letter-spacing: 1px; cursor: pointer; transition: 0.2s;
+        }
+        .submit-btn:hover { background: #00b8cc; transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,229,255,0.3); }
+
+        /* Right Side: The Requirements & Perks */
+        .info-section { background: rgba(0,229,255,0.02); border-left: 1px solid var(--border); padding: 40px; }
+        .info-box { margin-bottom: 30px; }
+        .info-box h3 { margin: 0 0 16px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); border-bottom: 1px solid rgba(0,229,255,0.2); padding-bottom: 8px; }
+        
+        .req-list, .perk-list { list-style: none; padding: 0; margin: 0; }
+        .req-list li, .perk-list li { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; font-size: 14px; color: #ddd; }
+        .req-list li::before { content: "🎯"; font-size: 16px; }
+        .perk-list li::before { content: "✨"; font-size: 16px; }
+
+        /* Mobile Optimization */
+        @media (max-width: 768px) {
+            .portal-grid { grid-template-columns: 1fr; }
+            .info-section { border-left: none; border-top: 1px solid var(--border); }
+        }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+    <div class="topbar-title">Graveyard <span>Squad</span></div>
+    <a href="/" class="back-link">← Back to Roster</a>
+</div>
+
+<div class="portal-wrapper">
+    <div class="portal-grid">
+        
+        <div class="form-section">
+            <h1>Welcome, {{ name }}!</h1>
+            <p>To join the Graveyard Squad dashboard and unlock your Discord roles, we need to locate your Clash Royale account.</p>
+            
+            <form method="POST" action="/link" id="linkForm">
+                <div class="input-group">
+                    <label for="cr_tag">Player Tag</label>
+                    <input type="text" id="cr_tag" name="tag" placeholder="#ABC123XYZ" autocomplete="off" required>
+                    <span class="tag-helper">Found under your name in the in-game profile.</span>
+                </div>
+                
+                <button type="submit" class="submit-btn" id="submitBtn">Verify & Link Account</button>
+            </form>
+        </div>
+
+        <div class="info-section">
+            <div class="info-box">
+                <h3>Clan Requirements</h3>
+                <ul class="req-list">
+                    <li>Minimum 6,000 Trophies</li>
+                    <li>Mandatory War Participation (Thursday-Sunday)</li>
+                    <li>Active weekly donations required</li>
+                </ul>
+            </div>
+            
+            <div class="info-box">
+                <h3>Dashboard Perks</h3>
+                <ul class="perk-list">
+                    <li><strong>Discord Auto-Sync:</strong> Instantly receive your in-game roles (Elder, Co-Leader) in the server.</li>
+                    <li><strong>Deep Analytics:</strong> Track your war history, nemesis matchups, and predicted matchmaking.</li>
+                    <li><strong>LFG Pings:</strong> Ping the server directly from the web to find 2v2 or war practice partners.</li>
+                </ul>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+// ---------------------------------------------------
+// PHASE 1/2: SMART TAG AUTO-FORMATTER
+// ---------------------------------------------------
+const tagInput = document.getElementById('cr_tag');
+const form = document.getElementById('linkForm');
+const btn = document.getElementById('submitBtn');
+
+// Automatically format the tag as the user types
+tagInput.addEventListener('input', function(e) {
+    let val = this.value.toUpperCase(); // Force uppercase
+    val = val.replace(/[^A-Z0-9#]/g, ''); // Strip invalid characters (spaces, symbols)
+    
+    // Automatically prepend the hashtag if they forgot it
+    if(val.length > 0 && !val.startsWith('#')) {
+        val = '#' + val;
+    }
+    
+    this.value = val;
+});
+
+// Provide a loading state when they submit
+form.addEventListener('submit', function() {
+    btn.innerHTML = "Verifying Stats... ⏳";
+    btn.style.opacity = "0.7";
+    btn.style.cursor = "not-allowed";
+    btn.disabled = true; // Prevent double-clicking
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ player.name }} | Graveyard Squad</title>
+    <style>
+        :root {
+            --bg: #0b0c10; --surface: #111418; --border: #1e2530;
+            --accent: #00e5ff; --danger: #e74c3c; --success: #2ecc71;
+            --warning: #f1c40f; --text: #c5c6c7; --dim: #888;
+            --font-mono: 'Courier New', monospace;
+        }
+        *, *::before, *::after { box-sizing: border-box; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding-bottom: 60px; }
+        a { text-decoration: none; color: inherit; transition: opacity 0.2s; }
+        a:hover { opacity: 0.8; }
+
+        /* ── Topbar ── */
+        .topbar { display: flex; align-items: center; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
+        .topbar-title { font-size: 20px; font-weight: 700; text-transform: uppercase; color: var(--accent); }
+        .back-link { margin-left: auto; font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+        .back-link:hover { color: var(--accent); }
+
+        /* ── Hero ── */
+        .hero { background: linear-gradient(180deg, #1a222c 0%, var(--bg) 100%); padding: 40px 20px; text-align: center; border-bottom: 1px solid var(--border); }
+        .hero-name { font-size: 32px; color: white; margin: 0 0 10px 0; display: flex; justify-content: center; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .hero-tag { font-family: var(--font-mono); color: var(--dim); font-size: 14px; background: rgba(255,255,255,0.05); padding: 4px 10px; border-radius: 4px; }
+        .role-badge { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; padding: 4px 12px; border-radius: 20px; border: 1px solid var(--accent); color: var(--accent); }
+        .cr-link-btn { margin-top: 16px; display: inline-block; padding: 8px 16px; background: rgba(0,229,255,0.1); border: 1px solid var(--accent); color: var(--accent); border-radius: 6px; font-weight: bold; font-size: 13px; text-transform: uppercase; }
+        .cr-link-btn:hover { background: var(--accent); color: #000; }
+
+        /* ── Layout ── */
+        .container { max-width: 1200px; margin: 30px auto; padding: 0 20px; }
+        .profile-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+        @media (max-width: 900px) { .profile-grid { grid-template-columns: 1fr; } }
+
+        /* ── Cards ── */
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 24px; }
+        .card-title { font-size: 14px; font-family: var(--font-mono); text-transform: uppercase; color: white; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+        .stat-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-label { color: var(--dim); font-size: 14px; }
+        .stat-val { font-weight: bold; color: white; font-size: 15px; }
+
+        /* ── Admin zone ── */
+        .admin-zone { border-color: var(--danger); box-shadow: 0 0 15px rgba(231,76,60,0.1); }
+        .admin-zone .card-title { color: var(--danger); border-bottom-color: rgba(231,76,60,0.3); }
+        .db-textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); color: white; padding: 12px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; min-height: 100px; resize: vertical; margin-bottom: 12px; outline: none; }
+        .db-textarea:focus { border-color: var(--danger); }
+        .btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn { flex: 1; padding: 10px; border-radius: 6px; font-weight: 600; font-size: 12px; text-transform: uppercase; cursor: pointer; border: none; transition: 0.2s; font-family: var(--font-mono); text-align: center; }
+        .btn-strike { background: rgba(241,196,15,0.1); border: 1px solid var(--warning); color: var(--warning); }
+        .btn-strike:hover { background: var(--warning); color: #000; }
+        .btn-dm { background: rgba(231,76,60,0.1); border: 1px solid var(--danger); color: var(--danger); }
+        .btn-dm:hover { background: var(--danger); color: white; }
+        .btn-save { background: rgba(46,204,113,0.1); border: 1px solid var(--success); color: var(--success); }
+        .btn-save:hover { background: var(--success); color: #000; }
+
+        /* ── Audit log ── */
+        .audit-log { max-height: 200px; overflow-y: auto; font-family: var(--font-mono); font-size: 12px; background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+        .audit-item { padding: 8px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); color: var(--dim); }
+        .audit-item span { color: white; }
+
+        /* ── Battle log ── */
+        .battle-log { display: flex; flex-direction: column; gap: 12px; }
+
+        .battle-entry { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; transition: border-color 0.2s; }
+        .battle-entry.win  { border-left: 3px solid var(--success); }
+        .battle-entry.loss { border-left: 3px solid var(--danger); }
+        .battle-entry.draw { border-left: 3px solid var(--dim); }
+        .battle-entry:hover { border-color: rgba(0,229,255,0.3); }
+
+        /* Summary row — always visible */
+        .battle-summary { display: flex; align-items: center; gap: 14px; padding: 12px 16px; cursor: pointer; flex-wrap: wrap; }
+        .battle-result-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; padding: 3px 10px; border-radius: 20px; white-space: nowrap; }
+        .badge-win  { background: rgba(46,204,113,0.15); color: var(--success); border: 1px solid rgba(46,204,113,0.3); }
+        .badge-loss { background: rgba(231,76,60,0.15);  color: var(--danger);  border: 1px solid rgba(231,76,60,0.3); }
+        .badge-draw { background: rgba(136,136,136,0.15); color: var(--dim);    border: 1px solid rgba(136,136,136,0.3); }
+        .battle-score { font-size: 20px; font-weight: 700; color: white; white-space: nowrap; }
+        .battle-vs    { font-size: 12px; color: var(--dim); }
+        .battle-opp   { font-size: 14px; font-weight: 600; color: var(--text); }
+        .battle-meta  { font-size: 11px; color: var(--dim); font-family: var(--font-mono); margin-left: auto; text-align: right; line-height: 1.6; }
+        .battle-type-tag { display: inline-block; font-size: 10px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 1px; padding: 2px 7px; border-radius: 3px; background: rgba(255,255,255,0.06); color: var(--dim); white-space: nowrap; }
+        .battle-toggle { font-size: 11px; color: var(--dim); padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: none; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+        .battle-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* Deck detail — revealed on expand */
+        .battle-decks { display: none; padding: 0 16px 16px; border-top: 1px solid var(--border); margin-top: 2px; }
+        .battle-decks.open { display: block; }
+        .deck-label { font-size: 10px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 2px; color: var(--dim); margin: 14px 0 8px; display: flex; align-items: center; gap: 8px; }
+        .deck-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+        .deck-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+        @media (max-width: 600px) { .deck-grid { grid-template-columns: repeat(4, 1fr); gap: 6px; } }
+
+        .card-chip {
+            background: #0d1117; border: 1px solid var(--border);
+            border-radius: 6px; overflow: hidden;
+            display: flex; flex-direction: column; align-items: center;
+            text-align: center; transition: border-color 0.15s;
+        }
+        .card-chip:hover { border-color: rgba(0,229,255,0.35); }
+        .card-img-wrap { width: 100%; aspect-ratio: 1; background: #080a0f; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .card-img { width: 90%; height: 90%; object-fit: contain; display: block; }
+        .card-img-placeholder { font-size: 22px; }
+        .card-chip-name { font-size: 9px; font-family: var(--font-mono); color: var(--dim); padding: 4px 4px 5px; line-height: 1.3; word-break: break-word; }
+        .card-chip-level { font-size: 9px; color: var(--accent); font-family: var(--font-mono); padding-bottom: 4px; }
+
+        /* Loading / empty states */
+        .battles-loading { text-align: center; padding: 30px; color: var(--dim); font-family: var(--font-mono); font-size: 13px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spin { display: inline-block; animation: spin 0.8s linear infinite; }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+    <div class="topbar-title">Player Dossier</div>
+    <a href="/" class="back-link">← Back to Roster</a>
+</div>
+
+<div class="hero">
+    <h1 class="hero-name">
+        {{ player.name }}
+        <span class="role-badge">{{ player.role | replace('coLeader', 'Co-Leader') | title }}</span>
+    </h1>
+    <span class="hero-tag">{{ player.tag }}</span><br>
+    <a href="clashroyale://player/{{ player.tag | replace('#', '') }}" class="cr-link-btn">📱 Open in Game</a>
+</div>
+
+<div class="container">
+    <div class="profile-grid">
+
+        <div class="left-col">
+
+            <div class="card">
+                <div class="card-title">📊 Current Season Stats</div>
+                <div class="stat-row">
+                    <span class="stat-label">Trophies 🏆</span>
+                    <span class="stat-val" style="color: var(--warning);">{{ player.trophies }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Best Trophies 🌟</span>
+                    <span class="stat-val">{{ player.bestTrophies }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Donations 🎁</span>
+                    <span class="stat-val" style="color: var(--success);">{{ player.donations }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">War Battles (Current) ⚔️</span>
+                    <span class="stat-val">{{ player.clanWarTrophies | default(0) }}</span>
+                </div>
+            </div>
+
+            <!-- ── BATTLE LOG ── -->
+            <div class="card">
+                <div class="card-title">
+                    ⚔️ Last 10 Battles
+                    <button id="battles-refresh-btn" onclick="loadBattles()" style="font-size:11px; font-family:var(--font-mono); background:none; border:1px solid var(--border); color:var(--dim); padding:3px 10px; border-radius:4px; cursor:pointer; text-transform:uppercase; letter-spacing:1px; transition:all 0.15s;">↻ Refresh</button>
+                </div>
+                <div id="battles-section" class="battle-log">
+                    <div class="battles-loading"><span class="spin">↻</span> Loading battles…</div>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="right-col">
+
+            <div class="card">
+                <div class="card-title">📜 Clan History Log</div>
+                <div class="audit-log">
+                    {% if db_player and db_player.audit_log %}
+                        {% for entry in db_player.audit_log %}
+                            <div class="audit-item">[{{ entry.date }}] <span>{{ entry.action }}</span></div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="audit-item">No historical data. Harvester is tracking…</div>
+                        <div class="audit-item">[System] Profile created in Database.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if is_admin %}
+            <div class="card admin-zone">
+                <div class="card-title">🛡️ Leadership Actions</div>
+                <div class="stat-row" style="margin-bottom: 16px;">
+                    <span class="stat-label">Active Strikes</span>
+                    <span class="stat-val" style="color: var(--danger); font-size: 20px;">
+                        {{ db_player.strikes | default(0) }} / 3
+                    </span>
+                </div>
+                <label style="font-size:12px; color:var(--dim); text-transform:uppercase; margin-bottom:8px; display:block;">Admin Notes (Private)</label>
+                <textarea id="adminNotes" class="db-textarea" placeholder="Behavior, missed wars, excuses…">{{ db_player.admin_notes | default('') }}</textarea>
+                <div class="btn-group">
+                    <button class="btn btn-save" onclick="saveAdminData('{{ player.tag }}')">💾 Save Notes</button>
+                    <button class="btn btn-strike" onclick="addStrike('{{ player.tag }}')">➕ Issue Strike</button>
+                </div>
+                <div style="margin-top: 10px;">
+                    <button class="btn btn-dm" style="width:100%;" onclick="sendWarningDM('{{ player.tag }}')">✉️ Bot DM: Missing War Warning</button>
+                </div>
+            </div>
+            {% endif %}
+
+        </div>
+    </div>
+</div>
+
+<script>
+// ── Utilities ──────────────────────────────────────────────────────────────────
+function esc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function formatTime(raw) {
+    if (!raw) return '—';
+    // CR API format: 20240312T183045.000Z  or  ISO string
+    const m = String(raw).match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
+    if (m) return m[1] + '-' + m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5];
+    return raw.slice(0, 16).replace('T', ' ');
+}
+
+function friendlyType(type) {
+    const map = {
+        'PvP': 'Ladder', 'clanMate': 'Clan', 'tournament': 'Tournament',
+        'challenge': 'Challenge', 'riverRacePvP': 'War PvP',
+        'riverRaceDuel': 'War Duel', 'boatBattle': 'Boat Battle',
+        'friendly': 'Friendly', 'training': 'Training',
+    };
+    return map[type] || type || 'PvP';
+}
+
+// ── Card chip builder ──────────────────────────────────────────────────────────
+function buildCardChip(card) {
+    const name = card.name || 'Unknown';
+    const url  = card.iconUrl;
+    const lvl  = card.level;
+    const imgHtml = url
+        ? `<img class="card-img" src="${esc(url)}" alt="${esc(name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">`
+          + `<span class="card-img-placeholder" style="display:none">🃏</span>`
+        : `<span class="card-img-placeholder">🃏</span>`;
+    return `<div class="card-chip" title="${esc(name)}">
+        <div class="card-img-wrap">${imgHtml}</div>
+        <div class="card-chip-name">${esc(name)}</div>
+        ${lvl != null ? `<div class="card-chip-level">Lvl ${lvl}</div>` : ''}
+    </div>`;
+}
+
+function buildDeckGrid(cards) {
+    if (!cards || !cards.length) return '<div style="color:var(--dim);font-size:12px;font-family:var(--font-mono);padding:8px 0;">No deck recorded</div>';
+    return `<div class="deck-grid">${cards.map(buildCardChip).join('')}</div>`;
+}
+
+// ── Battle entry renderer ──────────────────────────────────────────────────────
+let _openBattle = null;
+
+function toggleBattleDecks(idx) {
+    const decks = document.getElementById('decks-' + idx);
+    const btn   = document.getElementById('toggle-btn-' + idx);
+    if (!decks) return;
+    const isOpen = decks.classList.contains('open');
+    // Close previously open one
+    if (_openBattle !== null && _openBattle !== idx) {
+        const prev    = document.getElementById('decks-' + _openBattle);
+        const prevBtn = document.getElementById('toggle-btn-' + _openBattle);
+        if (prev)    prev.classList.remove('open');
+        if (prevBtn) prevBtn.textContent = '▾ Decks';
+    }
+    if (isOpen) {
+        decks.classList.remove('open');
+        btn.textContent = '▾ Decks';
+        _openBattle = null;
+    } else {
+        decks.classList.add('open');
+        btn.textContent = '▴ Hide';
+        _openBattle = idx;
+    }
+}
+
+function buildBattleEntry(b, idx) {
+    const result  = b.result || 'draw';
+    const badgeCls = result === 'win' ? 'badge-win' : result === 'loss' ? 'badge-loss' : 'badge-draw';
+    const entryBorderCls = result === 'win' ? 'win' : result === 'loss' ? 'loss' : 'draw';
+    const teamC = b.team_crowns ?? '?';
+    const oppC  = b.opp_crowns  ?? '?';
+    const oppName = b.opp_name || 'Unknown';
+    const type    = friendlyType(b.type);
+    const time    = formatTime(b.battle_time);
+
+    const teamCards = Array.isArray(b.team_cards)     ? b.team_cards     : [];
+    const oppCards  = Array.isArray(b.opponent_cards) ? b.opponent_cards : [];
+
+    return `
+    <div class="battle-entry ${entryBorderCls}" id="battle-${idx}">
+        <div class="battle-summary" onclick="toggleBattleDecks(${idx})">
+            <span class="battle-result-badge ${badgeCls}">${result.toUpperCase()}</span>
+            <span class="battle-score">${esc(teamC)} – ${esc(oppC)}</span>
+            <div>
+                <div class="battle-vs">vs</div>
+                <div class="battle-opp">${esc(oppName)}</div>
+            </div>
+            <span class="battle-type-tag">${esc(type)}</span>
+            <div class="battle-meta">${esc(time)}</div>
+            <button class="battle-toggle" id="toggle-btn-${idx}" onclick="event.stopPropagation(); toggleBattleDecks(${idx})">▾ Decks</button>
+        </div>
+        <div class="battle-decks" id="decks-${idx}">
+            <div class="deck-label">Your Deck</div>
+            ${buildDeckGrid(teamCards)}
+            <div class="deck-label">Opponent's Deck</div>
+            ${buildDeckGrid(oppCards)}
+        </div>
+    </div>`;
+}
+
+// ── Fetch & render ─────────────────────────────────────────────────────────────
+async function loadBattles() {
+    const section = document.getElementById('battles-section');
+    const btn     = document.getElementById('battles-refresh-btn');
+    section.innerHTML = '<div class="battles-loading"><span class="spin">↻</span> Loading battles…</div>';
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+    _openBattle = null;
+
+    const tag = {{ player.tag | tojson }};
+    const cleanTag = tag.replace('#', '');
+
+    try {
+        const res = await fetch(`/api/player/${cleanTag}/battles`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const battles = await res.json();
+
+        if (!battles.length) {
+            section.innerHTML = '<div class="battles-loading">No battles found. Run a harvest to populate history.</div>';
+            return;
+        }
+
+        section.innerHTML = battles.map((b, i) => buildBattleEntry(b, i)).join('');
+    } catch(e) {
+        section.innerHTML = `<div class="battles-loading" style="color:var(--danger);">
+            Failed to load battles: ${esc(e.message)}
+        </div>`;
+    } finally {
+        if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+    }
+}
+
+// ── Admin actions ──────────────────────────────────────────────────────────────
+function notify(btn, orig, text) {
+    btn.innerHTML = text; btn.style.pointerEvents = 'none';
+    setTimeout(() => { btn.innerHTML = orig; btn.style.pointerEvents = 'auto'; }, 2000);
+}
+
+function saveAdminData(tag) {
+    const notes = document.getElementById('adminNotes').value;
+    const btn = event.target; const orig = btn.innerHTML;
+    btn.innerHTML = 'Saving… ⏳';
+    fetch('/admin/api/player/update', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ tag, notes })
+    })
+    .then(r => { if(!r.ok) throw new Error(); notify(btn, orig, '✅ Saved!'); })
+    .catch(() => notify(btn, orig, '❌ Error'));
+}
+
+function addStrike(tag) {
+    if (!confirm('Issue a formal strike to this player?')) return;
+    const btn = event.target; const orig = btn.innerHTML;
+    btn.innerHTML = 'Processing… ⏳';
+    fetch('/admin/api/player/strike', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ tag })
+    })
+    .then(r => { if(!r.ok) throw new Error(); notify(btn, orig, '✅ Strike Added!'); setTimeout(() => location.reload(), 1200); })
+    .catch(() => notify(btn, orig, '❌ Error'));
+}
+
+function sendWarningDM(tag) {
+    if (!confirm('Command the bot to DM this user about missing War?')) return;
+    const btn = event.target; const orig = btn.innerHTML;
+    btn.innerHTML = 'Sending… 🚀';
+    fetch('/admin/api/player/dm-warning', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ tag })
+    })
+    .then(r => r.json())
+    .then(d => notify(btn, orig, d.error ? '❌ ' + d.error : '✅ DM Queued'))
+    .catch(() => notify(btn, orig, '❌ Error'));
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', loadBattles);
+</script>
+</body>
+</html>

@@ -12,7 +12,7 @@ from datetime import datetime, time as dt_time
 from discord.ext import commands, tasks
 from thefuzz import process
 from pymongo import UpdateOne
-import mainbot
+from data_harvester import get_harvester
 
 log = logging.getLogger("clashbot")
 
@@ -226,12 +226,11 @@ class ClashRoyale(commands.Cog):
         self.all_cards    = []
         self.active_warmups = set()
 
-        self.daily_snapshot_loop.start()
+        self.process_pending_actions_loop.start()
         asyncio.create_task(self._cache_cards())
 
     def cog_unload(self):
-        # NOTE: If you have a reminder_loop, you'll want to cancel it here too
-        self.daily_snapshot_loop.cancel()
+        self.process_pending_actions_loop.cancel()
 
     # ── Cache helpers ─────────────────────────────────────────────────────────
 
@@ -311,7 +310,7 @@ class ClashRoyale(commands.Cog):
 
     async def _get_trophy_trend(self, tag: str) -> str:
         """Compare current trophies against historical snapshots."""
-        docs = await self.db["historical_snapshots"].find(
+        docs = await self.db["player_snapshots"].find(
             {"tag": tag.upper().replace("#", "")}
         ).sort("date", -1).limit(8).to_list(8)
 
@@ -338,119 +337,63 @@ class ClashRoyale(commands.Cog):
         return [f"• **{name}** — {count} uses" for name, count in counter.most_common(5)]
 
     # ── Harvest ───────────────────────────────────────────────────────────────
+    # NOTE: The actual data harvest (clan/profiles/battles/snapshots/war) lives
+    # in data_harvester.py's DataHarvester class, running on its own background
+    # thread started from mainbot2.py. This cog no longer runs a second,
+    # differently-schemad harvest — it only reads what that harvester wrote,
+    # and can ask it to run early via the shared singleton (get_harvester()).
 
     async def run_harvest_logic(self):
-        harvest_start = time.monotonic()
+        """Manually kick the shared harvester's full cycle without blocking the event loop."""
+        harvester = get_harvester()
+        await self.bot.loop.run_in_executor(None, harvester.run_full_cycle)
 
-        clan_data = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}")
-        war_data  = await self.bot.async_fetch_cr_api(f"clans/%23{self.clan_tag}/currentriverrace")
+    # ── Pending admin actions (queued by the Flask dashboard) ──────────────────
 
-        if not clan_data:
-            log.warning("Harvest aborted: could not fetch clan data.")
+    @tasks.loop(seconds=20)
+    async def process_pending_actions_loop(self):
+        pending = self.db["pending_actions"]
+        actions = await pending.find({"processed": False}).to_list(50)
+        if not actions:
             return
 
-        snapshot_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-        members       = clan_data.get("memberList", [])
+        guild = self.bot.get_guild(int(os.getenv("GUILD_ID", "0")))
 
-        war_participants = {}
-        if war_data:
-            war_participants = {
-                p["tag"].replace("#", "").upper(): p
-                for p in war_data.get("clan", {}).get("participants", [])
-            }
+        for action in actions:
+            try:
+                kind = action.get("kind")
+                if kind == "dm_warning":
+                    await self._send_dm(guild, action.get("discord_id"),
+                        f"⚔️ **Graveyard Squad Notice:** {action.get('message', 'Please remember to use your war decks!')}")
+                elif kind == "war_nudge":
+                    for discord_id in action.get("discord_ids", []):
+                        await self._send_dm(guild, discord_id,
+                            "⚔️ **War Reminder:** You still have decks left to use in the current River Race. Please jump in before the war ends!")
+                elif kind == "lfg_ping":
+                    channel_id = self.bot.war_channel_id
+                    if channel_id and guild:
+                        channel = guild.get_channel(int(channel_id))
+                        if channel:
+                            await channel.send(f"⚔️ **{action.get('user', 'A clan member')}** is looking for a practice/2v2 partner!")
+                await pending.update_one({"_id": action["_id"]}, {"$set": {"processed": True}})
+            except Exception as e:
+                log.error(f"Failed to process pending action {action.get('_id')}: {e}")
+                await pending.update_one({"_id": action["_id"]}, {"$set": {"processed": True, "error": str(e)}})
 
-        snapshot_ops = []
-        battle_ops   = []
-        profile_ops  = [] # Added to save comprehensive player data for the web UI
-        sem = asyncio.Semaphore(CONCURRENT_REQUESTS)
-
-        async def harvest_member(member):
-            tag = member["tag"].replace("#", "").upper()
-            async with sem:
-                # Upgraded to pull all 3 endpoints concurrently
-                profile, blog, chests = await asyncio.gather(
-                    self.bot.async_fetch_cr_api(f"players/%23{tag}"),
-                    self.bot.async_fetch_cr_api(f"players/%23{tag}/battlelog"),
-                    self.bot.async_fetch_cr_api(f"players/%23{tag}/upcomingchests")
-                )
-            return tag, member, profile, blog, chests
-
-        results = await asyncio.gather(*(harvest_member(m) for m in members))
-
-        for tag, m, profile, blog, chests in results:
-            # 1. Update Comprehensive Player Profile Master Record
-            if profile:
-                profile_doc = {**profile}
-                if chests and "items" in chests:
-                    profile_doc["upcoming_chests"] = chests["items"]
-                profile_doc["last_updated"] = datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
-                
-                profile_ops.append(
-                    UpdateOne({"_id": tag}, {"$set": profile_doc}, upsert=True)
-                )
-
-            # 2. Daily snapshot
-            flat = {
-                "date":     snapshot_date,
-                "name":     m.get("name", ""),
-                "tag":      tag,
-                "trophies": m.get("trophies", 0),
-                "role":     m.get("role", "member"),
-            }
-            if tag in war_participants:
-                wp = war_participants[tag]
-                flat.update({
-                    "fame":          wp.get("fame", 0),
-                    "decksUsedToday": wp.get("decksUsedToday", 0),
-                    "warDayWins":    wp.get("warDayWins", 0),
-                })
-            snapshot_ops.append(
-                UpdateOne({"tag": tag, "date": snapshot_date}, {"$set": flat}, upsert=True)
-            )
-
-            # 3. Battle history
-            if blog and isinstance(blog, list):
-                for battle in blog:
-                    if not battle.get("battleTime"):
-                        continue
-                    battle_id = f"{tag}_{battle['battleTime']}"
-                    team = battle.get("team", [{}])[0]
-                    opp  = battle.get("opponent", [{}])[0]
-                    doc = {
-                        "player_tag":      tag,
-                        "player_name":     m.get("name", ""),
-                        "battle_time":     battle["battleTime"],
-                        "result":          "win" if team.get("crowns", 0) > opp.get("crowns", 0) else "loss",
-                        "team_crowns":     team.get("crowns", 0),
-                        "opp_crowns":      opp.get("crowns", 0),
-                        "opp_name":        opp.get("name", "Unknown"),
-                        "type":            battle.get("type", "PvP"),
-                        "team_cards":      team.get("cards", []), 
-                        "opponent_cards":  opp.get("cards", []),
-                    }
-                    battle_ops.append(
-                        UpdateOne({"_id": battle_id}, {"$set": doc}, upsert=True)
-                    )
-
-        if profile_ops:
-            await self.db["player_profiles"].bulk_write(profile_ops, ordered=False)
-        if snapshot_ops:
-            await self.db["historical_snapshots"].bulk_write(snapshot_ops, ordered=False)
-        if battle_ops:
-            await self.db["battle_history"].bulk_write(battle_ops, ordered=False)
-
-        log.info(f"✅ Harvest complete in {round(time.monotonic() - harvest_start, 1)}s — "
-                 f"{len(members)} members, {len(battle_ops)} battle records.")
-
-    # ── Loops ─────────────────────────────────────────────────────────────────
-
-    @tasks.loop(time=dt_time(hour=23, minute=55, tzinfo=zoneinfo.ZoneInfo("America/New_York")))
-    async def daily_snapshot_loop(self):
-        await self.run_harvest_logic()
-
-    @daily_snapshot_loop.before_loop
-    async def before_snapshot_loop(self):
+    @process_pending_actions_loop.before_loop
+    async def before_pending_actions_loop(self):
         await self.bot.wait_until_ready()
+
+    async def _send_dm(self, guild, discord_id, content):
+        if not guild or not discord_id:
+            return
+        member = guild.get_member(int(discord_id))
+        if not member:
+            try:
+                member = await guild.fetch_member(int(discord_id))
+            except discord.NotFound:
+                return
+        await member.send(content)
 
     # ── Commands ──────────────────────────────────────────────────────────────
 
