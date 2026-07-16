@@ -564,7 +564,8 @@ def admin_api_roster():
     return jsonify(result)
 
 
-
+@web_bp.route("/admin/api/war")
+def admin_api_war():
     """Current River Race data."""
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
@@ -807,6 +808,179 @@ def admin_users_update():
             {"$pull": {"admin_user_ids": discord_id}},
         )
     return redirect("/admin")
+
+
+# ---------------------------------------------------------------------------
+# 5b. ANALYTICS (data-driven member/clan dashboard)
+# ---------------------------------------------------------------------------
+@web_bp.route("/admin/api/analytics/overview")
+def admin_analytics_overview():
+    """Clan-wide headline numbers for the Analytics tab's stat row."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    members = clan_data.get("memberList", [])
+    member_count = len(members)
+
+    total_trophies = sum(m.get("trophies", 0) for m in members)
+    total_donations = sum(m.get("donations", 0) for m in members)
+    inactive = sum(1 for m in members if m.get("donations", 0) == 0)
+
+    latest_war = db_sync["war_tracking"].find_one({}, sort=[("harvest_time", -1)]) or {}
+    participants = (latest_war.get("clan") or {}).get("participants", [])
+    decks_used = sum(p.get("decksUsedToday", 0) for p in participants)
+    max_decks = len(participants) * 4
+    war_participation_pct = round((decks_used / max_decks) * 100, 1) if max_decks else 0
+
+    battle_count = db_sync["battle_history"].estimated_document_count()
+
+    return jsonify({
+        "member_count": member_count,
+        "avg_trophies": round(total_trophies / member_count) if member_count else 0,
+        "total_donations_live": total_donations,
+        "inactive_members": inactive,
+        "war_participation_pct": war_participation_pct,
+        "battles_logged": battle_count,
+    })
+
+
+@web_bp.route("/admin/api/analytics/leaderboards")
+def admin_analytics_leaderboards():
+    """Top-N leaderboards: donators, trophy climbers (7d delta), win rate, war fame, streaks."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    members = clan_data.get("memberList", [])
+
+    top_donators = sorted(members, key=lambda m: m.get("donations", 0), reverse=True)[:10]
+    top_donators = [{"name": m.get("name"), "tag": m.get("tag", "").replace("#", ""), "value": m.get("donations", 0)} for m in top_donators]
+
+    # Trophy climbers: compare current trophies against the earliest snapshot in the last 7 days
+    import datetime as _dt
+    week_ago = (_dt.datetime.now(timezone.utc) - _dt.timedelta(days=7)).strftime("%Y-%m-%d")
+    old_snaps = {
+        s["tag"]: s.get("trophies", 0)
+        for s in db_sync["player_snapshots"].find({"date": {"$gte": week_ago}}).sort("date", 1)
+    }
+    climbers = []
+    for m in members:
+        tag = m.get("tag", "")
+        old = old_snaps.get(tag)
+        if old is not None:
+            climbers.append({"name": m.get("name"), "tag": tag.replace("#", ""), "value": m.get("trophies", 0) - old})
+    climbers.sort(key=lambda x: x["value"], reverse=True)
+    top_climbers = climbers[:10]
+
+    # Win rate from logged battles (min 10 battles to qualify, avoids noisy small samples)
+    win_pipeline = [
+        {"$group": {
+            "_id": "$player_tag",
+            "wins": {"$sum": {"$cond": [{"$eq": ["$result", "win"]}, 1, 0]}},
+            "total": {"$sum": 1},
+        }},
+        {"$match": {"total": {"$gte": 10}}},
+    ]
+    win_rows = list(db_sync["battle_history"].aggregate(win_pipeline))
+    name_by_tag = {m.get("tag", "").replace("#", ""): m.get("name") for m in members}
+    win_rates = [
+        {
+            "name": name_by_tag.get(r["_id"], r["_id"]),
+            "tag": r["_id"],
+            "value": round((r["wins"] / r["total"]) * 100, 1),
+            "battles": r["total"],
+        }
+        for r in win_rows
+    ]
+    win_rates.sort(key=lambda x: x["value"], reverse=True)
+    top_win_rate = win_rates[:10]
+
+    latest_war = db_sync["war_tracking"].find_one({}, sort=[("harvest_time", -1)]) or {}
+    war_participants = (latest_war.get("clan") or {}).get("participants", [])
+    top_fame = sorted(war_participants, key=lambda p: p.get("fame", 0), reverse=True)[:10]
+    top_fame = [{"name": p.get("name"), "tag": p.get("tag", "").replace("#", ""), "value": p.get("fame", 0)} for p in top_fame]
+
+    return jsonify({
+        "top_donators": top_donators,
+        "top_climbers": top_climbers,
+        "top_win_rate": top_win_rate,
+        "top_war_fame": top_fame,
+    })
+
+
+@web_bp.route("/admin/api/analytics/clan-trend")
+def admin_analytics_clan_trend():
+    """Clan-wide trophy/member-count time series for the trend chart (from clan_snapshots)."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    days = min(int(request.args.get("days", 30)), 180)
+    import datetime as _dt
+    cutoff = _dt.datetime.now(timezone.utc) - _dt.timedelta(days=days)
+    docs = list(
+        db_sync["clan_snapshots"]
+        .find({"timestamp": {"$gte": cutoff}}, {"_id": 0, "timestamp": 1, "clanScore": 1, "memberCount": 1})
+        .sort("timestamp", 1)
+    )
+    for d in docs:
+        d["timestamp"] = d["timestamp"].isoformat() if hasattr(d["timestamp"], "isoformat") else d["timestamp"]
+    return jsonify(docs)
+
+
+@web_bp.route("/admin/api/analytics/member/<tag>/trend")
+def admin_analytics_member_trend(tag):
+    """Per-member trophy/donation time series for the member drill-down chart."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    days = min(int(request.args.get("days", 30)), 180)
+    import datetime as _dt
+    cutoff_date = (_dt.datetime.now(timezone.utc) - _dt.timedelta(days=days)).strftime("%Y-%m-%d")
+    docs = list(
+        db_sync["player_snapshots"]
+        .find({"tag": f"#{clean_tag(tag)}", "date": {"$gte": cutoff_date}}, {"_id": 0})
+        .sort("date", 1)
+    )
+    return jsonify(docs)
+
+
+@web_bp.route("/admin/api/analytics/battles")
+def admin_analytics_battles():
+    """Clan-wide deck/card win-rate analysis from logged battles."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+
+    recent = list(
+        db_sync["battle_history"]
+        .find({}, {"_id": 0, "team_cards": 1, "result": 1, "battle_type": 1})
+        .sort("battle_time", -1)
+        .limit(2000)
+    )
+    card_stats = {}
+    type_counts = {}
+    total_wins = total_games = 0
+    for b in recent:
+        result = b.get("result")
+        if result in ("win", "loss"):
+            total_games += 1
+            if result == "win": total_wins += 1
+        btype = b.get("battle_type", "unknown")
+        type_counts[btype] = type_counts.get(btype, 0) + 1
+        if result not in ("win", "loss"):
+            continue
+        for card in (b.get("team_cards") or []):
+            if not card: continue
+            entry = card_stats.setdefault(card, {"wins": 0, "games": 0})
+            entry["games"] += 1
+            if result == "win": entry["wins"] += 1
+
+    card_leaderboard = [
+        {"card": c, "games": v["games"], "win_rate": round((v["wins"] / v["games"]) * 100, 1)}
+        for c, v in card_stats.items() if v["games"] >= 5
+    ]
+    card_leaderboard.sort(key=lambda x: x["win_rate"], reverse=True)
+
+    return jsonify({
+        "overall_win_rate": round((total_wins / total_games) * 100, 1) if total_games else 0,
+        "sample_size": total_games,
+        "battle_type_breakdown": type_counts,
+        "top_cards": card_leaderboard[:15],
+        "worst_cards": card_leaderboard[-15:][::-1] if len(card_leaderboard) > 15 else [],
+    })
 
 
 # ---------------------------------------------------------------------------

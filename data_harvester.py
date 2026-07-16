@@ -21,10 +21,13 @@ class DataHarvester:
         self.col_war = self.db["war_tracking"]
         self.col_war_history = self.db["war_history"]
         self.col_snapshots = self.db["clan_snapshots"]
+        self.col_player_snapshots = self.db["player_snapshots"]
         self.col_config = self.db["config"]
 
         self.col_battles.create_index([("player_tag", 1), ("battle_time", -1)])
         self.col_battles.create_index("unique_battle_id", unique=True)
+        self.col_player_snapshots.create_index([("tag", 1), ("date", 1)], unique=True)
+        self.col_player_snapshots.create_index("date")
 
         self.cr_token = os.getenv("CR_TOKEN", "").strip()
         self.clan_tag = os.getenv("CLAN_TAG", "9LVY89UP").strip().upper().replace("#", "")
@@ -104,7 +107,9 @@ class DataHarvester:
         })
 
         member_tags = [m["tag"].replace("#", "") for m in clan_data.get("memberList", [])]
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         profile_operations = []
+        snapshot_operations = []
         for tag in member_tags:
             profile_data = self.fetch_api(f"players/%23{tag}")
             if profile_data:
@@ -113,11 +118,36 @@ class DataHarvester:
                     {"$set": {**profile_data, "last_updated": datetime.now(timezone.utc)}},
                     upsert=True
                 ))
+                # One row per player per calendar day — later harvests the same day just
+                # refresh the same doc, so this stays cheap and idempotent.
+                snapshot_operations.append(UpdateOne(
+                    {"tag": profile_data["tag"], "date": today},
+                    {"$set": {
+                        "tag": profile_data["tag"],
+                        "name": profile_data.get("name"),
+                        "date": today,
+                        "trophies": profile_data.get("trophies", 0),
+                        "bestTrophies": profile_data.get("bestTrophies", 0),
+                        "donations": profile_data.get("donations", 0),
+                        "donationsReceived": profile_data.get("donationsReceived", 0),
+                        "clanRank": profile_data.get("clanRank"),
+                        "role": profile_data.get("role"),
+                        "expLevel": profile_data.get("expLevel"),
+                        "wins": profile_data.get("wins", 0),
+                        "losses": profile_data.get("losses", 0),
+                        "threeCrownWins": profile_data.get("threeCrownWins", 0),
+                        "recorded_at": datetime.now(timezone.utc),
+                    }},
+                    upsert=True
+                ))
             time.sleep(0.05)
 
         if profile_operations:
             self.col_profiles.bulk_write(profile_operations)
             self._harvest_meta["profiles_saved"] += len(profile_operations)
+
+        if snapshot_operations:
+            self.col_player_snapshots.bulk_write(snapshot_operations)
 
         return member_tags
 
@@ -131,7 +161,22 @@ class DataHarvester:
                 unique_id = f"{tag}_{b.get('battleTime', '')}"
                 b["player_tag"] = tag
                 b["unique_battle_id"] = unique_id
-                
+
+                # The CR API nests everything under team[0]/opponent[0]; flatten the
+                # fields the dashboard actually reads so they aren't silently empty.
+                team = (b.get("team") or [{}])[0]
+                opponent = (b.get("opponent") or [{}])[0]
+                team_crowns = team.get("crowns", 0)
+                opp_crowns = opponent.get("crowns", 0)
+                b["team_cards"] = [c.get("name", "") for c in (team.get("cards") or [])]
+                b["opponent_cards"] = [c.get("name", "") for c in (opponent.get("cards") or [])]
+                b["team_crowns"] = team_crowns
+                b["opponent_crowns"] = opp_crowns
+                b["opponent_name"] = opponent.get("name", "")
+                b["opponent_tag"] = (opponent.get("tag") or "").replace("#", "")
+                b["battle_type"] = b.get("type", "")
+                b["result"] = "win" if team_crowns > opp_crowns else ("loss" if team_crowns < opp_crowns else "draw")
+
                 battle_operations.append(UpdateOne(
                     {"unique_battle_id": unique_id},
                     {"$set": b},
@@ -167,10 +212,25 @@ class DataHarvester:
         log.info(f"✅ Cycle Complete in {self._harvest_meta['duration_s']}s.")
 
 # ---------------------------------------------------------------------------
+# SHARED SINGLETON (web_routes.py and clash_cog.py both call get_harvester())
+# ---------------------------------------------------------------------------
+_harvester_instance = None
+_harvester_lock = threading.Lock()
+
+def get_harvester() -> "DataHarvester":
+    """Return the single shared DataHarvester instance, creating it on first use."""
+    global _harvester_instance
+    if _harvester_instance is None:
+        with _harvester_lock:
+            if _harvester_instance is None:
+                _harvester_instance = DataHarvester()
+    return _harvester_instance
+
+# ---------------------------------------------------------------------------
 # BACKGROUND WORKER LOOP (For mainbot.py integration)
 # ---------------------------------------------------------------------------
 def start_harvester_loop(interval_minutes=30):
-    harvester = DataHarvester()
+    harvester = get_harvester()
     
     # Run immediate catch-up on boot
     log.info("Executing initial boot Catch-Up cycle...")
