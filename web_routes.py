@@ -113,7 +113,7 @@ def get_template(template_name: str) -> str:
             # canonical .html file on disk so pages never show "Template Missing"
             # just because nobody has hit Deploy in the UI editor.
             import pathlib
-            disk_path = pathlib.Path(__file__).parent / f"{template_name}.html"
+            disk_path = pathlib.Path(__file__).parent / "templates" / f"{template_name}.html"
             if disk_path.exists():
                 content = disk_path.read_text(encoding="utf-8")
                 log.warning(f"'{template_name}' not found in Mongo html_templates — served from disk fallback.")
@@ -905,10 +905,10 @@ def admin_get_template(name):
             source = "default"
 
     if source == "default":
-        # Read the canonical file from disk next to web_routes.py
+        # Read the canonical file from disk, inside the templates/ subfolder.
         import pathlib
         candidates = [
-            pathlib.Path(__file__).parent / f"{name}.html",
+            pathlib.Path(__file__).parent / "templates" / f"{name}.html",
         ]
         html = ""
         for path in candidates:

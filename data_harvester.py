@@ -24,10 +24,30 @@ class DataHarvester:
         self.col_player_snapshots = self.db["player_snapshots"]
         self.col_config = self.db["config"]
 
-        self.col_battles.create_index([("player_tag", 1), ("battle_time", -1)])
-        self.col_battles.create_index("unique_battle_id", unique=True)
-        self.col_player_snapshots.create_index([("tag", 1), ("date", 1)], unique=True)
-        self.col_player_snapshots.create_index("date")
+        self._ensure_indexes()
+
+    def _ensure_indexes(self):
+        """Create indexes defensively — a single bad index (e.g. a unique index that
+        can't build because of pre-existing duplicate/null values) must not crash the
+        whole harvester. Before this fix, a failure here propagated out of __init__,
+        which killed get_harvester()'s singleton permanently: every future caller
+        (the scheduled loop, the manual harvest button, clash_cog's card cache) hit
+        the same exception forever, since _harvester_instance never got set.
+        """
+        index_specs = [
+            (self.col_battles, [("player_tag", 1), ("battle_time", -1)], {}),
+            (self.col_battles, "unique_battle_id", {"unique": True}),
+            (self.col_player_snapshots, [("tag", 1), ("date", 1)], {"unique": True}),
+            (self.col_player_snapshots, "date", {}),
+        ]
+        for collection, keys, opts in index_specs:
+            try:
+                collection.create_index(keys, **opts)
+            except Exception as e:
+                log.error(f"Failed to create index {keys!r} on '{collection.name}': {e}. "
+                          f"Harvester will continue without this index — clean up the "
+                          f"underlying data (e.g. duplicate/null unique_battle_id records) "
+                          f"to restore it.")
 
         self.cr_token = os.getenv("CR_TOKEN", "").strip()
         self.clan_tag = os.getenv("CLAN_TAG", "9LVY89UP").strip().upper().replace("#", "")
