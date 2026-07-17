@@ -1,6 +1,8 @@
 import os
 import logging
 import threading
+import asyncio
+import aiohttp
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -10,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 # Import the new Blueprint containing all web routes
 from web_routes import web_bp
+from data_harvester import start_harvester_loop
 
 # ---------------------------------------------------------------------------
 # 1. SETUP & ENV VARS
@@ -55,6 +58,7 @@ class GraveyardBot(commands.Bot):
         
         # Async Discord Engine Variables
         self.http_session = None
+        self.cr_token = os.getenv("CR_TOKEN", "").strip()
         self.redis_available = False
         self.active_prefix = "!"
         
@@ -72,13 +76,41 @@ class GraveyardBot(commands.Bot):
         self.custom_cmds = self.db["custom_commands"]
 
     async def setup_hook(self):
-        """Loads cogs automatically when the bot boots up."""
+        """Creates the shared HTTP session, then loads cogs when the bot boots up."""
+        self.http_session = aiohttp.ClientSession(
+            headers={"Authorization": f"Bearer {self.cr_token}", "Accept": "application/json"}
+        )
         try:
             # Assuming your cog is in a folder named 'cogs' and the file is 'clash_cog.py'
             await self.load_extension("cogs.clash_cog")
             log.info("✅ clash_cog loaded successfully.")
         except Exception as e:
             log.error(f"❌ Failed to load cogs: {e}")
+
+    async def async_fetch_cr_api(self, endpoint: str, retries: int = 4):
+        """Async counterpart to DataHarvester.fetch_api, for use inside cog commands/tasks."""
+        if self.http_session is None:
+            log.error("async_fetch_cr_api called before http_session was initialized.")
+            return None
+        url = f"https://proxy.royaleapi.dev/v1/{endpoint}"
+        for attempt in range(retries):
+            try:
+                async with self.http_session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+                    elif resp.status == 429:
+                        await asyncio.sleep(2 ** attempt)
+                    else:
+                        log.warning(f"CR API {endpoint} returned {resp.status}")
+            except Exception as e:
+                log.warning(f"CR API fetch error on {endpoint} (attempt {attempt+1}/{retries}): {e}")
+                await asyncio.sleep(2 ** attempt)
+        return None
+
+    async def close(self):
+        if self.http_session:
+            await self.http_session.close()
+        await super().close()
 
 # ---------------------------------------------------------------------------
 # 4. EXECUTION
@@ -88,7 +120,11 @@ if __name__ == "__main__":
     
     # Start Flask Web Server in a separate thread
     threading.Thread(target=run_flask, daemon=True).start()
-    
+
+    # Start the data harvester loop (boot catch-up + 30-min refresh cycle) so the
+    # roster/player pages and Discord commands actually have data to show.
+    threading.Thread(target=start_harvester_loop, daemon=True).start()
+
     # Start Discord Bot
     bot = GraveyardBot()
     bot.run(os.getenv("DISCORD_TOKEN"))

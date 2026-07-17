@@ -27,7 +27,8 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "")
 DISCORD_API = "https://discord.com/api"
-DISCORD_OAUTH_SCOPES = "identify"
+DISCORD_OAUTH_SCOPES = "identify guilds.members.read"
+GUILD_ID = os.getenv("GUILD_ID", "")
 
 # Database connections
 mongo_client_sync = MongoClient(os.getenv("MONGO_URL", "mongodb://localhost:27017"))
@@ -65,6 +66,25 @@ def fetch_cr_api(endpoint: str, retries: int = 3) -> dict | None:
             time.sleep(2 ** attempt)
     return None
 
+def get_user_guild_roles(access_token: str) -> list:
+    """Fetch the caller's role IDs in GUILD_ID using their OAuth access token.
+    Ported from admin.py — needed so admin_role_ids-based access (role-granted,
+    not just explicit user ID) works the same way the old standalone app did.
+    """
+    if not GUILD_ID:
+        return []
+    try:
+        r = requests.get(
+            f"{DISCORD_API}/users/@me/guilds/{GUILD_ID}/member",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            return r.json().get("roles", [])
+    except Exception as e:
+        log.error(f"Failed to fetch guild roles: {e}")
+    return []
+
 def is_admin() -> bool:
     if "discord_id" not in session: return False
     discord_id = str(session.get("discord_id"))
@@ -72,15 +92,55 @@ def is_admin() -> bool:
     if master_admin and discord_id == master_admin: return True
     # Check Mongo for authorized admins
     config = db_sync["config"].find_one({"_id": "system_config"}) or {}
-    return discord_id in config.get("admin_user_ids", [])
+    if discord_id in config.get("admin_user_ids", []):
+        return True
+    # Role-based access — ported from admin.py so members granted admin via a
+    # Discord role (not just an explicit user ID) aren't locked out.
+    allowed_roles = set(str(r) for r in config.get("admin_role_ids", []))
+    if allowed_roles:
+        user_roles = session.get("user_roles", [])
+        if any(str(r) in allowed_roles for r in user_roles):
+            return True
+    return False
 
 def get_template(template_name: str) -> str:
     with _cache_lock:
         if template_name in _HTML_CACHE: return _HTML_CACHE[template_name]
         doc = db_sync["config"].find_one({"_id": "html_templates"})
-        content = doc.get(template_name, "<h2>Template Missing</h2>") if doc else "<h2>Template Missing</h2>"
+        content = doc.get(template_name) if doc else None
+        if not content:
+            # Nothing deployed to Mongo yet for this template — fall back to the
+            # canonical .html file on disk so pages never show "Template Missing"
+            # just because nobody has hit Deploy in the UI editor.
+            import pathlib
+            disk_path = pathlib.Path(__file__).parent / f"{template_name}.html"
+            if disk_path.exists():
+                content = disk_path.read_text(encoding="utf-8")
+                log.warning(f"'{template_name}' not found in Mongo html_templates — served from disk fallback.")
+            else:
+                content = "<h2>Template Missing</h2>"
+                log.error(f"'{template_name}' missing from both Mongo and disk ({disk_path}).")
         _HTML_CACHE[template_name] = content
         return content
+
+def get_csrf_token() -> str:
+    """One token per browser session, generated lazily and reused for every
+    admin page render so the frontend can echo it back on state-changing POSTs."""
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+@web_bp.before_request
+def _csrf_protect():
+    # Only state-changing admin requests need a token — GETs and everything
+    # outside /admin/ (public roster/player/link pages, /api/lfg, etc.) are untouched.
+    if request.method == "POST" and request.path.startswith("/admin/"):
+        sent = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
+        expected = session.get("csrf_token", "")
+        if not expected or not secrets.compare_digest(str(sent), str(expected)):
+            return jsonify({"error": "CSRF token missing or invalid. Refresh the page and try again."}), 403
 
 def render_sandboxed(template_str: str, **context) -> str:
     template = sandbox_env.from_string(template_str)
@@ -89,10 +149,29 @@ def render_sandboxed(template_str: str, **context) -> str:
 
 # Analytical Bridges (Syncing logic with ClashCog)
 def get_player_analytical_data(tag):
-    player = fetch_cr_api(f"players/%23{clean_tag(tag)}")
+    clean = clean_tag(tag)
+    player = fetch_cr_api(f"players/%23{clean}")
     if not player: return None
-    history = list(db_sync["battle_history"].find({"player_tag": clean_tag(tag)}).sort("battle_time", -1).limit(10))
+    history = list(db_sync["battle_history"].find({"player_tag": clean}).sort("battle_time", -1).limit(10))
     player["recent_battles"] = history
+
+    # Collection completion — how much of their full card collection is maxed.
+    cards = player.get("cards") or []
+    player["collection_total_count"] = len(cards)
+    player["collection_maxed_count"] = sum(
+        1 for c in cards if c.get("level", 0) >= c.get("maxLevel", 999)
+    )
+
+    # 7-day trophy trend — same baseline logic as the clan-wide "climbers" leaderboard,
+    # just scoped to one player so their own page can show a personal "most improved" stat.
+    import datetime as _dt
+    week_ago = (_dt.datetime.now(timezone.utc) - _dt.timedelta(days=7)).strftime("%Y-%m-%d")
+    old_snap = db_sync["player_snapshots"].find_one(
+        {"tag": f"#{clean}", "date": {"$gte": week_ago}},
+        sort=[("date", 1)],
+    )
+    player["trophy_trend_7d"] = (player.get("trophies", 0) - old_snap.get("trophies", 0)) if old_snap else None
+
     return player
 
 def get_clan_war_summary():
@@ -156,6 +235,7 @@ def oauth_callback():
     session["discord_id"] = user_data["id"]
     session["discord_name"] = f"{user_data['username']}"
     session["discord_avatar"] = user_data.get("avatar")
+    session["user_roles"] = get_user_guild_roles(access_token)
     session.pop("oauth_state", None)
 
     dest = session.pop("post_login_redirect", "/")
@@ -202,14 +282,17 @@ def link_account():
 # ---------------------------------------------------------------------------
 @web_bp.route("/")
 def index():
-    clan_data = db_sync["api_cache"].find_one({"_id": "clan_data"}) or fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    if not clan_data:
+        log.error("Live clan fetch failed on index() — check CR_TOKEN / IP whitelist on this host.")
+        clan_data = {"memberList": [], "memberCount": 0}
     return render_sandboxed(get_template("roster"), clan_data=clan_data)
 
 @web_bp.route("/player/<tag>")
 def player_profile(tag):
     player_data = get_player_analytical_data(tag)
     db_player = db_sync["player_profiles"].find_one({"tag": f"#{clean_tag(tag)}"})
-    return render_sandboxed(get_template("player"), player=player_data, db_player=db_player, is_admin=is_admin())
+    return render_sandboxed(get_template("player"), player=player_data, db_player=db_player, is_admin=is_admin(), csrf_token=get_csrf_token())
 
 # ---------------------------------------------------------------------------
 # 4. ADMIN & MANAGEMENT ROUTES
@@ -223,12 +306,15 @@ def admin_panel():
         for p in db_sync["player_profiles"].find({}, {"tag": 1, "admin_notes": 1, "strikes": 1})
     }
     bot_settings = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
+    system_config = db_sync["config"].find_one({"_id": "system_config"}) or {}
     return render_sandboxed(
         get_template("admin"),
         clan_data=clan_data,
         db_players=db_players,
         bot_settings=bot_settings,
+        system_config=system_config,
         clan_tag=CLAN_TAG,
+        csrf_token=get_csrf_token(),
     )
 
 @web_bp.route("/admin/export/custom", methods=["POST"])
@@ -287,14 +373,19 @@ def admin_export_csv():
 @web_bp.route("/admin/api/player/update", methods=["POST"])
 def admin_player_update():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    data = request.json
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Expected a JSON body."}), 400
     db_sync["player_profiles"].update_one({"tag": f"#{clean_tag(data.get('tag'))}"}, {"$set": {"admin_notes": data.get("notes")}}, upsert=True)
     return jsonify({"success": True})
 
 @web_bp.route("/admin/api/player/strike", methods=["POST"])
 def admin_add_strike():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    db_sync["player_profiles"].update_one({"tag": f"#{clean_tag(request.json.get('tag'))}"}, {"$inc": {"strikes": 1}}, upsert=True)
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Expected a JSON body."}), 400
+    db_sync["player_profiles"].update_one({"tag": f"#{clean_tag(data.get('tag'))}"}, {"$inc": {"strikes": 1}}, upsert=True)
     return jsonify({"success": True})
 
 @web_bp.route("/admin/api/player/admin_toggle", methods=["POST"])
@@ -378,18 +469,61 @@ def admin_war_nudges():
 
 @web_bp.route("/admin/api/settings/save", methods=["POST"])
 def admin_save_settings():
-    """Persist bot settings (admin.html's saveBotSettings); the bot reloads these every 30s."""
+    """Persist bot settings (admin.html's Settings tab); the bot reloads these every 30s.
+    Covers everything admin.py used to save across its two forms (General Bot
+    Customizations + Live System File Configurations), consolidated into one endpoint
+    and one Settings tab instead of two disconnected config docs.
+    """
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     data = request.json or {}
+
+    # -- bot_settings doc: runtime bot behavior --------------------------------
+    update = {
+        "maintenance_mode": bool(data.get("maintenance_mode", False)),
+        "feature_auto_pings": bool(data.get("feature_auto_pings", False)),
+        "war_channel_id": data.get("war_channel_id", 0),
+    }
+    if "command_prefix" in data:
+        prefix = str(data.get("command_prefix") or "!").strip()[:3]
+        update["command_prefix"] = prefix or "!"
+    if "ignored_channels" in data:
+        raw = data.get("ignored_channels", [])
+        if isinstance(raw, str):
+            raw = [c.strip() for c in raw.split(",") if c.strip()]
+        update["ignored_channels"] = [str(c).strip() for c in raw if str(c).strip()]
+    # Ported from admin.py's old /admin/save-config ("General Bot Customizations") —
+    # these three lived in a separate, disconnected doc before; folded in here so
+    # there's one Settings tab and one save button instead of two.
+    if "min_trophies" in data:
+        try:
+            update["min_trophies"] = int(data.get("min_trophies") or 0)
+        except (TypeError, ValueError):
+            return jsonify({"error": "min_trophies must be a number"}), 400
+    if "war_reminders" in data:
+        update["war_reminders"] = bool(data.get("war_reminders", False))
+    if "welcome_msg" in data:
+        update["welcome_msg"] = str(data.get("welcome_msg") or "Welcome to the Squad!").strip()[:500]
+
     db_sync["config"].update_one(
         {"_id": "bot_settings"},
-        {"$set": {
-            "maintenance_mode": bool(data.get("maintenance_mode", False)),
-            "feature_auto_pings": bool(data.get("feature_auto_pings", False)),
-            "war_channel_id": data.get("war_channel_id", 0),
-        }},
+        {"$set": update},
         upsert=True,
     )
+
+    # -- system_config doc: access control -------------------------------------
+    # admin_role_ids lives in the same doc is_admin() already reads for admin_user_ids,
+    # so role-based access changes take effect immediately without a separate lookup.
+    if "admin_role_ids" in data:
+        raw = data.get("admin_role_ids", [])
+        if isinstance(raw, str):
+            raw = [r.strip() for r in raw.split(",") if r.strip()]
+        role_ids = [str(r).strip() for r in raw if str(r).strip()]
+        db_sync["config"].update_one(
+            {"_id": "system_config"},
+            {"$set": {"admin_role_ids": role_ids}},
+            upsert=True,
+        )
+
     return jsonify({"success": True})
 
 @web_bp.route("/admin/api/harvest/trigger", methods=["POST"])
@@ -648,6 +782,112 @@ def api_player_battles(tag):
     return jsonify(battles)
 
 
+@web_bp.route("/api/player/<tag>/insights")
+def api_player_insights(tag):
+    """Per-player battle intelligence — most-used cards, toughest/most-defeated
+    matchups, win streaks, rival opponent, busiest battle day. Computed entirely
+    from this player's own logged battle_history — no new Clash Royale API calls,
+    same pattern as /api/player/<tag>/battles above.
+    """
+    clean = clean_tag(tag)
+    battles = list(
+        db_sync["battle_history"]
+        .find(
+            {"player_tag": clean},
+            {"_id": 0, "team_cards": 1, "opponent_cards": 1, "result": 1,
+             "battle_time": 1, "opponent_name": 1, "opponent_tag": 1},
+        )
+        .sort("battle_time", 1)  # chronological — needed for streak math
+    )
+    if not battles:
+        return jsonify({"total_battles": 0})
+
+    def card_name(c):
+        return c if isinstance(c, str) else (c or {}).get("name")
+
+    card_usage = {}       # my card -> {games, wins}
+    opp_card_faced = {}   # opponent card -> {encounters, wins, losses}
+    rival_record = {}     # (opponent name, tag) -> {w, l, d}
+    day_counts = {}
+    running_streak = 0
+    longest_streak = 0
+
+    for b in battles:
+        result = b.get("result")
+
+        for raw in (b.get("team_cards") or []):
+            c = card_name(raw)
+            if not c: continue
+            e = card_usage.setdefault(c, {"games": 0, "wins": 0})
+            e["games"] += 1
+            if result == "win": e["wins"] += 1
+
+        for raw in (b.get("opponent_cards") or []):
+            c = card_name(raw)
+            if not c: continue
+            e = opp_card_faced.setdefault(c, {"encounters": 0, "wins": 0, "losses": 0})
+            e["encounters"] += 1
+            if result == "win": e["wins"] += 1
+            elif result == "loss": e["losses"] += 1
+
+        opp_key = (b.get("opponent_name") or "Unknown", b.get("opponent_tag") or "")
+        rec = rival_record.setdefault(opp_key, {"w": 0, "l": 0, "d": 0})
+        if result == "win": rec["w"] += 1
+        elif result == "loss": rec["l"] += 1
+        else: rec["d"] += 1
+
+        # CR API battle_time looks like "20240312T183045.000Z" — first 8 chars = YYYYMMDD
+        day = (b.get("battle_time") or "")[:8]
+        if len(day) == 8:
+            day_counts[day] = day_counts.get(day, 0) + 1
+
+        if result == "win":
+            running_streak += 1
+            longest_streak = max(longest_streak, running_streak)
+        else:
+            running_streak = 0
+
+    most_used_cards = sorted(
+        [
+            {"card": c, "games": v["games"], "win_rate": round(v["wins"] / v["games"] * 100, 1)}
+            for c, v in card_usage.items()
+        ],
+        key=lambda x: -x["games"],
+    )[:5]
+
+    MIN_ENCOUNTERS = 3
+    qualifying = [
+        {
+            "card": c, "encounters": v["encounters"], "wins": v["wins"], "losses": v["losses"],
+            "win_rate": round(v["wins"] / v["encounters"] * 100, 1),
+        }
+        for c, v in opp_card_faced.items() if v["encounters"] >= MIN_ENCOUNTERS
+    ]
+    most_defeated = sorted(qualifying, key=lambda x: (-x["wins"], -x["win_rate"]))[:1]
+    toughest_matchup = sorted(qualifying, key=lambda x: (x["win_rate"], -x["encounters"]))[:1]
+
+    rival = None
+    if rival_record:
+        (r_name, r_tag), rec = max(rival_record.items(), key=lambda kv: kv[1]["w"] + kv[1]["l"] + kv[1]["d"])
+        rival = {"name": r_name, "tag": r_tag, "wins": rec["w"], "losses": rec["l"], "draws": rec["d"]}
+
+    busiest_day = None
+    if day_counts:
+        d, count = max(day_counts.items(), key=lambda kv: kv[1])
+        busiest_day = {"date": f"{d[0:4]}-{d[4:6]}-{d[6:8]}", "battles": count}
+
+    return jsonify({
+        "total_battles": len(battles),
+        "most_used_cards": most_used_cards,
+        "most_defeated_card": most_defeated[0] if most_defeated else None,
+        "toughest_matchup": toughest_matchup[0] if toughest_matchup else None,
+        "current_streak": running_streak,
+        "longest_win_streak": longest_streak,
+        "rival": rival,
+        "busiest_day": busiest_day,
+    })
+
+
 @web_bp.route("/admin/api/template/<name>")
 def admin_get_template(name):
     """Serve a template to the UI editor — ?source=current pulls live DB, ?source=default pulls the DEFAULT_ constant."""
@@ -834,6 +1074,10 @@ def admin_analytics_overview():
 
     battle_count = db_sync["battle_history"].estimated_document_count()
 
+    total_w = db_sync["battle_history"].count_documents({"result": "win"})
+    total_l = db_sync["battle_history"].count_documents({"result": "loss"})
+    overall_win_rate = round((total_w / (total_w + total_l)) * 100, 1) if (total_w + total_l) else 0
+
     return jsonify({
         "member_count": member_count,
         "avg_trophies": round(total_trophies / member_count) if member_count else 0,
@@ -841,6 +1085,7 @@ def admin_analytics_overview():
         "inactive_members": inactive,
         "war_participation_pct": war_participation_pct,
         "battles_logged": battle_count,
+        "overall_win_rate": overall_win_rate,
     })
 
 
@@ -858,10 +1103,13 @@ def admin_analytics_leaderboards():
     # Trophy climbers: compare current trophies against the earliest snapshot in the last 7 days
     import datetime as _dt
     week_ago = (_dt.datetime.now(timezone.utc) - _dt.timedelta(days=7)).strftime("%Y-%m-%d")
-    old_snaps = {
-        s["tag"]: s.get("trophies", 0)
-        for s in db_sync["player_snapshots"].find({"date": {"$gte": week_ago}}).sort("date", 1)
-    }
+    # Ascending sort, but keep only the FIRST (oldest) snapshot seen per tag — the
+    # baseline to climb from. A plain dict comprehension here would keep the last
+    # value instead, comparing current trophies against yesterday's snapshot rather
+    # than a week ago.
+    old_snaps = {}
+    for s in db_sync["player_snapshots"].find({"date": {"$gte": week_ago}}).sort("date", 1):
+        old_snaps.setdefault(s["tag"], s.get("trophies", 0))
     climbers = []
     for m in members:
         tag = m.get("tag", "")
@@ -980,6 +1228,66 @@ def admin_analytics_battles():
         "battle_type_breakdown": type_counts,
         "top_cards": card_leaderboard[:15],
         "worst_cards": card_leaderboard[-15:][::-1] if len(card_leaderboard) > 15 else [],
+    })
+
+
+@web_bp.route("/admin/api/analytics/archetypes")
+def admin_analytics_archetypes():
+    """Deck archetype win-rate analysis — the 'battle algorithm' view. Card-level
+    win rate (see admin_analytics_battles above) answers 'is this card good';
+    this answers 'which whole decks are actually winning', by grouping battles
+    on the sorted 8-card signature actually played rather than individual cards.
+    No new Clash Royale API calls — reads battle_history the harvester already
+    collected, same as the card win-rate endpoint above.
+    """
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    min_games = max(int(request.args.get("min_games", 3)), 1)
+
+    recent = list(
+        db_sync["battle_history"]
+        .find({}, {"_id": 0, "team_cards": 1, "result": 1, "player_tag": 1, "battle_time": 1})
+        .sort("battle_time", -1)
+        .limit(3000)
+    )
+
+    archetypes = {}
+    for b in recent:
+        result = b.get("result")
+        if result not in ("win", "loss"):
+            continue
+        cards = [c for c in (b.get("team_cards") or []) if c]
+        if len(cards) < 8:
+            continue  # incomplete deck record — skip rather than mis-group
+        signature = tuple(sorted(cards[:8]))
+        entry = archetypes.setdefault(signature, {"wins": 0, "games": 0, "players": set(), "last_seen": None})
+        entry["games"] += 1
+        if result == "win":
+            entry["wins"] += 1
+        if b.get("player_tag"):
+            entry["players"].add(b["player_tag"])
+        bt = b.get("battle_time")
+        if bt and (entry["last_seen"] is None or bt > entry["last_seen"]):
+            entry["last_seen"] = bt
+
+    scored = []
+    for sig, v in archetypes.items():
+        if v["games"] < min_games:
+            continue
+        scored.append({
+            "cards": list(sig),
+            "games": v["games"],
+            "wins": v["wins"],
+            "win_rate": round((v["wins"] / v["games"]) * 100, 1),
+            "unique_players": len(v["players"]),
+            "last_seen": v["last_seen"],
+        })
+
+    return jsonify({
+        "sample_size": len(recent),
+        "distinct_archetypes": len(archetypes),
+        "qualifying_archetypes": len(scored),
+        "top_by_win_rate": sorted(scored, key=lambda x: (-x["win_rate"], -x["games"]))[:15],
+        "top_by_usage": sorted(scored, key=lambda x: -x["games"])[:15],
     })
 
 

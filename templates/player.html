@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{{ player.name }} | Graveyard Squad</title>
     <style>
         :root {
@@ -42,6 +43,42 @@
         .stat-row:last-child { border-bottom: none; }
         .stat-label { color: var(--dim); font-size: 14px; }
         .stat-val { font-weight: bold; color: white; font-size: 15px; }
+        .stat-val.trend-up   { color: var(--success); }
+        .stat-val.trend-down { color: var(--danger); }
+
+        /* ── Hall of Fame (badges) ── */
+        .badge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 12px; }
+        .badge-chip { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 8px; text-align: center; transition: border-color 0.15s; }
+        .badge-chip:hover { border-color: rgba(0,229,255,0.35); }
+        .badge-icon-wrap { width: 48px; height: 48px; margin: 0 auto 8px; display: flex; align-items: center; justify-content: center; }
+        .badge-icon { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .badge-icon-placeholder { font-size: 28px; }
+        .badge-name { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; line-height: 1.3; }
+        .badge-level { font-size: 11px; color: var(--accent); font-weight: bold; margin-top: 4px; }
+        .empty-note { color: var(--dim); font-size: 13px; font-style: italic; padding: 8px 0; }
+
+        /* ── Achievements ── */
+        .achv-row { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .achv-row:last-child { border-bottom: none; }
+        .achv-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+        .achv-name { font-size: 13px; font-weight: 600; color: var(--text); }
+        .achv-progress-text { font-size: 11px; color: var(--dim); font-family: var(--font-mono); white-space: nowrap; }
+        .achv-stars { color: var(--warning); font-size: 11px; margin-left: 6px; }
+        .achv-bar-track { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+        .achv-bar-fill { height: 100%; background: var(--warning); border-radius: 3px; }
+
+        /* ── Battle Intelligence (superlatives) ── */
+        .superlative-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 14px; margin-bottom: 20px; }
+        .superlative-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+        .superlative-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin-bottom: 6px; }
+        .superlative-value { font-size: 17px; font-weight: bold; color: white; }
+        .superlative-sub { font-size: 11px; color: var(--dim); margin-top: 4px; }
+        .usage-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .usage-row:last-child { border-bottom: none; }
+        .usage-name { flex: 1; font-size: 13px; font-weight: 600; color: var(--text); }
+        .usage-bar-track { flex: 2; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+        .usage-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+        .usage-meta { font-size: 11px; color: var(--dim); font-family: var(--font-mono); white-space: nowrap; min-width: 90px; text-align: right; }
 
         /* ── Admin zone ── */
         .admin-zone { border-color: var(--danger); box-shadow: 0 0 15px rgba(231,76,60,0.1); }
@@ -143,13 +180,91 @@
                     <span class="stat-label">Best Trophies 🌟</span>
                     <span class="stat-val">{{ player.bestTrophies }}</span>
                 </div>
+                {% if player.trophy_trend_7d is not none %}
                 <div class="stat-row">
-                    <span class="stat-label">Donations 🎁</span>
+                    <span class="stat-label">7-Day Trend 📈</span>
+                    <span class="stat-val {% if player.trophy_trend_7d > 0 %}trend-up{% elif player.trophy_trend_7d < 0 %}trend-down{% endif %}">
+                        {% if player.trophy_trend_7d > 0 %}+{% endif %}{{ player.trophy_trend_7d }}
+                    </span>
+                </div>
+                {% endif %}
+                <div class="stat-row">
+                    <span class="stat-label">Donations (Season) 🎁</span>
                     <span class="stat-val" style="color: var(--success);">{{ player.donations }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Donations Received 📥</span>
+                    <span class="stat-val">{{ player.donationsReceived | default(0) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Total Donations (All-Time) 🏦</span>
+                    <span class="stat-val">{{ player.totalDonations | default(0) }}</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">War Battles (Current) ⚔️</span>
                     <span class="stat-val">{{ player.clanWarTrophies | default(0) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">War Day Wins (Lifetime) 🎖️</span>
+                    <span class="stat-val">{{ player.warDayWins | default(0) }}</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">⚔️ Battle Record</div>
+                <div class="stat-row">
+                    <span class="stat-label">Wins / Losses</span>
+                    <span class="stat-val"><span style="color:var(--success)">{{ player.wins | default(0) }}</span> / <span style="color:var(--danger)">{{ player.losses | default(0) }}</span></span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Win Rate</span>
+                    {% set total = (player.wins | default(0)) + (player.losses | default(0)) %}
+                    <span class="stat-val {% if total > 0 and (player.wins / total * 100) >= 50 %}trend-up{% elif total > 0 %}trend-down{% endif %}">
+                        {% if total > 0 %}{{ "%.1f" | format(player.wins / total * 100) }}%{% else %}—{% endif %}
+                    </span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">3-Crown Wins 👑</span>
+                    <span class="stat-val">{{ player.threeCrownWins | default(0) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Total Battles (Lifetime)</span>
+                    <span class="stat-val">{{ player.battleCount | default(0) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Current Streak</span>
+                    <span class="stat-val" id="stat-current-streak">—</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Longest Win Streak 🔥</span>
+                    <span class="stat-val" id="stat-longest-streak">—</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">🃏 Collection &amp; Progress</div>
+                <div class="stat-row">
+                    <span class="stat-label">XP Level ⭐</span>
+                    <span class="stat-val">{{ player.expLevel | default(0) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Star Points</span>
+                    <span class="stat-val">{{ player.starPoints | default(0) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Clan Cards Collected</span>
+                    <span class="stat-val">{{ player.clanCardsCollected | default(0) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Cards Maxed</span>
+                    <span class="stat-val">
+                        {{ player.collection_maxed_count | default(0) }} / {{ player.collection_total_count | default(0) }}
+                        {% if player.collection_total_count %} ({{ "%.0f" | format(player.collection_maxed_count / player.collection_total_count * 100) }}%){% endif %}
+                    </span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Favourite Card 💛</span>
+                    <span class="stat-val">{{ player.currentFavouriteCard.name if player.currentFavouriteCard else '—' }}</span>
                 </div>
             </div>
 
@@ -161,6 +276,17 @@
                 </div>
                 <div id="battles-section" class="battle-log">
                     <div class="battles-loading"><span class="spin">↻</span> Loading battles…</div>
+                </div>
+            </div>
+
+            <!-- ── BATTLE INTELLIGENCE ── -->
+            <div class="card">
+                <div class="card-title">
+                    🧠 Battle Intelligence
+                    <button id="insights-refresh-btn" onclick="loadInsights()" style="font-size:11px; font-family:var(--font-mono); background:none; border:1px solid var(--border); color:var(--dim); padding:3px 10px; border-radius:4px; cursor:pointer; text-transform:uppercase; letter-spacing:1px; transition:all 0.15s;">↻ Refresh</button>
+                </div>
+                <div id="insights-section">
+                    <div class="empty-note"><span class="spin">↻</span> Crunching battle history…</div>
                 </div>
             </div>
 
@@ -205,9 +331,75 @@
 
         </div>
     </div>
+
+    <!-- ── HALL OF FAME (badges) ── -->
+    <div class="card">
+        <div class="card-title">🏅 Hall of Fame</div>
+        {% if player.badges %}
+        <div class="badge-grid">
+            {% for b in player.badges %}
+            <div class="badge-chip" title="{{ b.name | replace('_', ' ') | title }}">
+                <div class="badge-icon-wrap">
+                    {% if b.iconUrls and b.iconUrls.large %}
+                        <img class="badge-icon" src="{{ b.iconUrls.large }}" alt="{{ b.name }}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <span class="badge-icon-placeholder" style="display:none;">🏅</span>
+                    {% else %}
+                        <span class="badge-icon-placeholder">🏅</span>
+                    {% endif %}
+                </div>
+                <div class="badge-name">{{ b.name | replace('_', ' ') | title }}</div>
+                {% if b.level %}<div class="badge-level">Lvl {{ b.level }}{% if b.maxLevel %} / {{ b.maxLevel }}{% endif %}</div>{% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-note">No badges earned yet.</div>
+        {% endif %}
+    </div>
+
+    <!-- ── ACHIEVEMENTS ── -->
+    <div class="card">
+        <div class="card-title">🎯 Achievements</div>
+        {% if player.achievements %}
+        {% for a in player.achievements %}
+        <div class="achv-row">
+            <div class="achv-top">
+                <span class="achv-name">{{ a.name }}{% if a.stars %}<span class="achv-stars">{% for _ in range(a.stars) %}★{% endfor %}</span>{% endif %}</span>
+                <span class="achv-progress-text">
+                    {% if a.target %}{{ a.value | default(0) }} / {{ a.target }}{% else %}{{ a.value | default(0) }}{% endif %}
+                </span>
+            </div>
+            {% if a.target %}
+            <div class="achv-bar-track">
+                <div class="achv-bar-fill" style="width: {{ [((a.value | default(0)) / a.target * 100), 100] | min }}%;"></div>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="empty-note">No achievement data available.</div>
+        {% endif %}
+    </div>
 </div>
 
 <script>
+// CSRF protection: attach the per-session token to every same-origin POST
+// (saveAdminData / addStrike / sendWarningDM all hit /admin/* routes).
+(function() {
+  var meta = document.querySelector('meta[name="csrf-token"]');
+  var token = meta ? meta.content : '';
+  var origFetch = window.fetch;
+  window.fetch = function(input, init) {
+    init = init || {};
+    var method = (init.method || 'GET').toUpperCase();
+    if (method === 'POST') {
+      init.headers = new Headers(init.headers || {});
+      init.headers.set('X-CSRF-Token', token);
+    }
+    return origFetch(input, init);
+  };
+})();
+
 // ── Utilities ──────────────────────────────────────────────────────────────────
 function esc(s) {
     return String(s == null ? '' : s)
@@ -389,8 +581,97 @@ function sendWarningDM(tag) {
     .catch(() => notify(btn, orig, '❌ Error'));
 }
 
+// ── Battle Intelligence ──────────────────────────────────────────────────────────
+function usageRow(item) {
+    var pct = Math.min(100, item.win_rate);
+    return '<div class="usage-row">'
+        + '<span class="usage-name">' + esc(item.card) + '</span>'
+        + '<div class="usage-bar-track"><div class="usage-bar-fill" style="width:' + pct + '%"></div></div>'
+        + '<span class="usage-meta">' + esc(item.games) + ' games · ' + esc(item.win_rate) + '% WR</span>'
+        + '</div>';
+}
+
+async function loadInsights() {
+    var section = document.getElementById('insights-section');
+    var btn = document.getElementById('insights-refresh-btn');
+    if (btn) { btn.disabled = true; }
+    section.innerHTML = '<div class="empty-note"><span class="spin">↻</span> Crunching battle history…</div>';
+
+    var tag = {{ player.tag | tojson }};
+    var cleanTag = tag.replace('#', '');
+
+    try {
+        var res = await fetch('/api/player/' + cleanTag + '/insights');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var d = await res.json();
+
+        document.getElementById('stat-current-streak').textContent = (d.current_streak || 0) > 0 ? (d.current_streak + ' 🔥') : '0';
+        document.getElementById('stat-longest-streak').textContent = d.longest_win_streak != null ? d.longest_win_streak : '—';
+
+        if (!d.total_battles) {
+            section.innerHTML = '<div class="empty-note">No logged battles yet. Run a harvest to start building battle intelligence.</div>';
+            return;
+        }
+
+        var cards = [];
+
+        var superlatives = [];
+        if (d.most_defeated_card) {
+            superlatives.push({
+                label: 'Most Defeated Card',
+                value: esc(d.most_defeated_card.card),
+                sub: d.most_defeated_card.wins + ' wins vs it (' + d.most_defeated_card.win_rate + '% over ' + d.most_defeated_card.encounters + ' games)',
+            });
+        }
+        if (d.toughest_matchup) {
+            superlatives.push({
+                label: 'Toughest Matchup',
+                value: esc(d.toughest_matchup.card),
+                sub: d.toughest_matchup.win_rate + '% win rate over ' + d.toughest_matchup.encounters + ' games',
+            });
+        }
+        if (d.rival) {
+            superlatives.push({
+                label: 'Most Frequent Opponent',
+                value: esc(d.rival.name),
+                sub: 'Record: ' + d.rival.wins + 'W - ' + d.rival.losses + 'L - ' + d.rival.draws + 'D',
+            });
+        }
+        if (d.busiest_day) {
+            superlatives.push({
+                label: 'Busiest Battle Day',
+                value: esc(d.busiest_day.date),
+                sub: d.busiest_day.battles + ' battles logged that day',
+            });
+        }
+
+        if (superlatives.length) {
+            cards.push('<div class="superlative-grid">' + superlatives.map(function(s){
+                return '<div class="superlative-card">'
+                    + '<div class="superlative-label">' + esc(s.label) + '</div>'
+                    + '<div class="superlative-value">' + s.value + '</div>'
+                    + '<div class="superlative-sub">' + esc(s.sub) + '</div>'
+                    + '</div>';
+            }).join('') + '</div>');
+        }
+
+        if (d.most_used_cards && d.most_used_cards.length) {
+            cards.push('<div class="deck-label">Most Used Cards</div>' + d.most_used_cards.map(usageRow).join(''));
+        }
+
+        section.innerHTML = cards.join('') || '<div class="empty-note">Not enough logged battles yet for deeper insights.</div>';
+    } catch(e) {
+        section.innerHTML = '<div class="empty-note">Failed to load battle intelligence: ' + esc(e.message) + '</div>';
+    } finally {
+        if (btn) { btn.disabled = false; }
+    }
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', loadBattles);
+document.addEventListener('DOMContentLoaded', function() {
+    loadBattles();
+    loadInsights();
+});
 </script>
 </body>
 </html>

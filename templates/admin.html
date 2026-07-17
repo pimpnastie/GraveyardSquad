@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="csrf-token" content="{{ csrf_token }}">
 <title>Graveyard HQ | Admin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
@@ -221,10 +222,12 @@
     <button class="nav-btn" onclick="showTab('diag', this)"><span class="nav-icon">🔍</span>Diagnostics</button>
     <button class="nav-btn" onclick="showTab('war', this)"><span class="nav-icon">⚔️</span>War Monitor</button>
     <button class="nav-btn" onclick="showTab('battles', this)"><span class="nav-icon">📜</span>Battle Logs</button>
+    <button class="nav-btn" onclick="showTab('analytics', this); loadAnalytics();"><span class="nav-icon">📊</span>Analytics</button>
     <button class="nav-btn" onclick="showTab('harvest', this)"><span class="nav-icon">📡</span>Harvest Log</button>
     <button class="nav-btn" onclick="showTab('csv', this)"><span class="nav-icon">📄</span>CSV Export</button>
     <button class="nav-btn" onclick="showTab('editor', this)"><span class="nav-icon">🎨</span>UI Editor</button>
     <button class="nav-btn" onclick="showTab('users', this); loadUsers();"><span class="nav-icon">👤</span>User Access</button>
+    <button class="nav-btn" onclick="showTab('settings', this)"><span class="nav-icon">🛠️</span>Settings</button>
     <div class="nav-section">Danger Zone</div>
     <button class="nav-btn" onclick="showTab('admin', this)"><span class="nav-icon">⚙️</span>Admin Tools</button>
   </nav>
@@ -360,6 +363,103 @@
       </div>
     </div>
 
+    <!-- ANALYTICS -->
+    <div class="tab-pane" id="tab-analytics">
+      <div class="page-header">
+        <div class="page-title">Analytics</div>
+        <div class="page-sub">Team Performance &amp; Battle Algorithm Insights</div>
+      </div>
+      <div class="toolbar">
+        <button class="btn-refresh" id="btn-analytics-refresh" onclick="loadAnalytics()">
+          <span id="analytics-spin">↻</span> Refresh
+        </button>
+        <span class="last-refresh" id="analytics-last-refresh">Never refreshed</span>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat-card" id="ov-members"><div class="stat-label">Members</div><div class="stat-value">—</div><div class="stat-note">Live clan size</div></div>
+        <div class="stat-card" id="ov-trophies"><div class="stat-label">Avg Trophies</div><div class="stat-value">—</div><div class="stat-note">Clan average</div></div>
+        <div class="stat-card" id="ov-war"><div class="stat-label">War Participation</div><div class="stat-value">—</div><div class="stat-note">Decks used today</div></div>
+        <div class="stat-card" id="ov-inactive"><div class="stat-label">Inactive Members</div><div class="stat-value">—</div><div class="stat-note">0 donations this season</div></div>
+        <div class="stat-card" id="ov-battles"><div class="stat-label">Battles Logged</div><div class="stat-value">—</div><div class="stat-note">All-time harvested</div></div>
+        <div class="stat-card" id="ov-winrate"><div class="stat-label">Clan Win Rate</div><div class="stat-value">—</div><div class="stat-note">Across all logged battles</div></div>
+      </div>
+
+      <div class="section-label">Leaderboards</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🎁 Top Donators</div></div>
+          <div class="diag-body" id="lb-donators"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">📈 Trophy Climbers (7d)</div></div>
+          <div class="diag-body" id="lb-climbers"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🏅 Win Rate (min 10 battles)</div></div>
+          <div class="diag-body" id="lb-winrate"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">⚔️ War Fame</div></div>
+          <div class="diag-body" id="lb-warfame"></div>
+        </div>
+      </div>
+
+      <div class="section-label">Clan Trend</div>
+      <div class="toolbar">
+        <select class="form-select" id="trend-days" onchange="loadClanTrend()">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="180">Last 180 days</option>
+        </select>
+      </div>
+      <div class="diag-card" style="padding:16px; margin-bottom:28px;">
+        <canvas id="clan-trend-chart" height="80"></canvas>
+      </div>
+
+      <div class="section-label">Member Drill-Down</div>
+      <div class="toolbar">
+        <select class="form-select" id="member-select" onchange="loadMemberTrend()" style="min-width:220px;">
+          <option value="">Select a member…</option>
+        </select>
+      </div>
+      <div class="diag-card" style="padding:16px; margin-bottom:28px;">
+        <canvas id="member-trend-chart" height="80"></canvas>
+      </div>
+
+      <div class="section-label">Battle-Level Card Analysis</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🔥 Top Performing Cards</div></div>
+          <div class="diag-body" style="padding:0;"><table class="war-table" id="tbl-top-cards"><thead><tr><th>Card</th><th>Games</th><th>Win Rate</th></tr></thead><tbody><tr><td colspan="3" style="text-align:center; color:var(--dim); padding:16px;">Refresh to load</td></tr></tbody></table></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">❄️ Underperforming Cards</div></div>
+          <div class="diag-body" style="padding:0;"><table class="war-table" id="tbl-worst-cards"><thead><tr><th>Card</th><th>Games</th><th>Win Rate</th></tr></thead><tbody><tr><td colspan="3" style="text-align:center; color:var(--dim); padding:16px;">Refresh to load</td></tr></tbody></table></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">📊 Battle Type Breakdown</div></div>
+          <div class="diag-body" id="battle-type-breakdown"></div>
+        </div>
+      </div>
+
+      <div class="section-label">Deck Archetypes — "Battle Algorithms"</div>
+      <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-bottom:14px; line-height:1.6;">
+        Groups full 8-card decks actually played in logged battles (not just individual cards), so you can see which whole strategies are winning wars — not just which cards are popular. Minimum 3 games played to qualify for either list.
+      </p>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🏆 Best Win Rate Decks</div></div>
+          <div class="diag-body" style="padding:0; overflow-x:auto;"><table class="war-table" id="tbl-archetype-winrate"><thead><tr><th>Deck</th><th>Games</th><th>Win Rate</th><th>Players</th></tr></thead><tbody><tr><td colspan="4" style="text-align:center; color:var(--dim); padding:16px;">Refresh to load</td></tr></tbody></table></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🔁 Most Used Decks</div></div>
+          <div class="diag-body" style="padding:0; overflow-x:auto;"><table class="war-table" id="tbl-archetype-usage"><thead><tr><th>Deck</th><th>Games</th><th>Win Rate</th><th>Players</th></tr></thead><tbody><tr><td colspan="4" style="text-align:center; color:var(--dim); padding:16px;">Refresh to load</td></tr></tbody></table></div>
+        </div>
+      </div>
+    </div>
+
     <!-- HARVEST LOG -->
     <div class="tab-pane" id="tab-harvest">
       <div class="page-header">
@@ -462,6 +562,7 @@
         <div class="page-sub">Manage Site Administration Privileges</div>
       </div>
       <form method="POST" action="/admin/users/update" class="diag-card" style="padding:20px; max-width: 400px; margin-bottom: 24px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div style="margin-bottom: 15px;">
           <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">Discord User ID</label>
           <input type="text" name="discord_id" placeholder="e.g. 123456789012345678" class="form-input" style="width: 100%; margin-top: 5px;" required>
@@ -484,6 +585,96 @@
             <tr><td colspan="5" style="text-align:center; padding:24px; color:var(--dim);">Loading user roster...</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="tab-pane" id="tab-settings">
+      <div class="page-header">
+        <div class="page-title">Settings</div>
+        <div class="page-sub">Bot &amp; Site Configuration — takes effect within 30s</div>
+      </div>
+
+      <div class="section-label">Bot behavior</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Command Prefix</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">The character(s) that trigger bot commands in Discord (e.g. <code>!</code>).</p>
+            <input type="text" id="set-command-prefix" class="form-input" maxlength="3" placeholder="!" value="{{ bot_settings.command_prefix or '!' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Maintenance Mode</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Blocks all bot commands clan-wide. Use during maintenance or incidents.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-maintenance-mode" {% if bot_settings.maintenance_mode %}checked{% endif %}> Enabled
+            </label>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">War Nudge Channel</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Discord channel ID where the bot posts war nudge mentions.</p>
+            <input type="text" id="set-war-channel" class="form-input" placeholder="e.g. 987654321098765432" value="{{ bot_settings.war_channel_id or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Automated War-Deck Pings</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Automatically DM members who still have war decks left as the day winds down.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-auto-pings" {% if bot_settings.feature_auto_pings %}checked{% endif %}> Enabled
+            </label>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Ignored / Muted Channels</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Comma-separated channel IDs where public text commands are silenced.</p>
+            <input type="text" id="set-ignored-channels" class="form-input" placeholder="e.g. 1122334455, 6677889900" value="{{ bot_settings.ignored_channels | join(', ') if bot_settings.ignored_channels else '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Automated War Reminders</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Post a reminder in the war channel when a River Race day begins.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-war-reminders" {% if bot_settings.war_reminders %}checked{% endif %}> Enabled
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-label">Recruitment &amp; access</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Minimum Recruitment Trophies</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Informational threshold shown on the link/join page.</p>
+            <input type="number" id="set-min-trophies" class="form-input" value="{{ bot_settings.min_trophies or 6500 }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Custom Welcome Message</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Sent to new members when they link their account.</p>
+            <input type="text" id="set-welcome-msg" class="form-input" maxlength="500" value="{{ bot_settings.welcome_msg or 'Welcome to the Squad!' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Authorized Admin Role IDs</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Comma-separated Discord role IDs granted admin access, in addition to individually-promoted users on the User Access tab.</p>
+            <input type="text" id="set-admin-roles" class="form-input" placeholder="e.g. 11223344, 55667788" value="{{ system_config.admin_role_ids | join(', ') if system_config.admin_role_ids else '' }}">
+          </div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button class="btn-refresh" onclick="saveBotSettings()" id="settings-save-btn">💾 Save All Settings</button>
+        <span class="last-refresh" id="settings-save-status"></span>
       </div>
     </div>
 
@@ -534,7 +725,25 @@
 
 <div class="toast-wrap" id="toast-wrap"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <script>
+// CSRF protection: attach the per-session token to every same-origin POST made
+// from this page, so admin.py's before_request check has something to verify
+// without having to edit each of the fetch()/FormData call sites individually.
+(function() {
+  var token = document.querySelector('meta[name="csrf-token"]').content;
+  var origFetch = window.fetch;
+  window.fetch = function(input, init) {
+    init = init || {};
+    var method = (init.method || 'GET').toUpperCase();
+    if (method === 'POST') {
+      init.headers = new Headers(init.headers || {});
+      init.headers.set('X-CSRF-Token', token);
+    }
+    return origFetch(input, init);
+  };
+})();
+
 var allBattles = [], filteredBattles = [], _logLines = [];
 var editorOriginal = '', editorDirty = false, editorDeploying = false, editorTemplateName = '';
 
@@ -695,6 +904,188 @@ function renderDiagnostics(d) {
   appendLog('Diagnostics render complete.', 'ok');
 }
 
+// ── Analytics ──────────────────────────────────────────────────────────────────
+async function loadAnalytics() {
+  var btn = document.getElementById('btn-analytics-refresh');
+  var spin = document.getElementById('analytics-spin');
+  btn.disabled = true; spin.className = 'spin';
+  try {
+    const [overview, leaderboards, battles, archetypes] = await Promise.all([
+      fetch('/admin/api/analytics/overview').then(function(r){ return r.json(); }),
+      fetch('/admin/api/analytics/leaderboards').then(function(r){ return r.json(); }),
+      fetch('/admin/api/analytics/battles').then(function(r){ return r.json(); }),
+      fetch('/admin/api/analytics/archetypes').then(function(r){ return r.json(); }),
+    ]);
+    renderAnalyticsOverview(overview);
+    renderLeaderboards(leaderboards);
+    renderBattleAnalysis(battles);
+    renderArchetypes(archetypes);
+    await loadClanTrend();
+    await populateMemberSelect();
+    document.getElementById('analytics-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
+    toast('Analytics refreshed.', 'ok');
+  } catch(e) {
+    toast('Failed to load analytics: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; spin.className = '';
+  }
+}
+
+function renderAnalyticsOverview(d) {
+  setStatCard('ov-members', d.member_count != null ? d.member_count : '—', 'Live clan size', 'ok');
+  setStatCard('ov-trophies', d.avg_trophies != null ? d.avg_trophies : '—', 'Clan average', 'ok');
+  var warPct = d.war_participation_pct || 0;
+  setStatCard('ov-war', warPct + '%', 'Decks used today', warPct >= 75 ? 'ok' : (warPct >= 40 ? 'warn' : 'err'));
+  var inactive = d.inactive_members || 0;
+  setStatCard('ov-inactive', inactive, '0 donations this season', inactive > 0 ? 'warn' : 'ok');
+  setStatCard('ov-battles', d.battles_logged != null ? d.battles_logged : '—', 'All-time harvested', 'ok');
+  var winRate = d.overall_win_rate || 0;
+  setStatCard('ov-winrate', winRate + '%', 'Across all logged battles', winRate >= 50 ? 'ok' : 'warn');
+}
+
+function renderLeaderboardList(elId, items, valueSuffix) {
+  var el = document.getElementById(elId);
+  if (!items || !items.length) { el.innerHTML = renderRows([['No data yet', '—']]); return; }
+  el.innerHTML = items.map(function(it, i){
+    var label = '#' + (i+1) + ' ' + (it.name || it.tag || 'Unknown');
+    return '<div class="diag-row"><span class="diag-key">' + esc(label) + '</span>'
+      + '<span class="diag-val" style="color:var(--accent); font-weight:700;">' + esc(it.value) + (valueSuffix||'') + '</span></div>';
+  }).join('');
+}
+
+function renderLeaderboards(d) {
+  renderLeaderboardList('lb-donators', d.top_donators, '');
+  renderLeaderboardList('lb-climbers', d.top_climbers, '');
+  renderLeaderboardList('lb-winrate', d.top_win_rate, '%');
+  renderLeaderboardList('lb-warfame', d.top_war_fame, '');
+}
+
+function renderBattleAnalysis(d) {
+  function rowsFor(cards) {
+    if (!cards || !cards.length) return '<tr><td colspan="3" style="text-align:center; color:var(--dim); padding:16px;">Not enough data yet</td></tr>';
+    return cards.map(function(c){
+      var color = c.win_rate >= 50 ? 'var(--ok)' : 'var(--err)';
+      return '<tr><td><strong>' + esc(c.card) + '</strong></td><td>' + esc(c.games) + '</td>'
+        + '<td style="color:' + color + '; font-weight:700;">' + esc(c.win_rate) + '%</td></tr>';
+    }).join('');
+  }
+  document.querySelector('#tbl-top-cards tbody').innerHTML = rowsFor(d.top_cards);
+  document.querySelector('#tbl-worst-cards tbody').innerHTML = rowsFor(d.worst_cards);
+
+  var breakdown = d.battle_type_breakdown || {};
+  var keys = Object.keys(breakdown);
+  var total = keys.reduce(function(sum, k){ return sum + breakdown[k]; }, 0) || 1;
+  var el = document.getElementById('battle-type-breakdown');
+  el.innerHTML = keys.length ? keys.map(function(k){
+    var pct = Math.round(breakdown[k] / total * 100);
+    return '<div class="diag-row" style="flex-direction:column; align-items:stretch; gap:4px; padding:8px 0;">'
+      + '<div style="display:flex; justify-content:space-between;"><span class="diag-key">' + esc(k) + '</span>'
+      + '<span class="diag-val">' + esc(breakdown[k]) + ' (' + pct + '%)</span></div>'
+      + '<div class="deck-bar" style="max-width:none;"><div class="deck-bar-fill" style="width:' + pct + '%"></div></div></div>';
+  }).join('') : renderRows([['No data yet', '—']]);
+}
+
+function deckLabel(cards) { return (cards || []).join(', '); }
+
+function renderArchetypeTable(tableId, rows) {
+  var body = document.querySelector('#' + tableId + ' tbody');
+  if (!rows || !rows.length) {
+    body.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--dim); padding:16px;">Not enough repeated decks yet — need more logged battles</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(function(a){
+    var color = a.win_rate >= 50 ? 'var(--ok)' : 'var(--err)';
+    var label = deckLabel(a.cards);
+    return '<tr><td style="max-width:340px; font-size:11px; color:var(--dim);" title="' + esc(label) + '">' + esc(label) + '</td>'
+      + '<td>' + esc(a.games) + '</td>'
+      + '<td style="color:' + color + '; font-weight:700;">' + esc(a.win_rate) + '%</td>'
+      + '<td>' + esc(a.unique_players) + '</td></tr>';
+  }).join('');
+}
+
+function renderArchetypes(d) {
+  renderArchetypeTable('tbl-archetype-winrate', d.top_by_win_rate);
+  renderArchetypeTable('tbl-archetype-usage', d.top_by_usage);
+}
+
+var clanTrendChart = null;
+async function loadClanTrend() {
+  var days = document.getElementById('trend-days').value;
+  var res = await fetch('/admin/api/analytics/clan-trend?days=' + encodeURIComponent(days));
+  var docs = await res.json();
+  var labels = docs.map(function(d){ return (d.timestamp || '').substring(0, 10); });
+  var trophyData = docs.map(function(d){ return d.clanScore || 0; });
+  var memberData = docs.map(function(d){ return d.memberCount || 0; });
+  var ctx = document.getElementById('clan-trend-chart').getContext('2d');
+  if (clanTrendChart) clanTrendChart.destroy();
+  if (typeof Chart === 'undefined') return;
+  clanTrendChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        { label: 'Clan Score', data: trophyData, borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)', yAxisID: 'y', tension: 0.25 },
+        { label: 'Member Count', data: memberData, borderColor: '#ffaa00', backgroundColor: 'rgba(255,170,0,0.08)', yAxisID: 'y1', tension: 0.25 },
+      ]
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y:  { position: 'left',  ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        y1: { position: 'right', ticks: { color: '#c9d1d9' }, grid: { drawOnChartArea: false } },
+        x:  { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+      },
+      plugins: { legend: { labels: { color: '#c9d1d9' } } },
+    }
+  });
+}
+
+async function populateMemberSelect() {
+  var sel = document.getElementById('member-select');
+  if (sel.dataset.loaded) return;
+  try {
+    var res = await fetch('/admin/api/roster');
+    var members = await res.json();
+    sel.innerHTML = '<option value="">Select a member…</option>' + members.map(function(m){
+      var tag = (m.tag || '').replace('#', '');
+      return '<option value="' + esc(tag) + '">' + esc(m.name) + '</option>';
+    }).join('');
+    sel.dataset.loaded = '1';
+  } catch(e) {
+    // Non-fatal — the member dropdown just stays empty; roster tab surfaces the real error.
+  }
+}
+
+var memberTrendChart = null;
+async function loadMemberTrend() {
+  var tag = document.getElementById('member-select').value;
+  var ctx = document.getElementById('member-trend-chart').getContext('2d');
+  if (memberTrendChart) { memberTrendChart.destroy(); memberTrendChart = null; }
+  if (!tag || typeof Chart === 'undefined') return;
+  var res = await fetch('/admin/api/analytics/member/' + encodeURIComponent(tag) + '/trend?days=30');
+  var docs = await res.json();
+  var labels = docs.map(function(d){ return d.date; });
+  memberTrendChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        { label: 'Trophies', data: docs.map(function(d){ return d.trophies || 0; }), borderColor: '#00e096', backgroundColor: 'rgba(0,224,150,0.08)', tension: 0.25 },
+        { label: 'Donations', data: docs.map(function(d){ return d.donations || 0; }), borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)', tension: 0.25 },
+      ]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        x: { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+      },
+      plugins: { legend: { labels: { color: '#c9d1d9' } } },
+    }
+  });
+}
+
 // ── War ────────────────────────────────────────────────────────────────────────
 async function loadWar() {
   var content = document.getElementById('war-content');
@@ -835,6 +1226,39 @@ async function loadUsers() {
 }
 
 // ── Harvest ────────────────────────────────────────────────────────────────────
+async function saveBotSettings() {
+  var btn = document.getElementById('settings-save-btn');
+  var status = document.getElementById('settings-save-status');
+  var payload = {
+    command_prefix:    document.getElementById('set-command-prefix').value,
+    maintenance_mode:  document.getElementById('set-maintenance-mode').checked,
+    war_channel_id:    document.getElementById('set-war-channel').value.trim(),
+    feature_auto_pings: document.getElementById('set-auto-pings').checked,
+    ignored_channels:  document.getElementById('set-ignored-channels').value,
+    war_reminders:     document.getElementById('set-war-reminders').checked,
+    min_trophies:       parseInt(document.getElementById('set-min-trophies').value, 10) || 0,
+    welcome_msg:        document.getElementById('set-welcome-msg').value,
+    admin_role_ids:     document.getElementById('set-admin-roles').value,
+  };
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    var res = await fetch('/admin/api/settings/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+    toast('Settings saved.', 'ok');
+    status.textContent = 'Saved ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    toast('Save failed: ' + e.message, 'err');
+    status.textContent = '';
+  } finally {
+    btn.disabled = false; btn.textContent = '💾 Save All Settings';
+  }
+}
+
 async function triggerManualHarvest() {
   if (!confirm('Force snapshot generation? This will execute the daily loop immediately.')) return;
   try {
