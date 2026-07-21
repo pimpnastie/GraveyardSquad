@@ -1250,6 +1250,14 @@
             <button class="btn-danger" onclick="confirmFlushCache()">⚠ Flush CR Cache</button>
           </div>
         </div>
+        <div class="diag-card diag-card-danger">
+          <div class="diag-card-header"><div class="diag-card-title">🧹 Fix battle_history Index Error</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">If your deploy logs show "duplicate key error ... unique_battle_id: null", click this once — it deletes the bad null-ID records and rebuilds the index immediately, no redeploy needed.</p>
+            <button class="btn-danger" onclick="confirmCleanupBattleHistoryNulls()">⚠ Clean Up &amp; Rebuild Index</button>
+            <div id="cleanup-battle-nulls-status" style="font-size:12px; font-family:var(--font-mono);"></div>
+          </div>
+        </div>
         <div class="diag-card">
           <div class="diag-card-header"><div class="diag-card-title">🩺 Health Check API</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
@@ -2816,6 +2824,26 @@ async function confirmFlushCache() {
   } catch(e) {
     toast('Flush failed: ' + e.message, 'err');
     appendLog('Flush error: ' + e.message, 'err');
+  }
+}
+
+async function confirmCleanupBattleHistoryNulls() {
+  if (!confirm('Delete battle_history records with a missing/null unique_battle_id and rebuild that index? This only removes the broken duplicate-null records causing the boot-time index error.')) return;
+  var statusEl = document.getElementById('cleanup-battle-nulls-status');
+  statusEl.textContent = 'Working…';
+  try {
+    var res = await fetch('/admin/api/cleanup/battle-history-nulls', { method: 'POST' });
+    var data = await res.json();
+    // Idea #146: a stale session gets a friendly re-login prompt instead of a raw HTTP error.
+    if (res.status === 401 && data.error === 'reauth_required') { toast(data.message, 'err'); statusEl.textContent = ''; return; }
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    toast(data.message || 'Cleanup complete.', data.index_rebuilt ? 'ok' : 'warn');
+    statusEl.textContent = data.message || '';
+    appendLog('battle_history null cleanup: deleted ' + data.deleted_count + ', index_rebuilt=' + data.index_rebuilt, 'warn');
+  } catch(e) {
+    toast('Cleanup failed: ' + e.message, 'err');
+    statusEl.textContent = '';
+    appendLog('Cleanup error: ' + e.message, 'err');
   }
 }
 

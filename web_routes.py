@@ -1166,6 +1166,41 @@ def admin_flush_cache():
     log_admin_activity("Flushed cache")
     return jsonify({"message": "Cache flushed."})
 
+@web_bp.route("/admin/api/cleanup/battle-history-nulls", methods=["POST"])
+def admin_cleanup_battle_history_nulls():
+    """Fixes the recurring boot-time error: 'Failed to create index unique_battle_id
+    ... E11000 duplicate key ... unique_battle_id: null'. That index can't build
+    while multiple battle_history docs have a null/missing unique_battle_id (a
+    unique index rejects duplicate nulls same as any other duplicate value).
+    Deletes those specific bad records, then immediately re-runs the harvester's
+    _ensure_indexes() so the index gets built right away rather than needing a
+    full redeploy/restart to notice it succeeded. Same sensitive-action gate as
+    /admin/flush-cache above since this deletes data (nothing that isn't already
+    corrupt/unusable — a null unique_battle_id can never be queried by battle_time
+    for that record's own player anyway — but still a delete, so full-admin +
+    fresh-login only)."""
+    if not has_full_admin(): return jsonify({"error": "unauthorized — this requires full-admin tier"}), 403
+    if not require_recent_login():
+        return jsonify({"error": "reauth_required", "message": "Please log in again to confirm this sensitive action."}), 401
+
+    result = db_sync["battle_history"].delete_many({"unique_battle_id": None})
+
+    get_harvester()._ensure_indexes()
+    index_now_exists = "unique_battle_id_1" in db_sync["battle_history"].index_information()
+
+    log_admin_activity("Cleaned up battle_history null unique_battle_id records",
+                        details=f"deleted={result.deleted_count}, index_rebuilt={index_now_exists}")
+    return jsonify({
+        "success": True,
+        "deleted_count": result.deleted_count,
+        "index_rebuilt": index_now_exists,
+        "message": (
+            f"Deleted {result.deleted_count} bad record(s). "
+            + ("The unique_battle_id index is now active." if index_now_exists
+               else "Index still didn't build — there may be non-null duplicates too; check the server log for details.")
+        ),
+    })
+
 @web_bp.route("/admin/api/player/link", methods=["POST"])
 def admin_manual_link():
     """Manually associate a Discord ID with a player tag (admin.html's manualLinkDiscord)."""
