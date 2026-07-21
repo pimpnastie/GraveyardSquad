@@ -1,0 +1,163 @@
+/*
+ * theme.css — shared design tokens & components for Graveyard Squad
+ * (250_IDEAS.md section 11: Design system & visual polish, items 176-190)
+ *
+ * Idea #176: a single shared source of truth for the CSS custom properties
+ * that roster.html, player.html, link.html, and admin.html each used to
+ * redefine independently in their own :root blocks. Each template still
+ * keeps a local :root for page-specific extras, but the canonical palette,
+ * spacing scale, and shared components now live here, loaded via
+ * <link rel="stylesheet" href="/static/theme.css"> before each page's own
+ * <style> block (so a page's local :root can still override a token if it
+ * genuinely needs to, but no longer has to redeclare the whole palette).
+ *
+ * Idea #178: this file (plus STYLE_GUIDE.md) is the documentation of the
+ * color tokens, spacing scale, and type scale referenced there.
+ */
+
+:root {
+  /* --- Color tokens (shared across all four templates) --- */
+  --gy-bg:        #0b0c10;
+  --gy-surface:   #111418;
+  --gy-panel:     #111820;
+  --gy-border:    #1e2530;
+  --gy-accent:    #00e5ff;
+  --gy-ok:        #00e096;
+  --gy-warn:      #ffaa00;
+  --gy-err:       #ff3d71;
+  --gy-text:      #c5c6c7;
+  --gy-dim:       #888;
+  --gy-text-bright: #f0f0f0; /* idea #171: off-white instead of pure white */
+
+  /* --- Spacing scale (idea #185) — standardizes the 8/10/12/14/16/20/24px
+     values that were scattered ad hoc through each template's CSS. New
+     components in this file use these tokens; existing per-page rules are
+     left as-is to avoid a risky full rewrite, but should migrate here over
+     time. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* --- Type scale (idea #178) --- */
+  --font-mono: 'Share Tech Mono', monospace;
+  --font-ui:   'Barlow Condensed', sans-serif;
+  --text-xs:  11px;
+  --text-sm:  13px;
+  --text-md:  15px;
+  --text-lg:  20px;
+  --text-xl:  28px;
+}
+
+/* Idea #187: light theme override. Toggled by adding data-theme="light" to
+   <html> (see the toggleTheme() JS added to each page); dark stays default. */
+html[data-theme="light"] {
+  --gy-bg:        #f4f5f7;
+  --gy-surface:   #ffffff;
+  --gy-panel:     #ffffff;
+  --gy-border:    #d7dbe0;
+  --gy-text:      #23272e;
+  --gy-dim:       #6b7280;
+  --gy-text-bright: #0b0c10;
+}
+html[data-theme="light"] body { background: var(--gy-bg); }
+
+.theme-toggle-btn {
+  background: none; border: 1px solid var(--gy-border, #1e2530); border-radius: 4px;
+  color: var(--gy-dim, #888); font-size: 14px; padding: 4px 10px; cursor: pointer;
+}
+.theme-toggle-btn:hover { color: var(--gy-text-bright, #f0f0f0); }
+
+/* Idea #182: a shared button base. Existing button classes
+   (.btn-refresh/.btn-danger/.btn-strike/.btn-dm/.btn-save/...) are left in
+   place so nothing visually regresses; this base class is meant for new
+   buttons going forward and can be added alongside an existing class
+   (class="btn btn-refresh") to pick up the shared focus/active handling. */
+.btn {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: 4px; border: 1px solid var(--gy-border);
+  font-family: var(--font-ui); font-weight: 700; font-size: var(--text-sm);
+  letter-spacing: 0.5px; text-transform: uppercase; cursor: pointer;
+  background: rgba(255,255,255,0.04); color: var(--gy-text);
+  transition: background .15s, opacity .15s, transform .1s;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Idea #190: every interactive control gets a distinct :active state, not
+   just :hover — a quick "press" feedback via scale, on top of whatever
+   hover/focus-visible treatment the element already defines. */
+button:not(:disabled):active,
+.btn:not(:disabled):active,
+a.btn:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+/* Idea #177: one documented card pattern. admin.html's .diag-card and the
+   public pages' various "dash-card"/panel blocks are visually near-identical
+   but were built independently — .card is the consolidated version new
+   panels should use. */
+.card {
+  background: var(--gy-panel); border: 1px solid var(--gy-border);
+  border-radius: 6px; padding: var(--space-4);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+}
+.card-title {
+  font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: 2px;
+  text-transform: uppercase; color: var(--gy-accent); margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2); border-bottom: 1px solid var(--gy-border);
+}
+
+/* Idea #186: a subtle "freshness" glow on stat cards, based on a
+   data-fresh="true|false" attribute set by each page's own JS once it knows
+   how old the underlying data is (e.g. last harvest run < 1hr old). */
+.card[data-fresh="true"], .stat-card[data-fresh="true"] {
+  box-shadow: 0 0 0 1px rgba(0,224,150,0.35), 0 4px 15px rgba(0,0,0,0.3);
+}
+.card[data-fresh="false"], .stat-card[data-fresh="false"] {
+  box-shadow: 0 0 0 1px rgba(255,170,0,0.25), 0 4px 15px rgba(0,0,0,0.3);
+}
+.freshness-label {
+  font-family: var(--font-mono); font-size: 10px; color: var(--gy-dim);
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 4px;
+}
+.freshness-label.fresh::before { content: '●'; color: var(--gy-ok); }
+.freshness-label.stale::before { content: '●'; color: var(--gy-warn); }
+
+/* Idea #180: reusable empty-state component (icon + heading + subtext)
+   instead of a bare "No battles found" text line. */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: var(--space-6) var(--space-4); color: var(--gy-dim);
+}
+.empty-state-icon { font-size: 32px; margin-bottom: var(--space-2); opacity: 0.7; }
+.empty-state-title { font-weight: 700; color: var(--gy-text); margin-bottom: 4px; font-size: var(--text-md); }
+.empty-state-sub { font-size: var(--text-sm); }
+
+/* Idea #181: skeleton loading placeholders instead of a spinner + "Loading…"
+   text line, for a more modern perceived-performance feel. */
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.09) 37%, rgba(255,255,255,0.04) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+  border-radius: 4px;
+}
+.skeleton-line { height: 14px; margin-bottom: 8px; }
+.skeleton-line.w-60 { width: 60%; }
+.skeleton-line.w-80 { width: 80%; }
+.skeleton-line.w-40 { width: 40%; }
+@keyframes skeleton-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; opacity: 0.6; }
+}
+
+/* Idea #179: consistent sizing/baseline for the emoji-as-icon approach used
+   throughout instead of a real icon font — keeps the playful tone but stops
+   size/weight from drifting instance to instance. See STYLE_GUIDE.md for the
+   agreed emoji-to-concept mapping. */
+.icon { display: inline-block; font-size: 1em; line-height: 1; vertical-align: -0.1em; }

@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="csrf-token" content="{{ csrf_token }}">
-<title>Graveyard HQ | Admin</title>
+<title>Admin | Graveyard Squad</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/theme.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
@@ -21,9 +23,48 @@
     --dim:       #4a5568;
     --font-mono: 'Share Tech Mono', monospace;
     --font-ui:   'Barlow Condensed', sans-serif;
+    --text-bright: #f0f0f0; /* idea #171: off-white instead of pure white */
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: 15px; min-height: 100vh; display: flex; flex-direction: column; }
+
+  /* Idea #166: visible, consistent focus outlines for keyboard navigation. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Idea #168: respect prefers-reduced-motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+    }
+  }
+
+  /* Idea #167: skip-to-content link. */
+  .skip-link {
+    position: absolute; left: -9999px; top: 0; background: var(--accent); color: #000;
+    padding: 10px 16px; z-index: 10000; font-weight: bold; border-radius: 0 0 6px 0;
+  }
+  .skip-link:focus { left: 0; }
+
+  /* Idea #164: visually-hidden but screen-reader-accessible label. */
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
+
+  /* Idea #161: sidebar collapses to an off-canvas drawer under ~900px, toggled
+     via the hamburger button that appears in the topbar at that width. */
+  .hamburger-btn { display: none; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 18px; padding: 4px 10px; cursor: pointer; }
+  @media (max-width: 900px) {
+    .hamburger-btn { display: inline-block; }
+    .sidebar {
+      position: fixed; left: 0; top: 53px; bottom: 0; z-index: 200;
+      transform: translateX(-100%); transition: transform .2s ease; box-shadow: 4px 0 20px rgba(0,0,0,0.4);
+    }
+    .sidebar.open { transform: translateX(0); }
+    .sidebar-backdrop { display: none; position: fixed; inset: 53px 0 0 0; background: rgba(0,0,0,0.5); z-index: 199; }
+    .sidebar-backdrop.open { display: block; }
+  }
   .topbar { display: flex; align-items: center; gap: 16px; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
   .topbar-title { font-size: 22px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); text-shadow: 0 0 18px rgba(0,229,255,0.35); flex: 1; }
   .topbar-title span { color: var(--dim); font-weight: 400; }
@@ -41,7 +82,7 @@
   .tab-pane { display: none; }
   .tab-pane.active { display: block; }
   .page-header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 14px; }
-  .page-title { font-size: 28px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #fff; }
+  .page-title { font-size: 28px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-bright); }
   .page-sub { font-family: var(--font-mono); font-size: 12px; color: var(--dim); letter-spacing: 1px; }
   .stat-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-bottom: 28px; }
   .stat-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px 18px; position: relative; overflow: hidden; }
@@ -50,7 +91,7 @@
   .stat-card.warn::before { background: var(--warn); }
   .stat-card.err::before  { background: var(--err);  }
   .stat-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 2px; color: var(--dim); text-transform: uppercase; margin-bottom: 8px; }
-  .stat-value { font-family: var(--font-mono); font-size: 26px; font-weight: 700; color: #fff; line-height: 1; }
+  .stat-value { font-family: var(--font-mono); font-size: 26px; font-weight: 700; color: var(--text-bright); line-height: 1; }
   .stat-value.ok   { color: var(--ok);   }
   .stat-value.warn { color: var(--warn); }
   .stat-value.err  { color: var(--err);  }
@@ -58,7 +99,7 @@
   .diag-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; margin-bottom: 28px; }
   .diag-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
   .diag-card-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); }
-  .diag-card-title { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #fff; }
+  .diag-card-title { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-bright); }
   .status-pill { font-family: var(--font-mono); font-size: 10px; padding: 3px 9px; border-radius: 20px; letter-spacing: 1px; text-transform: uppercase; font-weight: 700; }
   .pill-ok      { background: rgba(0,224,150,0.12);  color: var(--ok);   border: 1px solid rgba(0,224,150,0.3); }
   .pill-warn    { background: rgba(255,170,0,0.12);  color: var(--warn); border: 1px solid rgba(255,170,0,0.3); }
@@ -88,7 +129,7 @@
   .war-table th { text-align: left; font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); padding: 8px 12px; border-bottom: 1px solid var(--border); }
   .war-table td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); color: var(--text); vertical-align: middle; }
   .war-table tr:hover td { background: rgba(255,255,255,0.03); }
-  .form-input, .form-select { padding: 8px 12px; background: #050709; color: #fff; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono); font-size: 12px; outline: none; transition: border-color .15s; }
+  .form-input, .form-select { padding: 8px 12px; background: #050709; color: var(--text-bright); border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono); font-size: 12px; outline: none; transition: border-color .15s; }
   .form-input:focus, .form-select:focus { border-color: var(--accent); }
   .form-input::placeholder { color: var(--dim); }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
@@ -106,6 +147,10 @@
   .editor-btn-load:hover:not(:disabled)    { background: rgba(0,229,255,0.16); }
   .editor-btn-deploy  { background: rgba(0,224,150,0.07);   border-color: var(--ok);     color: var(--ok);     }
   .editor-btn-deploy:hover:not(:disabled)  { background: rgba(0,224,150,0.16); }
+  /* Idea #78: a distinct visual treatment for destructive/high-consequence actions,
+     separate from routine buttons (which already have their own color coding). */
+  .diag-card-danger { border: 1px dashed var(--err) !important; background: rgba(255,61,113,0.03); }
+  .diag-card-danger .diag-card-title { color: var(--err); }
   .editor-btn-preview { background: rgba(241,196,15,0.07);  border-color: #f1c40f;       color: #f1c40f;       }
   .editor-btn-preview:hover:not(:disabled) { background: rgba(241,196,15,0.16); }
   .editor-btn-reset   { background: rgba(255,61,113,0.07);  border-color: var(--err);    color: var(--err);    }
@@ -139,9 +184,9 @@
   .modal.open { display: flex; }
   .modal-content { background: var(--panel); width: 640px; max-width: 94vw; max-height: 82vh; border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
   .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); }
-  .modal-header h3 { font-size: 14px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #fff; }
+  .modal-header h3 { font-size: 14px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-bright); }
   .modal-close { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 18px; padding: 2px 6px; border-radius: 4px; transition: color .15s; }
-  .modal-close:hover { color: #fff; }
+  .modal-close:hover { color: var(--text-bright); }
   .modal-body { padding: 20px; overflow-y: auto; }
   .card-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
   .card-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 11px; font-family: var(--font-mono); text-align: center; color: var(--text); }
@@ -162,8 +207,8 @@
   .roster-card.has-strikes-3 { border-left: 3px solid var(--err); }
   .roster-row { display: flex; align-items: center; gap: 16px; padding: 12px 16px; cursor: pointer; flex-wrap: wrap; }
   .roster-row:hover { background: rgba(255,255,255,0.02); }
-  .roster-name { font-size: 15px; font-weight: 700; color: #fff; min-width: 160px; flex: 1; }
-  .roster-name a { color: #fff; text-decoration: none; }
+  .roster-name { font-size: 15px; font-weight: 700; color: var(--text-bright); min-width: 160px; flex: 1; }
+  .roster-name a { color: var(--text-bright); text-decoration: none; }
   .roster-name a:hover { color: var(--accent); }
   .roster-role { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: 2px 8px; border-radius: 3px; background: rgba(255,255,255,0.06); color: var(--dim); white-space: nowrap; }
   .roster-role.leader   { color: #f1c40f; border: 1px solid rgba(241,196,15,0.3); }
@@ -209,17 +254,40 @@
 </style>
 </head>
 <body>
+<a href="#main-content" class="skip-link">Skip to main content</a>
 <header class="topbar">
+  <button class="hamburger-btn" id="sidebarToggleBtn" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="adminSidebar" onclick="toggleSidebar()">☰</button>
   <div class="topbar-title">☠ Graveyard <span>HQ</span></div>
   <span class="topbar-badge">CLAN: #{{ clan_tag }}</span>
+  <!-- Idea #187: dark/light theme toggle; dark stays the default. -->
+  <button type="button" class="theme-toggle-btn" id="themeToggleBtn" onclick="toggleTheme()" aria-label="Toggle light/dark theme">🌙</button>
   <a href="/">← Roster</a>
   <a href="/logout">Logout</a>
 </header>
+<!-- Idea #75: dismissible onboarding checklist for brand-new admins -->
+<div id="onboarding-banner" style="display:none; background:rgba(0,229,255,0.06); border-bottom:1px solid var(--accent); padding:12px 24px; font-size:13px;">
+  <strong>👋 New here?</strong> Quick checklist:
+  <label style="margin-left:12px;"><input type="checkbox" id="ob-1" onchange="saveOnboardingProgress()"> Connect a Discord admin role (Settings)</label>
+  <label style="margin-left:12px;"><input type="checkbox" id="ob-2" onchange="saveOnboardingProgress()"> Set the war channel (Settings)</label>
+  <label style="margin-left:12px;"><input type="checkbox" id="ob-3" onchange="saveOnboardingProgress()"> Deploy the current templates once (UI Editor)</label>
+  <button class="btn-refresh" style="float:right; padding:2px 10px;" onclick="dismissOnboarding()">Dismiss</button>
+</div>
+
+<!-- Idea #70: maintenance-mode-left-on warning -->
+<div id="maintenance-warning-banner" style="display:none; background:rgba(255,61,113,0.1); border-bottom:1px solid var(--err); color:var(--err); padding:10px 24px; font-size:13px; font-family:var(--font-mono);"></div>
+
 <div class="shell">
-  <nav class="sidebar">
+  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleSidebar(false)"></div>
+  <nav class="sidebar" id="adminSidebar">
+    <!-- Idea #61: global search across roster/battles/settings, jumps to the right tab -->
+    <div style="padding:0 12px 10px;">
+      <label for="global-search" class="visually-hidden">Search roster, battles, and settings</label>
+      <input type="text" id="global-search" class="form-input" placeholder="🔍 Search (press /)" style="width:100%; font-size:12px;" onkeydown="if(event.key==='Enter') runGlobalSearch();">
+      <div id="global-search-results" style="display:none; background:var(--panel); border:1px solid var(--border); border-radius:6px; margin-top:6px; max-height:240px; overflow-y:auto; font-size:12px;"></div>
+    </div>
     <div class="nav-section">Navigation</div>
     <button class="nav-btn active" onclick="showTab('roster', this); loadRoster();"><span class="nav-icon">🛡️</span>Roster</button>
-    <button class="nav-btn" onclick="showTab('diag', this)"><span class="nav-icon">🔍</span>Diagnostics</button>
+    <button class="nav-btn" onclick="showTab('diag', this); loadSecretRotation(); loadConfigBackups();"><span class="nav-icon">🔍</span>Diagnostics</button>
     <button class="nav-btn" onclick="showTab('war', this)"><span class="nav-icon">⚔️</span>War Monitor</button>
     <button class="nav-btn" onclick="showTab('battles', this)"><span class="nav-icon">📜</span>Battle Logs</button>
     <button class="nav-btn" onclick="showTab('analytics', this); loadAnalytics();"><span class="nav-icon">📊</span>Analytics</button>
@@ -227,11 +295,13 @@
     <button class="nav-btn" onclick="showTab('csv', this)"><span class="nav-icon">📄</span>CSV Export</button>
     <button class="nav-btn" onclick="showTab('editor', this)"><span class="nav-icon">🎨</span>UI Editor</button>
     <button class="nav-btn" onclick="showTab('users', this); loadUsers();"><span class="nav-icon">👤</span>User Access</button>
+    <button class="nav-btn" onclick="showTab('recruiting', this); loadRecruits(); loadDeparted(); loadMentorPairs(); loadScrims(); loadTestimonialsQueue(); loadFeatureSuggestions(); loadRecruitTemplates(); loadApplications();"><span class="nav-icon">🎯</span>Recruiting</button>
+    <button class="nav-btn" onclick="showTab('activity', this); loadActivityLog();"><span class="nav-icon">📋</span>Activity Log</button>
     <button class="nav-btn" onclick="showTab('settings', this)"><span class="nav-icon">🛠️</span>Settings</button>
     <div class="nav-section">Danger Zone</div>
-    <button class="nav-btn" onclick="showTab('admin', this)"><span class="nav-icon">⚙️</span>Admin Tools</button>
+    <button class="nav-btn" onclick="showTab('admin', this); loadWebhooks();"><span class="nav-icon">⚙️</span>Admin Tools</button>
   </nav>
-  <main class="main">
+  <main class="main" id="main-content">
 
     <!-- ROSTER (default landing) -->
     <div class="tab-pane active" id="tab-roster">
@@ -258,6 +328,14 @@
         <span class="last-refresh" id="roster-last-refresh"></span>
       </div>
 
+      <!-- Idea #62: bulk actions bar — shown once 1+ members are checked -->
+      <div id="bulk-action-bar" style="display:none; background:var(--panel); border:1px solid var(--accent); border-radius:6px; padding:10px 16px; margin-bottom:16px; align-items:center; gap:12px;">
+        <span id="bulk-count" style="font-size:12px; color:var(--accent); font-family:var(--font-mono);"></span>
+        <button class="drawer-btn drawer-btn-strike" onclick="bulkIssueStrike()">➕ Strike Selected</button>
+        <button class="drawer-btn drawer-btn-dm" onclick="bulkSendDM()">✉️ DM Selected</button>
+        <button class="btn-refresh" style="margin-left:auto;" onclick="clearBulkSelection()">Clear</button>
+      </div>
+
       <!-- War slacker banner — only shown when slackers exist -->
       <div id="slacker-banner" style="display:none; background:rgba(255,61,113,0.08); border:1px solid var(--err); border-radius:6px; padding:12px 16px; margin-bottom:20px; display:none; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <span style="font-family:var(--font-mono); font-size:12px; color:var(--err);" id="slacker-text"></span>
@@ -277,6 +355,9 @@
         <button class="btn-refresh" id="btn-diag-refresh" onclick="loadDiagnostics()">
           <span id="diag-spin">↻</span> Refresh
         </button>
+        <label style="font-size:12px; color:var(--dim); display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="diag-auto-refresh" onchange="toggleDiagAutoRefresh()"> Auto-refresh every 30s (idea #68)
+        </label>
         <span class="last-refresh" id="diag-last-refresh">Never refreshed</span>
       </div>
       <div class="stat-row">
@@ -316,6 +397,37 @@
           <div class="diag-body" id="body-tasks"></div>
         </div>
       </div>
+      <div class="section-label">Security &amp; Reliability (section 9)</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🔐 Secret Rotation (idea #160)</div></div>
+          <div class="diag-body">
+            <div id="secret-rotation-list" style="font-size:12px;">Loading…</div>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">💾 Config Backups (idea #152)</div></div>
+          <div class="diag-body">
+            <div id="config-backups-list" style="font-size:12px;">Loading…</div>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">📡 CR API Health (idea #156/#157)</div></div>
+          <div class="diag-body" id="cr-api-health"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🐢 Slow Queries (idea #239)</div></div>
+          <div class="diag-body" id="body-slow-queries"></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🆘 Break-Glass Recovery (idea #158)</div></div>
+          <div class="diag-body" style="font-size:12px; color:var(--dim); line-height:1.6;">
+            If <code>MASTER_ADMIN_ID</code> is ever lost or all admin accounts are locked out, recovery requires direct Mongo access:<br>
+            <code style="display:block; background:#0b0c10; padding:8px; border-radius:6px; margin-top:6px; color:#ddd;">db.config.updateOne({_id:"system_config"}, {$addToSet:{admin_user_ids:"&lt;your-discord-id&gt;"}}, {upsert:true})</code>
+            Then update the <code>MASTER_ADMIN_ID</code> environment variable and redeploy for a permanent fix.
+          </div>
+        </div>
+      </div>
       <div class="section-label">Event Log</div>
       <div class="log-box" id="diag-log">Waiting for data…</div>
     </div>
@@ -328,9 +440,36 @@
       </div>
       <div class="toolbar">
         <button class="btn-refresh" onclick="loadWar()">↻ Refresh</button>
+        <button class="btn-refresh" onclick="loadScouting()">🔭 Scout Opponents</button>
+        <button class="btn-refresh" onclick="loadWarCalendar()">📅 War Calendar</button>
+        <button class="btn-refresh" onclick="loadMissedStreaks()">📉 Missed-War Streaks</button>
         <span class="last-refresh" id="war-last-refresh"></span>
       </div>
       <div id="war-content"><div style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Click refresh to load war data.</div></div>
+
+      <!-- Idea #3: opponent clan scouting panel -->
+      <div class="section-label">Opponent Scouting</div>
+      <div id="scouting-content" class="diag-card" style="padding:16px;"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Click "Scout Opponents" above once a race is active.</span></div>
+
+      <!-- Idea #6: CWL/war history calendar -->
+      <div class="section-label">War History Calendar</div>
+      <div id="calendar-content" class="diag-card" style="padding:16px;"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Click "War Calendar" above.</span></div>
+
+      <!-- Idea #8: missed-war streak counter -->
+      <div class="section-label">Missed-War Streaks (2+ races, 0 decks)</div>
+      <div id="missed-streaks-content" class="diag-card" style="padding:16px;"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Click "Missed-War Streaks" above.</span></div>
+
+      <!-- Idea #20: post-war retro notes + auto-generated recap -->
+      <div class="section-label">Post-War Retro Notes</div>
+      <div class="diag-card" style="padding:16px;">
+        <div style="display:flex; gap:8px; margin-bottom:10px;">
+          <input type="text" id="retroWarId" class="form-input" placeholder="unique_war_id, e.g. season_70_section_2" style="flex:1;">
+          <button class="btn-refresh" onclick="loadRetro()">Load</button>
+        </div>
+        <div id="retro-recap"></div>
+        <textarea id="retroNotes" class="editor-textarea" style="min-height:100px; margin-top:10px;" placeholder="What happened this race? Notes for next time…"></textarea>
+        <button class="btn-refresh" style="margin-top:8px;" onclick="saveRetro()">💾 Save Retro Notes</button>
+      </div>
     </div>
 
     <!-- BATTLE LOGS -->
@@ -347,7 +486,7 @@
           <option value="loss">Losses only</option>
           <option value="draw">Draws only</option>
         </select>
-        <button class="btn-refresh" onclick="loadBattles()">↻ Fetch Latest</button>
+        <button class="btn-refresh" onclick="loadBattles(0)">↻ Fetch Latest</button>
         <span class="last-refresh" id="battles-last-refresh"></span>
       </div>
       <div class="diag-card" style="padding:0; overflow-x:auto;">
@@ -357,9 +496,15 @@
             <th>Result</th><th>Score</th><th>Opponent</th><th>Decks (You / Opp)</th>
           </tr></thead>
           <tbody id="battles-body">
-            <tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">Click fetch to load the latest 100 records.</td></tr>
+            <tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">Click fetch to load the latest records.</td></tr>
           </tbody>
         </table>
+      </div>
+      <!-- Idea #234: pagination instead of always loading everything in one shot. -->
+      <div class="toolbar" style="margin-top:12px;">
+        <button class="btn-refresh" id="battles-prev-btn" onclick="loadBattles(battlesCurrentPage - 1)" disabled>← Prev</button>
+        <span id="battles-page-indicator" style="font-family:var(--font-mono); font-size:12px; color:var(--dim);"></span>
+        <button class="btn-refresh" id="battles-next-btn" onclick="loadBattles(battlesCurrentPage + 1)" disabled>Next →</button>
       </div>
     </div>
 
@@ -383,6 +528,8 @@
         <div class="stat-card" id="ov-inactive"><div class="stat-label">Inactive Members</div><div class="stat-value">—</div><div class="stat-note">0 donations this season</div></div>
         <div class="stat-card" id="ov-battles"><div class="stat-label">Battles Logged</div><div class="stat-value">—</div><div class="stat-note">All-time harvested</div></div>
         <div class="stat-card" id="ov-winrate"><div class="stat-label">Clan Win Rate</div><div class="stat-value">—</div><div class="stat-note">Across all logged battles</div></div>
+        <div class="stat-card" id="ov-strength"><div class="stat-label">Clan Strength</div><div class="stat-value">—</div><div class="stat-note">Idea #5</div></div>
+        <div class="stat-card" id="ov-boat"><div class="stat-label">Boat Battles</div><div class="stat-value">—</div><div class="stat-note">Idea #7</div></div>
       </div>
 
       <div class="section-label">Leaderboards</div>
@@ -403,6 +550,15 @@
           <div class="diag-card-header"><div class="diag-card-title">⚔️ War Fame</div></div>
           <div class="diag-body" id="lb-warfame"></div>
         </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">⚡ Fame-Per-Deck Efficiency (idea #10)</div></div>
+          <div class="diag-body" id="lb-fame-efficiency"></div>
+        </div>
+      </div>
+
+      <div class="section-label">Clan Wars 2 Weekly Score (idea #11)</div>
+      <div class="diag-card" style="padding:16px;">
+        <canvas id="cw2TrendChart" height="80"></canvas>
       </div>
 
       <div class="section-label">Clan Trend</div>
@@ -446,16 +602,65 @@
 
       <div class="section-label">Deck Archetypes — "Battle Algorithms"</div>
       <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-bottom:14px; line-height:1.6;">
-        Groups full 8-card decks actually played in logged battles (not just individual cards), so you can see which whole strategies are winning wars — not just which cards are popular. Minimum 3 games played to qualify for either list.
+        Groups full 8-card decks actually played in logged battles (not just individual cards), so you can see which whole strategies are winning wars — not just which cards are popular. Minimum 3 games played to qualify for either list. <span id="deck-diversity-note"></span>
       </p>
       <div class="diag-grid">
         <div class="diag-card">
           <div class="diag-card-header"><div class="diag-card-title">🏆 Best Win Rate Decks</div></div>
-          <div class="diag-body" style="padding:0; overflow-x:auto;"><table class="war-table" id="tbl-archetype-winrate"><thead><tr><th>Deck</th><th>Games</th><th>Win Rate</th><th>Players</th></tr></thead><tbody><tr><td colspan="4" style="text-align:center; color:var(--dim); padding:16px;">Refresh to load</td></tr></tbody></table></div>
+          <div class="diag-body" style="padding:0; overflow-x:auto;"><table class="war-table" id="tbl-archetype-winrate"><thead><tr><th>Deck</th><th>Games</th><th>Win Rate</th><th>Trend</th><th></th></tr></thead><tbody><tr><td colspan="5" style="text-align:center; color:var(--dim); padding:16px;">Refresh to load</td></tr></tbody></table></div>
         </div>
         <div class="diag-card">
           <div class="diag-card-header"><div class="diag-card-title">🔁 Most Used Decks</div></div>
-          <div class="diag-body" style="padding:0; overflow-x:auto;"><table class="war-table" id="tbl-archetype-usage"><thead><tr><th>Deck</th><th>Games</th><th>Win Rate</th><th>Players</th></tr></thead><tbody><tr><td colspan="4" style="text-align:center; color:var(--dim); padding:16px;">Refresh to load</td></tr></tbody></table></div>
+          <div class="diag-body" style="padding:0; overflow-x:auto;"><table class="war-table" id="tbl-archetype-usage"><thead><tr><th>Deck</th><th>Games</th><th>Win Rate</th><th>Trend</th><th></th></tr></thead><tbody><tr><td colspan="5" style="text-align:center; color:var(--dim); padding:16px;">Refresh to load</td></tr></tbody></table></div>
+        </div>
+      </div>
+
+      <!-- Section 14: card meta & deck intelligence (216-230) -->
+      <div class="section-label">Card Meta &amp; Deck Intelligence</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🎖️ In-House Tier List (idea #225)</div></div>
+          <div class="diag-body" id="tier-list-content"><span style="color:var(--dim); font-size:12px;">Loading…</span></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">💎 Underused Gems (idea #229)</div></div>
+          <div class="diag-body" id="underused-gems-content"><span style="color:var(--dim); font-size:12px;">Loading…</span></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">😤 Cards We Struggle Against (idea #223)</div></div>
+          <div class="diag-body" id="hard-counters-content"><span style="color:var(--dim); font-size:12px;">Loading…</span></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">⚔️ Win Rate by Matchup Type (idea #226)</div></div>
+          <div class="diag-body" id="matchup-breakdown-content"><span style="color:var(--dim); font-size:12px;">Loading…</span></div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">📸 Season Meta Snapshot (idea #228)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
+            <button class="btn-refresh" onclick="takeMetaSnapshot()">📸 Snapshot Current Meta</button>
+            <div id="meta-snapshot-diff"><span style="color:var(--dim); font-size:12px;">No comparison yet.</span></div>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🥇 Best Pilots for a Card (idea #220)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; gap:8px;">
+              <input type="text" id="pilot-card-input" class="form-input" placeholder="Card name, e.g. Hog Rider">
+              <button class="btn-refresh" onclick="loadBestPilots()">Search</button>
+            </div>
+            <div id="best-pilots-content"></div>
+          </div>
+        </div>
+        <div class="diag-card" style="grid-column: 1 / -1;">
+          <div class="diag-card-header"><div class="diag-card-title">🛡️ Counter-Pick / Scrim Prep (idea #216/#219)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin:0;">Enter cards the opponent is known to run (comma-separated) to get counter suggestions and the clan's best-performing decks historically against similar opponents.</p>
+            <div style="display:flex; gap:8px;">
+              <input type="text" id="counter-prep-input" class="form-input" style="flex:1;" placeholder="e.g. Hog Rider, Ice Golem, Musketeer">
+              <button class="btn-refresh" onclick="runCounterPickPrep()">Analyze</button>
+            </div>
+            <div id="counter-prep-content"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -492,7 +697,7 @@
       </div>
       <div class="diag-card" style="padding:24px;">
         <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">1. Select Fields</label>
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; margin:12px 0 24px; color:#fff; font-family:var(--font-mono); font-size:13px;">
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; margin:12px 0 24px; color:var(--text-bright); font-family:var(--font-mono); font-size:13px;">
           <label><input type="checkbox" name="csv-fields" value="name" checked> Name</label>
           <label><input type="checkbox" name="csv-fields" value="tag" checked> Tag</label>
           <label><input type="checkbox" name="csv-fields" value="role" checked> Role</label>
@@ -507,13 +712,21 @@
           <label><input type="checkbox" name="csv-fields" value="decksRemaining" checked> Decks Remaining</label>
         </div>
         <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">2. Computed Formulas</label>
-        <div style="display:grid; gap:10px; margin:12px 0 24px; color:#fff; font-family:var(--font-mono); font-size:13px;">
+        <div style="display:grid; gap:10px; margin:12px 0 24px; color:var(--text-bright); font-family:var(--font-mono); font-size:13px;">
           <label><input type="checkbox" id="formula-winrate"> <strong>Win Rate %</strong> <span style="color:var(--dim);"> ( totalWins / (totalWins + totalLosses) * 100 )</span></label>
           <label><input type="checkbox" id="formula-warpart"> <strong>War Participation %</strong> <span style="color:var(--dim);"> ( decksUsedToday / (decksUsedToday + decksRemaining) * 100 )</span></label>
         </div>
-        <button class="btn-refresh" onclick="handleCustomCSVExport()" style="border-color:var(--ok); color:var(--ok); background:rgba(0,224,150,0.08);">
-          📥 Generate &amp; Download CSV
-        </button>
+        <div style="display:flex; gap:10px;">
+          <button class="btn-refresh" onclick="previewCustomCSVExport()">👀 Preview First 5 Rows</button>
+          <button class="btn-refresh" onclick="handleCustomCSVExport()" style="border-color:var(--ok); color:var(--ok); background:rgba(0,224,150,0.08);">
+            📥 Generate &amp; Download CSV
+          </button>
+          <button class="btn-refresh" onclick="handleCustomXLSXExport()" title="Idea #245: styled export — highlights slackers/top donators" style="border-color:#1d6f42; color:#1d6f42; background:rgba(29,111,66,0.08);">
+            📊 Generate &amp; Download Excel
+          </button>
+        </div>
+        <!-- Idea #72: CSV export dry-run preview -->
+        <div id="csv-preview" style="margin-top:16px; overflow-x:auto;"></div>
       </div>
     </div>
 
@@ -539,6 +752,7 @@
           <button class="editor-btn editor-btn-preview" onclick="previewTemplate()" id="btn-preview" disabled>👁 Preview</button>
           <button class="editor-btn editor-btn-deploy" onclick="deployTemplate()" id="btn-deploy" disabled>🚀 Deploy</button>
           <button class="editor-btn editor-btn-reset" onclick="resetTemplate()" id="btn-reset" disabled>↩ Reset</button>
+          <button class="editor-btn editor-btn-reset" onclick="loadTemplateVersions()" id="btn-versions" disabled>🕘 Version History</button>
         </div>
         <div class="editor-statusbar">
           <div class="sb-item"><div class="sb-dot" id="sb-dot"></div><span id="sb-state">No template loaded</span></div>
@@ -552,6 +766,8 @@
         <div class="diff-panel" id="diff-panel">
           <div id="diff-content"><span class="diff-empty">Load a template and make changes to see a diff.</span></div>
         </div>
+        <!-- Idea #67: template version history + rollback -->
+        <div id="version-history-panel" style="display:none; margin-top:12px; border:1px solid var(--border); border-radius:6px; padding:12px;"></div>
       </div>
     </div>
 
@@ -576,6 +792,15 @@
         </div>
         <button type="submit" class="btn-refresh" style="width: 100%; justify-content: center;">Update Status</button>
       </form>
+      <!-- Idea #71: search/filter/sort on the User Access table -->
+      <div class="toolbar">
+        <input class="form-input" id="users-search" placeholder="Search by name or Discord ID…" oninput="filterUsers()" style="width:220px">
+        <select class="form-select" id="users-sort" onchange="filterUsers()">
+          <option value="name">Sort: Name</option>
+          <option value="status">Sort: Site Access</option>
+          <option value="rank">Sort: Clan Rank</option>
+        </select>
+      </div>
       <div class="diag-card" style="padding:0; overflow-x:auto;">
         <table class="war-table">
           <thead><tr>
@@ -584,6 +809,160 @@
           <tbody id="user-table-body">
             <tr><td colspan="5" style="text-align:center; padding:24px; color:var(--dim);">Loading user roster...</td></tr>
           </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- RECRUITING (idea #14 shortlist, idea #17 departed-member retention view) -->
+    <div class="tab-pane" id="tab-recruiting">
+      <div class="page-header">
+        <div class="page-title">Recruiting &amp; Membership</div>
+        <div class="page-sub">Scouted candidates and recently-departed member data retention</div>
+      </div>
+
+      <!-- Idea #206/#211: real global scouting lookup (live CR API), not just a filter over the current roster -->
+      <div class="section-label">Scout a Player (idea #206/#211)</div>
+      <div class="diag-card" style="padding:16px; margin-bottom:20px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+          <input type="text" id="scout-tag-input" class="form-input" placeholder="Player tag, e.g. ABC123" style="width:200px;">
+          <button class="btn-refresh" onclick="scoutPlayer()">🔍 Scout</button>
+        </div>
+        <div id="scout-result"></div>
+      </div>
+
+      <!-- Idea #208 -->
+      <div class="section-label">Rival Clan Snapshot (idea #208)</div>
+      <div class="diag-card" style="padding:16px; margin-bottom:20px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+          <input type="text" id="rival-tag-input" class="form-input" placeholder="Rival clan tag, e.g. XYZ789" style="width:200px;">
+          <button class="btn-refresh" onclick="loadRivalSnapshot()">📊 Compare</button>
+        </div>
+        <div id="rival-result"></div>
+      </div>
+
+      <!-- Idea #209 -->
+      <div class="section-label">Recruiting Message Templates (idea #209)</div>
+      <div class="diag-card" style="padding:16px; margin-bottom:20px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+          <input type="text" id="template-name" class="form-input" placeholder="Template name" style="width:160px;">
+          <input type="text" id="template-message" class="form-input" placeholder="Message text" style="flex:1; min-width:200px;">
+          <button class="btn-refresh" onclick="addRecruitTemplate()">➕ Save Template</button>
+        </div>
+        <div id="templates-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
+      </div>
+
+      <!-- Idea #212 -->
+      <div class="section-label">Applications (idea #212)</div>
+      <div class="diag-card" style="padding:16px; margin-bottom:20px;">
+        <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-top:0;">Submitted via the public <code>/apply</code> form instead of raw Discord DMs.</p>
+        <div id="applications-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
+      </div>
+
+      <div class="section-label">Recruiting Shortlist</div>
+      <div class="diag-card" style="padding:16px; margin-bottom:20px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+          <input type="text" id="recruit-tag" class="form-input" placeholder="Player tag, e.g. ABC123" style="width:160px;">
+          <input type="text" id="recruit-name" class="form-input" placeholder="Name (optional)" style="width:160px;">
+          <select id="recruit-status" class="form-select">
+            <option value="scouted">Scouted</option>
+            <option value="invited">Invited</option>
+            <option value="joined">Joined</option>
+            <option value="declined">Declined</option>
+          </select>
+          <input type="text" id="recruit-notes" class="form-input" placeholder="Notes" style="flex:1; min-width:160px;">
+          <button class="btn-refresh" onclick="addRecruit()">➕ Add / Update</button>
+        </div>
+        <div id="recruits-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
+      </div>
+
+      <div class="section-label">Departed Members — Data Retention</div>
+      <div class="diag-card" style="padding:16px; margin-bottom:20px;">
+        <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-top:0;">Historical stats for members who've left are kept queryable for a rolling window, then purged automatically by the harvester.</p>
+        <div id="departed-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
+      </div>
+
+      <!-- Idea #125: buddy/mentor assignment for brand-new members — manual, not auto-matched -->
+      <div class="section-label">Mentor Pairings (idea #125)</div>
+      <div class="diag-card" style="padding:16px;">
+        <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-top:0;">Pair a new member with an existing one for onboarding questions. Assignment is manual — a person is a better judge of a good match than a heuristic.</p>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+          <input type="text" id="mentor-mentee-tag" class="form-input" placeholder="New member tag, e.g. ABC123" style="width:180px;">
+          <input type="text" id="mentor-mentor-tag" class="form-input" placeholder="Mentor's tag, e.g. XYZ789" style="width:180px;">
+          <button class="btn-refresh" onclick="assignMentor()">🧑‍🏫 Assign</button>
+        </div>
+        <div id="mentor-pairs-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
+      </div>
+
+      <!-- Idea #193/#192/#196: member spotlight + wall-of-fame milestones, feeding /clan-history -->
+      <div class="section-label">Clan History &amp; Spotlight</div>
+      <div class="diag-grid" style="margin-bottom:20px;">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Member Spotlight (idea #193)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
+            <input type="text" id="spotlight-tag" class="form-input" placeholder="Player tag">
+            <input type="text" id="spotlight-name" class="form-input" placeholder="Display name">
+            <input type="text" id="spotlight-month" class="form-input" placeholder="Month, e.g. July 2026">
+            <textarea id="spotlight-bio" class="drawer-textarea" placeholder="Short bio / Q&amp;A…" style="min-height:70px;"></textarea>
+            <button class="btn-refresh" onclick="saveSpotlight()">💾 Publish Spotlight</button>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Add Milestone (idea #192/#196)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
+            <input type="text" id="milestone-title" class="form-input" placeholder="Title, e.g. Biggest War Win">
+            <input type="date" id="milestone-date" class="form-input">
+            <textarea id="milestone-desc" class="drawer-textarea" placeholder="Description…" style="min-height:60px;"></textarea>
+            <button class="btn-refresh" onclick="addMilestone()">➕ Add to Timeline</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Idea #202: cross-clan friendly-battle results -->
+      <div class="section-label">Friendly Scrims (idea #202)</div>
+      <div class="diag-card" style="padding:16px; margin-bottom:20px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+          <input type="text" id="scrim-opponent" class="form-input" placeholder="Opponent clan name" style="width:180px;">
+          <input type="text" id="scrim-tag" class="form-input" placeholder="Opponent tag" style="width:140px;">
+          <select id="scrim-result" class="form-select">
+            <option value="win">Win</option>
+            <option value="loss">Loss</option>
+            <option value="draw">Draw</option>
+          </select>
+          <input type="date" id="scrim-date" class="form-input">
+          <button class="btn-refresh" onclick="addScrim()">➕ Log Scrim</button>
+        </div>
+        <div id="scrims-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
+      </div>
+
+      <!-- Idea #205: testimonial approval queue (hidden publicly until enabled in Settings) -->
+      <div class="section-label">Testimonials — Approval Queue (idea #205)</div>
+      <div class="diag-card" style="padding:16px; margin-bottom:20px;">
+        <div id="testimonials-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
+      </div>
+
+      <!-- Idea #201: suggest-a-feature inbox -->
+      <div class="section-label">Feature Suggestions (idea #201)</div>
+      <div class="diag-card" style="padding:16px;">
+        <div id="feature-suggestions-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
+      </div>
+    </div>
+
+    <!-- ACTIVITY LOG (idea #64 clan-wide feed, idea #79 per-admin usage) -->
+    <div class="tab-pane" id="tab-activity">
+      <div class="page-header">
+        <div class="page-title">Activity Log</div>
+        <div class="page-sub">Every state-changing admin action, clan-wide</div>
+      </div>
+      <div class="toolbar">
+        <button class="btn-refresh" onclick="loadActivityLog()">↻ Refresh</button>
+      </div>
+      <div class="section-label">Per-Admin Usage (idea #79)</div>
+      <div id="activity-by-admin" class="diag-card" style="padding:16px; margin-bottom:20px;"></div>
+      <div class="section-label">Recent Actions</div>
+      <div class="diag-card" style="padding:0; overflow-x:auto;">
+        <table class="war-table">
+          <thead><tr><th>Time</th><th>Admin</th><th>Action</th><th>Target</th><th>Details</th><th title="Idea #150">IP</th></tr></thead>
+          <tbody id="activity-log-body"><tr><td colspan="6" style="text-align:center; padding:24px; color:var(--dim);">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -630,6 +1009,66 @@
           </div>
         </div>
         <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Minimum Clan Size (idea #5)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Below this member count, the Analytics overview flags the clan as under-strength ahead of matchmaking.</p>
+            <input type="number" id="set-min-clan-size" class="form-input" min="0" value="{{ bot_settings.min_clan_size or 40 }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">War Reset Hour (UTC)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Approximate daily war-day reset hour, used to time the tiered 50%/90% war reminders (idea #13).</p>
+            <input type="number" id="set-war-reset-hour" class="form-input" min="0" max="23" value="{{ bot_settings.war_reset_hour_utc or 10 }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Beta Test Group Role ID (idea #82)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Discord role ID used by the <code>/syncbeta</code> slash command — nickname sync is manual/on-demand only, never automatic.</p>
+            <input type="text" id="set-beta-sync-role" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.beta_sync_role_id or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Auto-Strike Threshold (idea #86)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Consecutive war weeks with 0 decks used before an automatic strike + DM is issued. Set to 0 to disable (default).</p>
+            <input type="number" id="set-auto-strike-threshold" class="form-input" min="0" value="{{ bot_settings.auto_strike_missed_war_threshold or 0 }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Changelog Channel ID (idea #98)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where auto-posted "settings/template changed" lines go. Falls back to the announcements channel, then the War Channel, if unset.</p>
+            <input type="text" id="set-changelog-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.changelog_channel_id or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Announcements Channel ID (idea #134)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Dedicated channel for all automated posts (war recaps, milestones, digests, role changes) so they don't bury real conversation in the War Channel.</p>
+            <input type="text" id="set-announcements-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.announcements_channel_id or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Leadership Escalation Channel ID (idea #131/#139)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where escalation alerts go when a member ignores every war-day nudge tier. Falls back to the announcements channel if unset.</p>
+            <input type="text" id="set-leadership-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.leadership_channel_id or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Quiet Hours (UTC, idea #99)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Automated DMs (war nudges, warnings) are held — not dropped — during this window, and retried after it ends.</p>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <input type="number" id="set-quiet-start" class="form-input" min="0" max="23" placeholder="Start" value="{{ bot_settings.quiet_hours_start if bot_settings.quiet_hours_start is not none else '' }}">
+              <span style="color:var(--dim);">to</span>
+              <input type="number" id="set-quiet-end" class="form-input" min="0" max="23" placeholder="End" value="{{ bot_settings.quiet_hours_end if bot_settings.quiet_hours_end is not none else '' }}">
+            </div>
+          </div>
+        </div>
+        <div class="diag-card">
           <div class="diag-card-header"><div class="diag-card-title">Ignored / Muted Channels</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Comma-separated channel IDs where public text commands are silenced.</p>
@@ -660,7 +1099,30 @@
           <div class="diag-card-header"><div class="diag-card-title">Custom Welcome Message</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Sent to new members when they link their account.</p>
-            <input type="text" id="set-welcome-msg" class="form-input" maxlength="500" value="{{ bot_settings.welcome_msg or 'Welcome to the Squad!' }}">
+            <input type="text" id="set-welcome-msg" class="form-input" maxlength="500" value="{{ bot_settings.welcome_msg or 'Welcome to the Squad!' }}" oninput="renderWelcomeDmPreview()">
+            <!-- Idea #122: live preview so admins aren't editing a raw text field blind -->
+            <div style="font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px;">Preview</div>
+            <div style="background:#36393f; border-radius:8px; padding:12px; display:flex; gap:10px; align-items:flex-start;">
+              <div style="width:32px; height:32px; border-radius:50%; background:#5865F2; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:14px;">🤖</div>
+              <div>
+                <div style="color:var(--text-bright); font-weight:bold; font-size:13px;">GraveyardBot <span style="background:#5865F2; color:var(--text-bright); font-size:9px; padding:1px 4px; border-radius:3px; margin-left:4px;">BOT</span></div>
+                <div id="welcome-dm-preview" style="color:#dcddde; font-size:13px; margin-top:2px; white-space:pre-wrap;"></div>
+              </div>
+            </div>
+            <button class="btn-refresh" style="align-self:flex-start;" onclick="sendTestWelcomeDM()">🧪 Send Test DM to Myself (idea #69)</button>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Schedule a Settings Change (idea #77)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Apply a change at a future time instead of immediately — e.g. enable maintenance mode overnight.</p>
+            <input type="datetime-local" id="schedule-apply-at" class="form-input">
+            <select id="schedule-field" class="form-select">
+              <option value="maintenance_mode">Maintenance Mode → ON</option>
+              <option value="feature_auto_pings">Auto Pings → ON</option>
+            </select>
+            <button class="btn-refresh" onclick="scheduleSettingChange()">⏰ Schedule</button>
+            <div id="scheduled-settings-list" style="font-size:12px; color:var(--dim);"></div>
           </div>
         </div>
         <div class="diag-card">
@@ -668,6 +1130,102 @@
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Comma-separated Discord role IDs granted admin access, in addition to individually-promoted users on the User Access tab.</p>
             <input type="text" id="set-admin-roles" class="form-input" placeholder="e.g. 11223344, 55667788" value="{{ system_config.admin_role_ids | join(', ') if system_config.admin_role_ids else '' }}">
+          </div>
+        </div>
+      </div>
+
+      <!-- Ideas #198/#205/#214/#215/#243/#247/#250: feature flags, all off by
+           default per your review notes — nothing here goes live until an
+           admin explicitly flips it on. -->
+      <div class="section-label">Feature flags (off by default)</div>
+      <div class="diag-grid">
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Sub-Clan / Family Page (idea #198)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Hidden until the Squad actually grows into multiple linked clans — per your note, built but dark for now.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-family-enabled" {% if bot_settings.family_page_enabled %}checked{% endif %}> Enabled
+            </label>
+            <input type="text" id="set-family-tags" class="form-input" placeholder="Family clan tags, comma-separated" value="{{ bot_settings.family_clan_tags | join(', ') if bot_settings.family_clan_tags else '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Testimonial Carousel (idea #205)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Per your note — hidden until you turn it on. Members can still submit testimonials for approval while it's off; they just won't display publicly.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-testimonials-enabled" {% if bot_settings.testimonials_enabled %}checked{% endif %}> Enabled
+            </label>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Public "We're Recruiting" Banner (idea #215)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Shows on the roster page only while the clan is below 50 members.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-recruiting-banner" {% if bot_settings.recruiting_banner_enabled %}checked{% endif %}> Enabled
+            </label>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Auto-Decline Stale Applications (idea #214)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Per your note — off by default. When on, applications with no admin response after N days get auto-marked declined to keep the pipeline tidy.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-auto-decline-enabled" {% if bot_settings.auto_decline_stale_applications_enabled %}checked{% endif %}> Enabled
+            </label>
+            <input type="number" id="set-auto-decline-days" class="form-input" min="1" placeholder="Days" value="{{ bot_settings.auto_decline_days or 14 }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Twitch/YouTube Go-Live Integration (idea #243)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Per your note — hidden for now. The polling logic itself is implemented (checks Twitch/YouTube for the channel below going live and posts an announcement), but stays a no-op until real TWITCH_CLIENT_ID/TWITCH_CLIENT_SECRET/YOUTUBE_API_KEY credentials are set in the environment.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-streaming-enabled" {% if bot_settings.streaming_integration_enabled %}checked{% endif %}> Enabled
+            </label>
+            <input type="text" id="set-twitch-channel" class="form-input" placeholder="Twitch channel name" value="{{ bot_settings.streaming_twitch_channel or '' }}">
+            <input type="text" id="set-youtube-channel" class="form-input" placeholder="YouTube channel ID" value="{{ bot_settings.streaming_youtube_channel or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Reddit Recruitment Auto-Poster (idea #247)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Same reasoning as Twitch/YouTube above — the posting logic is implemented (OAuth + submit, rate-limited to once/7d, only fires while the clan is under-strength), but stays a no-op until REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET/REDDIT_REFRESH_TOKEN are configured.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-reddit-enabled" {% if bot_settings.reddit_autopost_enabled %}checked{% endif %}> Enabled
+            </label>
+            <input type="text" id="set-reddit-subreddit" class="form-input" placeholder="Subreddit (no r/ prefix)" value="{{ bot_settings.reddit_subreddit or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Beta Features (idea #250)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Trial upcoming features before rolling them out clan-wide. Currently gates: the Clan Gallery board on the roster page.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-beta-enabled" {% if bot_settings.beta_features_enabled %}checked{% endif %}> Enabled
+            </label>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Recruitment Video (idea #200)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">YouTube URL embedded on the /link page for prospective recruits.</p>
+            <input type="text" id="set-recruit-video" class="form-input" placeholder="https://youtube.com/watch?v=..." value="{{ bot_settings.recruit_video_url or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Clan Founding Date (idea #203)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Shown on /clan-history; also drives the auto-generated annual anniversary post.</p>
+            <input type="date" id="set-founding-date" class="form-input" value="{{ bot_settings.clan_founding_date or '' }}">
+          </div>
+        </div>
+        <div class="diag-card" style="grid-column: 1 / -1;">
+          <div class="diag-card-header"><div class="diag-card-title">Clan Culture Doc (idea #204)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Free-form text (tone, memes, inside jokes) shown on /clan-history, beyond the hard requirements already on /link.</p>
+            <textarea id="set-culture-content" class="drawer-textarea" style="min-height:100px;" maxlength="4000">{{ bot_settings.culture_page_content or '' }}</textarea>
           </div>
         </div>
       </div>
@@ -685,7 +1243,7 @@
         <div class="page-sub">Careful in here</div>
       </div>
       <div class="diag-grid">
-        <div class="diag-card">
+        <div class="diag-card diag-card-danger">
           <div class="diag-card-header"><div class="diag-card-title">🔄 Cache Flush</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Flush all Redis CR API cache keys. Use when data looks stale.</p>
@@ -704,6 +1262,19 @@
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Force a snapshot outside the scheduled window.</p>
             <button class="btn-danger" onclick="triggerManualHarvest()" style="background:rgba(241,196,15,0.1); border-color:#f1c40f; color:#f1c40f;">⚡ Trigger Now</button>
+          </div>
+        </div>
+        <div class="diag-card" style="grid-column: 1 / -1;">
+          <div class="diag-card-header"><div class="diag-card-title">🔗 Webhooks (ideas #242/#246)</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">POST a JSON body to any URL when a war ends or a harvest cycle completes. Works with Zapier's "Webhooks by Zapier" trigger or Make.com's "Custom webhook" module — paste the URL those give you here.</p>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+              <input type="text" id="webhook-url-input" class="form-input" placeholder="https://hooks.zapier.com/..." style="flex:1; min-width:220px;">
+              <label style="display:flex; align-items:center; gap:4px; font-size:12px;"><input type="checkbox" id="webhook-evt-war-end" checked> war_end</label>
+              <label style="display:flex; align-items:center; gap:4px; font-size:12px;"><input type="checkbox" id="webhook-evt-harvest" checked> harvest_complete</label>
+              <button class="btn-refresh" onclick="addWebhook()">+ Add</button>
+            </div>
+            <div id="webhooks-list"></div>
           </div>
         </div>
       </div>
@@ -736,7 +1307,10 @@
   window.fetch = function(input, init) {
     init = init || {};
     var method = (init.method || 'GET').toUpperCase();
-    if (method === 'POST') {
+    // Idea #159: DELETE (recruits/mentor removal) and PUT weren't covered by
+    // the original POST-only check — widened alongside the backend gate so
+    // existing delete buttons don't start 403'ing once that gate tightens.
+    if (method === 'POST' || method === 'DELETE' || method === 'PUT') {
       init.headers = new Headers(init.headers || {});
       init.headers.set('X-CSRF-Token', token);
     }
@@ -753,6 +1327,38 @@ function showTab(name, btn) {
   var pane = document.getElementById('tab-' + name);
   if (pane) pane.classList.add('active');
   if (btn)  btn.classList.add('active');
+  // Idea #161: picking a section on mobile should close the off-canvas sidebar.
+  if (window.innerWidth <= 900) toggleSidebar(false);
+}
+
+// Idea #161: hamburger toggle for the off-canvas sidebar under ~900px.
+function toggleSidebar(force) {
+  var sidebar = document.getElementById('adminSidebar');
+  var backdrop = document.getElementById('sidebarBackdrop');
+  var btn = document.getElementById('sidebarToggleBtn');
+  var open = typeof force === 'boolean' ? force : !sidebar.classList.contains('open');
+  sidebar.classList.toggle('open', open);
+  backdrop.classList.toggle('open', open);
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+// Idea #187: dark/light theme toggle, persisted across visits.
+(function() {
+  var saved = localStorage.getItem('gy_theme');
+  if (saved === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+    var btn = document.getElementById('themeToggleBtn');
+    if (btn) btn.textContent = '☀️';
+  }
+})();
+function toggleTheme() {
+  var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  var next = isLight ? 'dark' : 'light';
+  if (next === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
+  localStorage.setItem('gy_theme', next);
+  var btn = document.getElementById('themeToggleBtn');
+  if (btn) btn.textContent = next === 'light' ? '☀️' : '🌙';
 }
 
 function esc(s) {
@@ -761,14 +1367,161 @@ function esc(s) {
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-function toast(msg, type, duration) {
+// Bugfix (reported: "the actions button didn't expand" — the whole "actions
+// don't work" complaint traced back to this): every dynamically-built
+// onclick="fn(' + JSON.stringify(tag) + ')" attribute in this file was
+// wrapped in DOUBLE quotes, but JSON.stringify() also produces a
+// DOUBLE-quoted string — so the rendered HTML looked like
+// onclick="toggleDrawer("8ABC123")", which the browser's HTML parser reads
+// as the attribute ending right after "toggleDrawer(", with everything from
+// the tag onward spilling out as invalid markup. The onclick handler content
+// was therefore always truncated to "toggleDrawer(" (a JS syntax error), so
+// every click on every dynamically-rendered admin action button silently did
+// nothing. attrJson() HTML-entity-encodes the quotes JSON.stringify()
+// produces so they survive being embedded in a double-quoted attribute —
+// the browser decodes &quot; back to " before handing the string to the JS
+// parser, so the function call arrives intact.
+function attrJson(val) {
+  return JSON.stringify(val).replace(/"/g, '&quot;');
+}
+
+function toast(msg, type, duration, undoFn) {
+  // Idea #80: toasts already stack (see .toast-wrap's flex-column layout below)
+  // rather than overwrite one another — each call appends its own element.
   type = type || 'info'; duration = duration || 3500;
   var wrap = document.getElementById('toast-wrap');
   var t = document.createElement('div');
-  t.className = 'toast toast-' + type; t.textContent = msg;
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
   t.onclick = function(){ t.remove(); };
+  // Idea #63: an inline Undo action within the toast's visible window.
+  if (typeof undoFn === 'function') {
+    var undoBtn = document.createElement('button');
+    undoBtn.textContent = ' Undo';
+    undoBtn.style.cssText = 'margin-left:8px; background:none; border:1px solid currentColor; color:inherit; border-radius:3px; cursor:pointer; font-size:11px; padding:1px 6px;';
+    undoBtn.onclick = function(e){ e.stopPropagation(); undoFn(); t.remove(); };
+    t.appendChild(undoBtn);
+    duration = Math.max(duration, 6000);
+  }
   wrap.appendChild(t);
   setTimeout(function(){ if (t.parentNode) t.remove(); }, duration);
+}
+
+// ── Idea #61: global sidebar search ─────────────────────────────────────────────
+async function runGlobalSearch() {
+  var q = document.getElementById('global-search').value.trim().toLowerCase();
+  var results = document.getElementById('global-search-results');
+  if (!q) { results.style.display = 'none'; return; }
+  var hits = [];
+  // Search whatever roster data is already loaded client-side (no extra API call).
+  (_rosterData || []).forEach(function(m) {
+    if ((m.name||'').toLowerCase().includes(q) || (m.tag||'').toLowerCase().includes(q)) {
+      hits.push({ label: '👤 ' + m.name + ' (' + m.tag + ')', action: function(){ showTab('roster', document.querySelector('.nav-btn')); loadRoster(); } });
+    }
+  });
+  ['roster','diag','war','battles','analytics','harvest','csv','editor','users','recruiting','activity','settings','admin'].forEach(function(t) {
+    if (t.includes(q)) hits.push({ label: '📁 Tab: ' + t, action: function(){ var btn = Array.from(document.querySelectorAll('.nav-btn')).find(function(b){return b.textContent.toLowerCase().includes(t);}); showTab(t, btn); } });
+  });
+  if (!hits.length) { results.innerHTML = '<div style="padding:10px; color:var(--dim);">No matches.</div>'; results.style.display = 'block'; return; }
+  results.innerHTML = hits.slice(0, 10).map(function(h, i) {
+    return '<div style="padding:8px 10px; cursor:pointer; border-bottom:1px solid var(--border);" onclick="globalSearchJump(' + i + ')">' + esc(h.label) + '</div>';
+  }).join('');
+  window._globalSearchHits = hits;
+  results.style.display = 'block';
+}
+function globalSearchJump(i) {
+  var hit = (window._globalSearchHits || [])[i];
+  if (hit) hit.action();
+  document.getElementById('global-search-results').style.display = 'none';
+  document.getElementById('global-search').value = '';
+}
+
+// ── Idea #73: keyboard shortcuts ────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  var tag = (e.target.tagName || '').toLowerCase();
+  var typing = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
+  if (e.key === '/' && !typing) {
+    e.preventDefault();
+    document.getElementById('global-search').focus();
+    return;
+  }
+  if (typing) return;
+  // "g" then a letter — a short two-key sequence, common in modern admin panels (e.g. Gmail, Linear).
+  if (window._gPending) {
+    window._gPending = false;
+    var map = { r: 'roster', w: 'war', b: 'battles', a: 'analytics', s: 'settings', u: 'users' };
+    var target = map[e.key];
+    if (target) {
+      var btn = Array.from(document.querySelectorAll('.nav-btn')).find(function(b){ return b.textContent.toLowerCase().includes(target === 'battles' ? 'battle' : target); });
+      showTab(target, btn);
+      if (target === 'roster') loadRoster();
+    }
+    return;
+  }
+  if (e.key === 'g') { window._gPending = true; setTimeout(function(){ window._gPending = false; }, 1200); }
+});
+
+// ── Idea #75: onboarding checklist banner ───────────────────────────────────────
+function dismissOnboarding() {
+  localStorage.setItem('gb_onboarding_dismissed', '1');
+  document.getElementById('onboarding-banner').style.display = 'none';
+}
+function saveOnboardingProgress() {
+  var state = { ob1: document.getElementById('ob-1').checked, ob2: document.getElementById('ob-2').checked, ob3: document.getElementById('ob-3').checked };
+  localStorage.setItem('gb_onboarding_progress', JSON.stringify(state));
+  if (state.ob1 && state.ob2 && state.ob3) dismissOnboarding();
+}
+function initOnboardingBanner() {
+  if (localStorage.getItem('gb_onboarding_dismissed')) return;
+  var saved = JSON.parse(localStorage.getItem('gb_onboarding_progress') || '{}');
+  if (saved.ob1) document.getElementById('ob-1').checked = true;
+  if (saved.ob2) document.getElementById('ob-2').checked = true;
+  if (saved.ob3) document.getElementById('ob-3').checked = true;
+  document.getElementById('onboarding-banner').style.display = 'block';
+}
+
+// ── Idea #70: maintenance-mode-left-on warning ──────────────────────────────────
+async function checkMaintenanceWarning() {
+  try {
+    var res = await fetch('/admin/api/maintenance-status');
+    var d = await res.json();
+    var banner = document.getElementById('maintenance-warning-banner');
+    if (d.stale_warning) {
+      banner.style.display = 'block';
+      banner.textContent = '⚠️ Maintenance mode has been ON for ' + d.hours_on + ' hour(s) — did you forget to turn it back off?';
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch (e) { /* non-critical */ }
+}
+
+// ── Idea #64/#79: activity log ──────────────────────────────────────────────────
+async function loadActivityLog() {
+  var tbody = document.getElementById('activity-log-body');
+  var byAdminEl = document.getElementById('activity-by-admin');
+  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading…</td></tr>';
+  try {
+    var res = await fetch('/admin/api/activity-log');
+    var d = await res.json();
+    var entries = d.entries || [];
+    tbody.innerHTML = entries.length ? entries.map(function(e){
+      return '<tr><td style="color:var(--dim); font-family:var(--font-mono); font-size:11px;">' + esc((e.timestamp||'').toString().slice(0,19).replace('T',' ')) + '</td>'
+        + '<td>' + esc(e.admin_name||'Unknown') + '</td>'
+        + '<td>' + esc(e.action||'') + '</td>'
+        + '<td style="color:var(--dim)">' + esc(e.target||'—') + '</td>'
+        + '<td style="font-size:11px; color:var(--dim);">' + esc(e.details||'') + '</td>'
+        + '<td style="font-size:11px; color:var(--dim); font-family:var(--font-mono);" title="' + esc(e.user_agent||'') + '">' + esc(e.ip_address||'—') + '</td></tr>';
+    }).join('') : '<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--dim);">No admin actions logged yet.</td></tr>';
+
+    var byAdmin = d.by_admin || {};
+    var keys = Object.keys(byAdmin);
+    byAdminEl.innerHTML = keys.length ? keys.map(function(k){
+      var a = byAdmin[k];
+      return '<div class="diag-row"><span class="diag-key">' + esc(a.name) + '</span><span class="diag-val">' + esc(a.count) + ' action(s)</span></div>';
+    }).join('') : '<span style="color:var(--dim)">No activity yet.</span>';
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--err); text-align:center; padding:24px;">Failed to load activity log.</td></tr>';
+  }
 }
 
 function appendLog(msg, level) {
@@ -793,8 +1546,22 @@ function setStatCard(id, value, note, status) {
   var card = document.getElementById(id);
   if (!card) return;
   card.className = 'stat-card ' + status;
-  card.querySelector('.stat-value').className = 'stat-value ' + status;
-  card.querySelector('.stat-value').textContent = value;
+  var valEl = card.querySelector('.stat-value');
+  valEl.className = 'stat-value ' + status;
+  // Idea #184: animate plain whole-number values counting up from 0; leave
+  // strings like "75%" or "—" alone since there's nothing sensible to tween.
+  var asNumber = (typeof value === 'number') ? value : (/^\d+$/.test(String(value)) ? parseInt(value, 10) : NaN);
+  if (!isNaN(asNumber) && !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+    var startTime = null, duration = 700;
+    (function step(ts) {
+      if (!startTime) startTime = ts;
+      var progress = Math.min(1, (ts - startTime) / duration);
+      valEl.textContent = Math.floor(asNumber * progress);
+      if (progress < 1) requestAnimationFrame(step); else valEl.textContent = asNumber;
+    })(performance.now());
+  } else {
+    valEl.textContent = value;
+  }
   card.querySelector('.stat-note').textContent  = note;
 }
 
@@ -813,6 +1580,14 @@ function formatBattleTime(raw) {
 }
 
 // ── Diagnostics ──────────────────────────────────────────────────────────────
+// Idea #68: diagnostics auto-refresh.
+var _diagAutoRefreshTimer = null;
+function toggleDiagAutoRefresh() {
+  var on = document.getElementById('diag-auto-refresh').checked;
+  if (_diagAutoRefreshTimer) { clearInterval(_diagAutoRefreshTimer); _diagAutoRefreshTimer = null; }
+  if (on) { _diagAutoRefreshTimer = setInterval(loadDiagnostics, 30000); }
+}
+
 async function loadDiagnostics() {
   var btn = document.getElementById('btn-diag-refresh');
   var spin = document.getElementById('diag-spin');
@@ -833,9 +1608,67 @@ async function loadDiagnostics() {
   }
 }
 
+// ── Idea #160: secret rotation reminders ────────────────────────────────────────
+var SECRET_ROTATION_STALE_DAYS = 90;
+async function loadSecretRotation() {
+  var el = document.getElementById('secret-rotation-list');
+  if (!el) return;
+  try {
+    var res = await fetch('/admin/api/settings/secret-rotation');
+    var d = await res.json();
+    var log = d.secret_rotation_log || {};
+    var secrets = [
+      ['discord_client_secret', 'Discord Client Secret'],
+      ['cr_token', 'Clash Royale API Token'],
+      ['flask_secret', 'Flask Session Secret'],
+    ];
+    el.innerHTML = secrets.map(function(s) {
+      var last = log[s[0]];
+      var daysAgo = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : null;
+      var stale = daysAgo === null || daysAgo > SECRET_ROTATION_STALE_DAYS;
+      return '<div class="diag-row"><span class="diag-key">' + s[1] + '</span>'
+        + '<span class="diag-val" style="' + (stale ? 'color:var(--err)' : 'color:var(--ok)') + '">'
+        + (daysAgo === null ? 'Never recorded' : daysAgo + ' day(s) ago')
+        + ' <button class="btn-refresh" style="padding:2px 8px; font-size:10px; margin-left:6px;" onclick="markSecretRotated(' + attrJson(s[0]) + ')">Mark rotated today</button></span></div>';
+    }).join('');
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Failed to load.</span>'; }
+}
+function markSecretRotated(name) {
+  fetch('/admin/api/settings/secret-rotation', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ secret_name: name })
+  }).then(function(){ toast('Marked ' + name + ' as rotated.', 'ok'); loadSecretRotation(); })
+    .catch(function(){ toast('Failed to record rotation.', 'err'); });
+}
+
+// ── Idea #152: config backup visibility ─────────────────────────────────────────
+async function loadConfigBackups() {
+  var el = document.getElementById('config-backups-list');
+  if (!el) return;
+  try {
+    var res = await fetch('/admin/api/config-backups');
+    var d = await res.json();
+    var backups = d.backups || [];
+    el.innerHTML = backups.length ? backups.slice(0, 5).map(function(b) {
+      return '<div class="diag-row"><span class="diag-key">' + esc(b.backup_date) + '</span><span class="diag-val">snapshot saved</span></div>';
+    }).join('') + '<div style="color:var(--dim); margin-top:6px; font-size:11px;">' + backups.length + ' backup(s) retained (14-day rolling window).</div>'
+      : '<span style="color:var(--dim)">No backups yet — the harvester creates one daily.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Failed to load.</span>'; }
+}
+
 function renderDiagnostics(d) {
   document.getElementById('diag-env').textContent =
     'v' + (d.version||'?') + ' · ' + (d.environment||'unknown') + ' · ' + (d.hostname||'');
+  // Idea #156/#157: cumulative CR API health (rate-limit hits, retries).
+  var crHealthEl = document.getElementById('cr-api-health');
+  if (crHealthEl) {
+    var cum = (d.cr_api || {}).cumulative || {};
+    crHealthEl.innerHTML = renderRows([
+      ['Total Calls', cum.total_calls != null ? cum.total_calls : '—'],
+      ['Retries', cum.retry_count != null ? cum.retry_count : 0],
+      ['Rate-Limited (429s)', cum.rate_limited_count != null ? cum.rate_limited_count : 0, (cum.rate_limited_count > 0 ? 'warn' : 'ok')],
+      ['Last Rate-Limited', cum.last_rate_limited_at ? String(cum.last_rate_limited_at).slice(0, 19).replace('T', ' ') : 'Never'],
+    ]);
+  }
   var redis = d.redis||{}, redisOk = redis.status==='ok';
   setPill('pill-redis', redisOk?'ONLINE':'OFFLINE', redisOk?'ok':'err');
   setStatCard('sc-redis', redisOk?'✓':'✗', redis.ping_ms!=null?redis.ping_ms+'ms ping':'unreachable', redisOk?'ok':'err');
@@ -877,8 +1710,46 @@ function renderDiagnostics(d) {
     ['Total Keys', cache.total_keys!=null?cache.total_keys:0],
     ['HTML Cache Entries', cache.html_cache_entries!=null?cache.html_cache_entries:0]
   ]);
+  // Idea #239: slow-query flag — per-route timing accumulated by
+  // _record_query_timing() on the heavy Analytics-tab aggregation routes.
+  var sq = d.slow_queries || {};
+  var sqRoutes = sq.routes || {};
+  var sqEl = document.getElementById('body-slow-queries');
+  if (sqEl) {
+    var routeRows = Object.keys(sqRoutes).map(function(name) {
+      var r = sqRoutes[name];
+      var isSlow = (r.max_ms || 0) >= (sq.threshold_ms || 500);
+      return [name, (r.call_count||0)+' calls, avg '+(r.avg_ms||0)+'ms, max '+(r.max_ms||0)+'ms', isSlow ? 'warn' : 'ok'];
+    });
+    var recentSlow = (sq.recent_slow || []).slice(-5).reverse();
+    var recentHtml = recentSlow.length
+      ? recentSlow.map(function(e) {
+          return '<div style="font-size:11px;color:var(--dim);font-family:var(--font-mono);">'
+            + esc(e.route) + ' — ' + e.duration_ms + 'ms @ ' + String(e.at||'').slice(0,19).replace('T',' ') + '</div>';
+        }).join('')
+      : '<div style="font-size:11px;color:var(--dim);">No slow calls recorded (threshold '+(sq.threshold_ms||500)+'ms).</div>';
+    sqEl.innerHTML = (routeRows.length ? renderRows(routeRows) : '<div style="font-size:12px;color:var(--dim);">No timing data yet — open the Analytics tab to populate this.</div>')
+      + '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">' + recentHtml + '</div>';
+  ]);
   var harv = d.harvest||{}, harvOk = !!harv.last_run;
   setStatCard('sc-harvest', harv.last_run||'Never', harv.snapshots_saved?harv.snapshots_saved+' snaps':'no data', harvOk?'ok':'warn');
+  // Idea #186: freshness glow — green if the last harvest ran within the hour,
+  // amber if it's staler than that (or unknown).
+  (function() {
+    var card = document.getElementById('sc-harvest');
+    if (!card) return;
+    var ageMs = harv.last_run ? (Date.now() - new Date(harv.last_run).getTime()) : Infinity;
+    var fresh = ageMs <= 60 * 60 * 1000;
+    card.setAttribute('data-fresh', fresh ? 'true' : 'false');
+    var note = card.querySelector('.stat-note');
+    if (note) {
+      var label = document.createElement('span');
+      label.className = 'freshness-label ' + (fresh ? 'fresh' : 'stale');
+      label.textContent = fresh ? ' updated recently' : ' getting stale';
+      note.appendChild(document.createElement('br'));
+      note.appendChild(label);
+    }
+  })();
   document.getElementById('harvest-detail-body').innerHTML = renderRows([
     ['Last Run', harv.last_run||'Never'],
     ['Status', harv.status||'unknown', harv.status==='ok'?'ok':'warn'],
@@ -891,7 +1762,7 @@ function renderDiagnostics(d) {
   ]);
   var historyList = (harv.history_dates||[]).map(function(date){
     return '<div class="diag-row" style="padding:10px 0;">'
-      + '<span class="diag-key" style="color:#fff;">' + esc(date) + '</span>'
+      + '<span class="diag-key" style="color:var(--text-bright);">' + esc(date) + '</span>'
       + '<span class="diag-val"><button class="btn-refresh" style="padding:4px 10px; font-size:11px;" '
       + 'onclick="window.open(\'/admin/api/snapshot/' + esc(date) + '\',\'_blank\')">👀 View</button></span></div>';
   }).join('');
@@ -921,7 +1792,13 @@ async function loadAnalytics() {
     renderBattleAnalysis(battles);
     renderArchetypes(archetypes);
     await loadClanTrend();
+    await loadCW2Trend();
     await populateMemberSelect();
+    loadTierList();
+    loadUnderusedGems();
+    loadHardCounters();
+    loadMatchupBreakdown();
+    loadMetaSnapshotDiff();
     document.getElementById('analytics-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
     toast('Analytics refreshed.', 'ok');
   } catch(e) {
@@ -941,6 +1818,11 @@ function renderAnalyticsOverview(d) {
   setStatCard('ov-battles', d.battles_logged != null ? d.battles_logged : '—', 'All-time harvested', 'ok');
   var winRate = d.overall_win_rate || 0;
   setStatCard('ov-winrate', winRate + '%', 'Across all logged battles', winRate >= 50 ? 'ok' : 'warn');
+  // Idea #5: under-strength flag.
+  var underStrength = !!d.under_strength;
+  setStatCard('ov-strength', underStrength ? '⚠️ Under' : '✓ OK', 'Min size: ' + (d.min_clan_size != null ? d.min_clan_size : '—'), underStrength ? 'err' : 'ok');
+  // Idea #7: boat battle tracking.
+  setStatCard('ov-boat', d.boat_battles_logged != null ? d.boat_battles_logged : '—', (d.boat_battle_win_rate != null ? d.boat_battle_win_rate + '% win rate' : 'No data yet'), 'ok');
 }
 
 function renderLeaderboardList(elId, items, valueSuffix) {
@@ -957,7 +1839,48 @@ function renderLeaderboards(d) {
   renderLeaderboardList('lb-donators', d.top_donators, '');
   renderLeaderboardList('lb-climbers', d.top_climbers, '');
   renderLeaderboardList('lb-winrate', d.top_win_rate, '%');
-  renderLeaderboardList('lb-warfame', d.top_war_fame, '');
+  // Idea #18: personal-best fame marker alongside the raw leaderboard.
+  var warfameEl = document.getElementById('lb-warfame');
+  if (d.top_war_fame && d.top_war_fame.length) {
+    warfameEl.innerHTML = d.top_war_fame.map(function(it, i){
+      var pbTag = it.is_new_personal_best ? ' <span style="color:var(--ok); font-size:10px;">★ PB</span>' : '';
+      return '<div class="diag-row"><span class="diag-key">#' + (i+1) + ' ' + esc(it.name) + pbTag + '</span>'
+        + '<span class="diag-val" style="color:var(--accent); font-weight:700;">' + esc(it.value) + '</span></div>';
+    }).join('');
+  } else {
+    warfameEl.innerHTML = renderRows([['No data yet', '—']]);
+  }
+  renderLeaderboardList('lb-fame-efficiency', d.top_fame_efficiency, ' fame/deck');
+}
+
+// Idea #11: CW2 weekly score chart with moving average.
+var _cw2ChartInstance = null;
+async function loadCW2Trend() {
+  var canvas = document.getElementById('cw2TrendChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  try {
+    var res = await fetch('/admin/api/analytics/cw2-trend');
+    var d = await res.json();
+    var points = d.points || [];
+    if (_cw2ChartInstance) { _cw2ChartInstance.destroy(); }
+    _cw2ChartInstance = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: points.map(function(p){ return 'S' + p.season_id + '.' + p.section_index; }),
+        datasets: [
+          { type: 'bar', label: 'Fame', data: points.map(function(p){ return p.fame; }), backgroundColor: 'rgba(0,229,255,0.4)' },
+          { type: 'line', label: 'Moving Avg', data: points.map(function(p){ return p.moving_avg; }), borderColor: '#f1c40f', tension: 0.2, pointRadius: 2 },
+        ],
+      },
+      options: {
+        plugins: { legend: { labels: { color: '#c5c6c7' } } },
+        scales: {
+          x: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        },
+      },
+    });
+  } catch(e) { /* non-critical chart */ }
 }
 
 function renderBattleAnalysis(d) {
@@ -990,22 +1913,132 @@ function deckLabel(cards) { return (cards || []).join(', '); }
 function renderArchetypeTable(tableId, rows) {
   var body = document.querySelector('#' + tableId + ' tbody');
   if (!rows || !rows.length) {
-    body.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--dim); padding:16px;">Not enough repeated decks yet — need more logged battles</td></tr>';
+    body.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--dim); padding:16px;">Not enough repeated decks yet — need more logged battles</td></tr>';
     return;
   }
+  // Idea #224: trend badges (up/down/flat, 7-day usage delta).
+  var trendIcon = { up: '📈', down: '📉', flat: '➡️' };
   body.innerHTML = rows.map(function(a){
     var color = a.win_rate >= 50 ? 'var(--ok)' : 'var(--err)';
-    var label = deckLabel(a.cards);
-    return '<tr><td style="max-width:340px; font-size:11px; color:var(--dim);" title="' + esc(label) + '">' + esc(label) + '</td>'
+    var label = a.name ? a.name + ' (' + deckLabel(a.cards) + ')' : deckLabel(a.cards);
+    return '<tr><td style="max-width:280px; font-size:11px; color:var(--dim);" title="' + esc(label) + '"><strong style="color:var(--text-bright);">' + esc(a.name || '') + '</strong><br>' + esc(deckLabel(a.cards)) + '</td>'
       + '<td>' + esc(a.games) + '</td>'
       + '<td style="color:' + color + '; font-weight:700;">' + esc(a.win_rate) + '%</td>'
-      + '<td>' + esc(a.unique_players) + '</td></tr>';
+      + '<td title="7-day usage trend">' + (trendIcon[a.trend] || '') + '</td>'
+      + '<td>' + (a.copy_deck_url ? '<a href="' + esc(a.copy_deck_url) + '" target="_blank" title="Copy this deck (idea #227)">📋</a>' : '') + '</td></tr>';
   }).join('');
 }
 
 function renderArchetypes(d) {
   renderArchetypeTable('tbl-archetype-winrate', d.top_by_win_rate);
   renderArchetypeTable('tbl-archetype-usage', d.top_by_usage);
+  var note = document.getElementById('deck-diversity-note');
+  if (note && d.deck_diversity_score != null) {
+    note.textContent = 'Idea #230 — clan deck diversity score: ' + d.deck_diversity_score + ' (1.0 = everyone plays something different, 0 = everyone plays the same deck).';
+  }
+}
+
+// ── Section 14: card meta & deck intelligence ────────────────────────────────
+async function loadTierList() {
+  var el = document.getElementById('tier-list-content');
+  try {
+    var res = await fetch('/admin/api/analytics/tier-list');
+    var d = await res.json();
+    var order = ['S', 'A', 'B', 'C', 'D'];
+    el.innerHTML = order.map(function(t) {
+      var cards = (d.tiers[t] || []).slice(0, 5);
+      if (!cards.length) return '';
+      return '<div style="margin-bottom:8px;"><strong style="color:var(--accent);">' + t + ' Tier</strong>: '
+        + cards.map(function(c){ return esc(c.card) + ' (' + c.win_rate + '%)'; }).join(', ') + '</div>';
+    }).join('') || '<span style="color:var(--dim); font-size:12px;">Not enough data yet.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err); font-size:12px;">Error loading tier list.</span>'; }
+}
+async function loadUnderusedGems() {
+  var el = document.getElementById('underused-gems-content');
+  try {
+    var res = await fetch('/admin/api/analytics/underused-gems');
+    var d = await res.json();
+    var gems = d.underused_gems || [];
+    el.innerHTML = gems.length ? gems.map(function(g) {
+      return '<div style="font-size:12px; padding:3px 0;">💎 <strong>' + esc(g.card) + '</strong> — ' + g.win_rate + '% win rate, only ' + g.usage_pct + '% usage</div>';
+    }).join('') : '<span style="color:var(--dim); font-size:12px;">No standout hidden gems yet.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err); font-size:12px;">Error.</span>'; }
+}
+async function loadHardCounters() {
+  var el = document.getElementById('hard-counters-content');
+  try {
+    var res = await fetch('/admin/api/analytics/hard-counters');
+    var d = await res.json();
+    var cards = d.cards_clan_struggles_against || [];
+    el.innerHTML = cards.length ? cards.slice(0, 8).map(function(c) {
+      return '<div style="font-size:12px; padding:3px 0;">😤 <strong>' + esc(c.card) + '</strong> — seen in ' + c.loss_appearances + ' losses</div>';
+    }).join('') : '<span style="color:var(--dim); font-size:12px;">Not enough loss data yet.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err); font-size:12px;">Error.</span>'; }
+}
+async function loadMatchupBreakdown() {
+  var el = document.getElementById('matchup-breakdown-content');
+  try {
+    var res = await fetch('/admin/api/analytics/matchup-breakdown');
+    var d = await res.json();
+    var rows = Object.entries(d.by_battle_type || {});
+    el.innerHTML = rows.length ? rows.map(function(kv) {
+      return '<div class="diag-row"><span class="diag-key">' + esc(kv[0]) + '</span><span class="diag-val">' + kv[1].win_rate + '% (' + kv[1].games + ' games)</span></div>';
+    }).join('') : '<span style="color:var(--dim); font-size:12px;">No data yet.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err); font-size:12px;">Error.</span>'; }
+}
+function takeMetaSnapshot() {
+  fetch('/admin/api/analytics/meta-snapshot', { method: 'POST' })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Meta snapshot taken.', 'ok'); loadMetaSnapshotDiff(); })
+    .catch(function(){ toast('Failed to take snapshot.', 'err'); });
+}
+async function loadMetaSnapshotDiff() {
+  var el = document.getElementById('meta-snapshot-diff');
+  try {
+    var res = await fetch('/admin/api/analytics/meta-snapshot');
+    var d = await res.json();
+    var diff = d.diff || [];
+    el.innerHTML = diff.length ? diff.map(function(x) {
+      var deltaStr = x.delta == null ? 'new' : (x.delta >= 0 ? '+' : '') + x.delta + 'pts';
+      var color = x.delta == null ? 'var(--dim)' : x.delta >= 0 ? 'var(--ok)' : 'var(--err)';
+      return '<div style="font-size:12px; padding:2px 0;">' + esc(x.name) + ': ' + x.current_win_rate + '% <span style="color:' + color + '">(' + deltaStr + ')</span></div>';
+    }).join('') : '<span style="color:var(--dim); font-size:12px;">Take a snapshot to start tracking changes over time.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err); font-size:12px;">Error.</span>'; }
+}
+async function loadBestPilots() {
+  var card = document.getElementById('pilot-card-input').value.trim();
+  var el = document.getElementById('best-pilots-content');
+  if (!card) return;
+  el.innerHTML = '<span class="spin">↻</span> Loading…';
+  try {
+    var res = await fetch('/admin/api/analytics/best-pilots/' + encodeURIComponent(card));
+    var d = await res.json();
+    var pilots = d.pilots || [];
+    el.innerHTML = pilots.length ? pilots.map(function(p, i) {
+      return '<div style="font-size:12px; padding:3px 0;">' + (i+1) + '. <strong>' + esc(p.name) + '</strong> — ' + p.win_rate + '% (' + p.games + ' games)</div>';
+    }).join('') : '<span style="color:var(--dim); font-size:12px;">No pilots with enough games on that card yet.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err); font-size:12px;">Error.</span>'; }
+}
+async function runCounterPickPrep() {
+  var raw = document.getElementById('counter-prep-input').value.trim();
+  var el = document.getElementById('counter-prep-content');
+  if (!raw) return;
+  var cards = raw.split(',').map(function(c){ return c.trim(); }).filter(Boolean);
+  el.innerHTML = '<span class="spin">↻</span> Analyzing…';
+  try {
+    var res = await fetch('/admin/api/analytics/counter-pick-prep', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ cards: cards }),
+    });
+    var d = await res.json();
+    if (!res.ok || d.error) { el.innerHTML = '<span style="color:var(--err)">' + esc(d.error || 'Failed.') + '</span>'; return; }
+    var counterLines = Object.entries(d.suggested_counters || {}).map(function(kv) {
+      return '<div style="font-size:12px; padding:2px 0;"><strong>' + esc(kv[0]) + '</strong> → ' + kv[1].map(esc).join(', ') + '</div>';
+    }).join('') || '<span style="color:var(--dim); font-size:12px;">No known counters on file for those cards.</span>';
+    var deckLines = (d.best_performing_decks_against_similar_opponents || []).map(function(a) {
+      return '<div style="font-size:12px; padding:2px 0;">🛡️ <strong>' + esc(a.name) + '</strong> — ' + a.win_rate + '% (' + a.games + ' games vs similar opponents)</div>';
+    }).join('') || '<span style="color:var(--dim); font-size:12px;">No historical matchup data against similar decks yet.</span>';
+    el.innerHTML = '<div style="margin-bottom:10px;"><strong>Suggested Counters</strong>' + counterLines + '</div>'
+      + '<div><strong>Best Historical Decks vs. Similar Opponents</strong>' + deckLines + '</div>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Analysis failed.</span>'; }
 }
 
 var clanTrendChart = null;
@@ -1101,21 +2134,28 @@ async function loadWar() {
     var sorted = participants.slice().sort(function(a,b){ return (b.fame||0)-(a.fame||0); });
     var curFame = current.clan ? current.clan.fame : 0;
     var prevFame = prev.standings ? (prev.standings.find(function(s){ return s.clan.tag.replace('#','') === '{{ clan_tag }}'; }) || {clan:{fame:0}}).clan.fame : 0;
+    // Idea #1: war-day vs training-day indicator. Idea #4: projected finish.
+    var dayLabel = current.period_type_label || '—';
+    var proj = current.projected_finish || {};
     content.innerHTML =
       '<div class="stat-row">'
+      + '<div class="stat-card ok"><div class="stat-label">Today Is</div><div class="stat-value">' + esc(dayLabel) + '</div></div>'
       + '<div class="stat-card ok"><div class="stat-label">Current War Fame</div><div class="stat-value">⭐ ' + esc(curFame) + '</div></div>'
       + '<div class="stat-card ok"><div class="stat-label">Previous War Fame</div><div class="stat-value">⭐ ' + esc(prevFame) + '</div></div>'
       + '<div class="stat-card ok"><div class="stat-label">Aggregate Historical Fame</div><div class="stat-value">⭐ ' + esc(agg.total_fame||0) + '</div></div>'
+      + (proj.projected_pct != null ? '<div class="stat-card ok"><div class="stat-label">Projected Finish</div><div class="stat-value">' + esc(proj.projected_pct) + '%</div><div class="stat-note">~' + esc(proj.projected_fame) + ' / 10,000 fame at this pace</div></div>' : '')
       + '</div>'
       + '<div class="diag-card" style="overflow-x:auto;">'
-      + '<table class="war-table"><thead><tr><th>Player</th><th>Tag</th><th>Fame</th><th>Decks Today</th><th>War Wins</th></tr></thead><tbody>'
+      + '<table class="war-table"><thead><tr><th>Player</th><th>Tag</th><th>Fame</th><th>Decks Today</th><th>Decks Left</th><th>War Wins</th></tr></thead><tbody>'
       + sorted.map(function(p){
           var decks = p.decksUsedToday||0, pct = Math.round(decks/4*100);
+          var remaining = p.decksRemaining != null ? p.decksRemaining : Math.max(0, 4 - decks);
           return '<tr>'
             + '<td><strong>' + esc(p.name) + '</strong></td>'
             + '<td style="color:var(--dim)">' + esc(p.tag) + '</td>'
             + '<td style="color:var(--accent); font-weight:700;">' + esc(p.fame||0) + '</td>'
             + '<td>' + esc(decks) + '/4<div class="deck-bar"><div class="deck-bar-fill" style="width:' + pct + '%"></div></div></td>'
+            + '<td>' + esc(remaining) + '</td>'
             + '<td>' + esc(p.warDayWins||0) + '</td></tr>';
         }).join('')
       + '</tbody></table></div>';
@@ -1127,18 +2167,101 @@ async function loadWar() {
   }
 }
 
+// ── Idea #3: opponent scouting ──────────────────────────────────────────────────
+async function loadScouting() {
+  var el = document.getElementById('scouting-content');
+  el.innerHTML = '<span class="spin">↻</span> Scouting rival clans…';
+  try {
+    var res = await fetch('/admin/api/war/scouting');
+    var d = await res.json();
+    if (d.error) throw new Error(d.error);
+    var rivals = d.rivals || [];
+    el.innerHTML = rivals.length ? rivals.map(function(r){
+      return '<div class="stat-row" style="justify-content:space-between; display:flex;"><span><strong>' + esc(r.name) + '</strong> <span style="color:var(--dim)">' + esc(r.tag) + '</span></span><span>' + esc(r.member_count) + ' members · avg ' + esc(r.avg_trophies) + ' 🏆 · ' + esc(r.current_fame) + ' fame</span></div>';
+    }).join('') : '<span style="color:var(--dim)">No rival data available.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error: ' + esc(e.message) + '</span>'; }
+}
+
+// ── Idea #6: war history calendar ───────────────────────────────────────────────
+async function loadWarCalendar() {
+  var el = document.getElementById('calendar-content');
+  el.innerHTML = '<span class="spin">↻</span> Loading war history…';
+  try {
+    var res = await fetch('/admin/api/war/calendar');
+    var d = await res.json();
+    var races = d.races || [];
+    el.innerHTML = races.length ? '<div style="display:flex; flex-wrap:wrap; gap:6px;">' + races.map(function(r){
+      var color = r.outcome === 'win' ? '#2ecc71' : (r.outcome === 'loss' ? '#e74c3c' : '#555');
+      return '<div title="' + esc(r.unique_war_id) + ' — ' + esc(r.outcome) + '" style="width:22px; height:22px; border-radius:4px; background:' + color + ';"></div>';
+    }).join('') + '</div>' : '<span style="color:var(--dim)">No completed races logged yet.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error: ' + esc(e.message) + '</span>'; }
+}
+
+// ── Idea #8: missed-war streaks ─────────────────────────────────────────────────
+async function loadMissedStreaks() {
+  var el = document.getElementById('missed-streaks-content');
+  el.innerHTML = '<span class="spin">↻</span> Checking streaks…';
+  try {
+    var res = await fetch('/admin/api/war/missed-streaks');
+    var d = await res.json();
+    var streaks = d.streaks || [];
+    el.innerHTML = streaks.length ? streaks.map(function(s){
+      return '<div class="stat-row"><strong>' + esc(s.name) + '</strong> — ' + esc(s.missed_streak) + ' consecutive races with 0 decks used</div>';
+    }).join('') : '<span style="color:var(--dim)">No one has a 2+ race missed-war streak. 🎉</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error: ' + esc(e.message) + '</span>'; }
+}
+
+// ── Idea #20: post-war retro notes + recap ──────────────────────────────────────
+async function loadRetro() {
+  var warId = document.getElementById('retroWarId').value.trim();
+  var recapEl = document.getElementById('retro-recap');
+  if (!warId) { recapEl.innerHTML = '<span style="color:var(--err)">Enter a war id first.</span>'; return; }
+  recapEl.innerHTML = '<span class="spin">↻</span> Loading…';
+  try {
+    var res = await fetch('/admin/api/war/retro/' + encodeURIComponent(warId));
+    var d = await res.json();
+    if (d.error) throw new Error(d.error);
+    var r = d.recap;
+    recapEl.innerHTML = '<div class="stat-row"><strong>' + esc(r.clan_name) + '</strong> — ' + esc(r.total_fame) + ' fame · ' + esc(r.participation_pct) + '% deck participation</div>'
+      + '<div style="font-size:12px; color:var(--dim);">Top fame: ' + r.top_fame.map(function(p){ return esc(p.name) + ' (' + esc(p.fame||0) + ')'; }).join(', ') + '</div>'
+      + (r.slackers.length ? '<div style="font-size:12px; color:var(--err);">0 decks used: ' + r.slackers.map(function(p){ return esc(p.name); }).join(', ') + '</div>' : '');
+    document.getElementById('retroNotes').value = d.retro_notes || '';
+    document.getElementById('retroNotes').dataset.warId = warId;
+  } catch(e) { recapEl.innerHTML = '<span style="color:var(--err)">Error: ' + esc(e.message) + '</span>'; }
+}
+
+function saveRetro() {
+  var warId = document.getElementById('retroNotes').dataset.warId || document.getElementById('retroWarId').value.trim();
+  var notes = document.getElementById('retroNotes').value;
+  if (!warId) { toast('Load a war id first.', 'err'); return; }
+  fetch('/admin/api/war/retro/' + encodeURIComponent(warId), {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ notes: notes })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Retro notes saved.', 'ok'); })
+    .catch(function(){ toast('Failed to save retro notes.', 'err'); });
+}
+
 // ── Battles ────────────────────────────────────────────────────────────────────
-async function loadBattles() {
+var battlesCurrentPage = 0;
+var battlesPageSize = 25;
+async function loadBattles(page) {
+  page = Math.max(page || 0, 0);
   var tbody = document.getElementById('battles-body');
   tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading…</td></tr>';
   try {
-    var res = await fetch('/admin/api/battles');
+    var res = await fetch('/admin/api/battles?page=' + page + '&page_size=' + battlesPageSize);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     var data = await res.json();
     allBattles = Array.isArray(data) ? data : (data.battles||[]);
     filteredBattles = allBattles.slice();
+    battlesCurrentPage = (data && data.page != null) ? data.page : page;
     document.getElementById('battles-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
     renderBattles(filteredBattles);
+    // Idea #234: pagination controls.
+    var totalCount = (data && data.total_count != null) ? data.total_count : allBattles.length;
+    var totalPages = Math.max(Math.ceil(totalCount / battlesPageSize), 1);
+    document.getElementById('battles-page-indicator').textContent = 'Page ' + (battlesCurrentPage + 1) + ' of ' + totalPages + ' (' + totalCount + ' total)';
+    document.getElementById('battles-prev-btn').disabled = battlesCurrentPage <= 0;
+    document.getElementById('battles-next-btn').disabled = !(data && data.has_more);
     toast('Loaded ' + allBattles.length + ' battle records.', 'ok');
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--err);">Error: ' + esc(e.message) + '</td></tr>';
@@ -1207,22 +2330,272 @@ function showBattleDetails(i) {
 function closeModal() { document.getElementById('battle-modal').classList.remove('open'); }
 
 // ── Users ──────────────────────────────────────────────────────────────────────
+var _usersData = [];  // idea #71: kept client-side so search/sort don't need a refetch
+function renderUserRows(users) {
+  var tbody = document.getElementById('user-table-body');
+  if (!users.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:24px; color:var(--dim);">No matches.</td></tr>'; return; }
+  tbody.innerHTML = users.map(function(u){
+    var tierPicker = u.status === 'Admin'
+      ? '<select class="form-select" style="font-size:11px; padding:2px 6px;" onchange="setUserTier(' + JSON.stringify(u.discord_id) + ', this.value)">'
+        + '<option value="full">Full Admin</option><option value="analytics_only">View-Only (idea #65)</option></select>'
+      : '';
+    return '<tr><td><a href="/player/' + esc(u.cr_tag) + '" style="color:var(--accent); text-decoration:none;">' + esc(u.name) + '</a></td>'
+      + '<td style="font-family:var(--font-mono);">' + esc(u.discord_id) + '</td>'
+      + '<td>' + (u.is_linked?'✅':'❌') + '</td>'
+      + '<td>' + esc(u.rank) + '</td>'
+      + '<td><span style="color:' + (u.status==='Admin'?'var(--ok)':'var(--dim)') + '">' + esc(u.status) + '</span> ' + tierPicker + '</td></tr>';
+  }).join('');
+}
+function setUserTier(discordId, tier) {
+  fetch('/admin/api/users/tier', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ discord_id: discordId, tier: tier })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Permission tier updated.', 'ok'); })
+    .catch(function(){ toast('Failed to update tier (full-admin only).', 'err'); });
+}
+function filterUsers() {
+  var q = (document.getElementById('users-search').value || '').toLowerCase();
+  var sortBy = document.getElementById('users-sort').value;
+  var filtered = _usersData.filter(function(u){
+    return !q || (u.name||'').toLowerCase().includes(q) || (u.discord_id||'').toLowerCase().includes(q);
+  });
+  filtered.sort(function(a,b){
+    if (sortBy === 'status') return (a.status||'').localeCompare(b.status||'');
+    if (sortBy === 'rank') return (a.rank||'').localeCompare(b.rank||'');
+    return (a.name||'').localeCompare(b.name||'');
+  });
+  renderUserRows(filtered);
+}
 async function loadUsers() {
   var tbody = document.getElementById('user-table-body');
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading...</td></tr>';
   try {
     var res = await fetch('/admin/api/users');
-    var users = await res.json();
-    tbody.innerHTML = users.map(function(u){
-      return '<tr><td><a href="/player/' + esc(u.cr_tag) + '" style="color:var(--accent); text-decoration:none;">' + esc(u.name) + '</a></td>'
-        + '<td style="font-family:var(--font-mono);">' + esc(u.discord_id) + '</td>'
-        + '<td>' + (u.is_linked?'✅':'❌') + '</td>'
-        + '<td>' + esc(u.rank) + '</td>'
-        + '<td><span style="color:' + (u.status==='Admin'?'var(--ok)':'var(--dim)') + '">' + esc(u.status) + '</span></td></tr>';
-    }).join('');
+    _usersData = await res.json();
+    filterUsers();
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="5" style="color:var(--err); text-align:center; padding:24px;">Failed to load users.</td></tr>';
   }
+}
+
+// ── Idea #14: recruiting shortlist ──────────────────────────────────────────────
+async function loadRecruits() {
+  var el = document.getElementById('recruits-list');
+  el.innerHTML = '<span class="spin">↻</span> Loading…';
+  try {
+    var res = await fetch('/admin/api/recruits');
+    var d = await res.json();
+    var recruits = d.recruits || [];
+    el.innerHTML = recruits.length ? recruits.map(function(r){
+      return '<div class="stat-row" style="display:flex; justify-content:space-between; align-items:center;">'
+        + '<span><strong>' + esc(r.name || r.tag) + '</strong> <span style="color:var(--dim)">#' + esc(r.tag) + '</span> — <span style="color:var(--accent)">' + esc(r.status) + '</span><br><span style="font-size:12px; color:var(--dim)">' + esc(r.notes||'') + '</span></span>'
+        + '<button class="btn-refresh" style="padding:4px 10px;" onclick="removeRecruit(' + attrJson(r.tag) + ')">🗑️</button>'
+        + '</div>';
+    }).join('') : '<div class="empty-state"><div class="empty-state-icon">🎯</div><div class="empty-state-title">No recruits yet</div><div class="empty-state-sub">Shortlisted prospects will show up here.</div></div>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error loading recruits.</span>'; }
+}
+
+function addRecruit() {
+  var tag = document.getElementById('recruit-tag').value.trim();
+  if (!tag) { toast('Enter a tag first.', 'err'); return; }
+  fetch('/admin/api/recruits', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      tag: tag,
+      name: document.getElementById('recruit-name').value.trim(),
+      status: document.getElementById('recruit-status').value,
+      notes: document.getElementById('recruit-notes').value.trim(),
+    })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Recruit saved.', 'ok'); loadRecruits(); })
+    .catch(function(){ toast('Failed to save recruit.', 'err'); });
+}
+
+function removeRecruit(tag) {
+  fetch('/admin/api/recruits/' + tag.replace('#',''), { method: 'DELETE' })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Removed.', 'ok'); loadRecruits(); })
+    .catch(function(){ toast('Failed to remove recruit.', 'err'); });
+}
+
+// ── Idea #17 (revised): departed-member retention view ─────────────────────────
+async function loadDeparted() {
+  var el = document.getElementById('departed-list');
+  el.innerHTML = '<span class="spin">↻</span> Loading…';
+  try {
+    var res = await fetch('/admin/api/clan/departed');
+    var d = await res.json();
+    var departed = d.departed || [];
+    el.innerHTML = departed.length ? departed.map(function(m){
+      return '<div class="stat-row"><strong>' + esc(m.name||m.tag) + '</strong> — left ' + esc((m.left_clan_at||'').toString().slice(0,10)) + ', purged in ' + esc(m.days_until_purge) + ' day(s)</div>';
+    }).join('') : '<span style="color:var(--dim)">No departed members currently in the retention window.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error loading departed members.</span>'; }
+}
+
+// ── Idea #125: mentor pairings ───────────────────────────────────────────────────
+async function loadMentorPairs() {
+  var el = document.getElementById('mentor-pairs-list');
+  el.innerHTML = '<span class="spin">↻</span> Loading…';
+  try {
+    var res = await fetch('/admin/api/mentor');
+    var d = await res.json();
+    var pairs = d.pairs || [];
+    el.innerHTML = pairs.length ? pairs.map(function(p){
+      return '<div class="stat-row" style="display:flex; justify-content:space-between; align-items:center;">'
+        + '<span><strong>' + esc(p.mentee_name || p.mentee_tag) + '</strong> ← mentored by <strong>' + esc(p.mentor_name || p.mentor_tag) + '</strong></span>'
+        + '<button class="btn-refresh" style="padding:4px 10px;" onclick="removeMentor(' + attrJson(p.mentee_tag) + ')">🗑️</button>'
+        + '</div>';
+    }).join('') : '<span style="color:var(--dim)">No mentor pairings yet.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error loading mentor pairings.</span>'; }
+}
+
+function assignMentor() {
+  var mentee = document.getElementById('mentor-mentee-tag').value.trim();
+  var mentor = document.getElementById('mentor-mentor-tag').value.trim();
+  if (!mentee || !mentor) { toast('Enter both tags first.', 'err'); return; }
+  fetch('/admin/api/mentor', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ mentee_tag: mentee, mentor_tag: mentor })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Mentor assigned.', 'ok'); loadMentorPairs();
+      document.getElementById('mentor-mentee-tag').value=''; document.getElementById('mentor-mentor-tag').value=''; })
+    .catch(function(){ toast('Failed to assign mentor.', 'err'); });
+}
+
+function removeMentor(tag) {
+  fetch('/admin/api/mentor/' + tag.replace('#',''), { method: 'DELETE' })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Pairing removed.', 'ok'); loadMentorPairs(); })
+    .catch(function(){ toast('Failed to remove pairing.', 'err'); });
+}
+
+// ── Idea #193: member spotlight ──────────────────────────────────────────────
+function saveSpotlight() {
+  var payload = {
+    tag: document.getElementById('spotlight-tag').value.trim(),
+    name: document.getElementById('spotlight-name').value.trim(),
+    month: document.getElementById('spotlight-month').value.trim(),
+    bio: document.getElementById('spotlight-bio').value.trim(),
+  };
+  if (!payload.name || !payload.bio) { toast('Name and bio are required.', 'err'); return; }
+  fetch('/admin/api/spotlight', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Spotlight published.', 'ok'); })
+    .catch(function(){ toast('Failed to publish spotlight.', 'err'); });
+}
+
+// ── Ideas #192/#196: clan history milestones ─────────────────────────────────
+function addMilestone() {
+  var payload = {
+    title: document.getElementById('milestone-title').value.trim(),
+    date: document.getElementById('milestone-date').value,
+    description: document.getElementById('milestone-desc').value.trim(),
+  };
+  if (!payload.title) { toast('Title is required.', 'err'); return; }
+  fetch('/admin/api/milestones', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Added to timeline.', 'ok');
+      document.getElementById('milestone-title').value=''; document.getElementById('milestone-desc').value=''; })
+    .catch(function(){ toast('Failed to add milestone.', 'err'); });
+}
+
+// ── Idea #202: friendly scrims ────────────────────────────────────────────────
+async function loadScrims() {
+  var el = document.getElementById('scrims-list');
+  try {
+    var res = await fetch('/admin/api/scrims');
+    var d = await res.json();
+    var scrims = d.scrims || [];
+    el.innerHTML = scrims.length ? scrims.map(function(s) {
+      var badgeClass = s.result === 'win' ? 'badge-win' : s.result === 'loss' ? 'badge-loss' : 'badge-draw';
+      return '<div class="stat-row" style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border);">'
+        + '<span>' + esc(s.date) + ' vs <strong>' + esc(s.opponent_clan_name) + '</strong> <span class="badge ' + badgeClass + '">' + esc(s.result || '—') + '</span></span>'
+        + '<span style="color:var(--dim); font-size:12px;">' + esc(s.notes || '') + '</span></div>';
+    }).join('') : '<div class="empty-state"><div class="empty-state-icon">⚔️</div><div class="empty-state-title">No scrims logged yet</div></div>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error loading scrims.</span>'; }
+}
+function addScrim() {
+  var payload = {
+    opponent_clan_name: document.getElementById('scrim-opponent').value.trim(),
+    opponent_clan_tag: document.getElementById('scrim-tag').value.trim(),
+    result: document.getElementById('scrim-result').value,
+    date: document.getElementById('scrim-date').value,
+  };
+  if (!payload.opponent_clan_name) { toast('Opponent name is required.', 'err'); return; }
+  fetch('/admin/api/scrims', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Scrim logged.', 'ok'); loadScrims();
+      document.getElementById('scrim-opponent').value=''; document.getElementById('scrim-tag').value=''; })
+    .catch(function(){ toast('Failed to log scrim.', 'err'); });
+}
+
+// ── Idea #205: testimonial approval queue ────────────────────────────────────
+async function loadTestimonialsQueue() {
+  var el = document.getElementById('testimonials-list');
+  try {
+    var res = await fetch('/admin/api/testimonials');
+    var d = await res.json();
+    var items = d.testimonials || [];
+    el.innerHTML = items.length ? items.map(function(t) {
+      return '<div class="stat-row" style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border);">'
+        + '<span><strong>' + esc(t.name) + '</strong>: "' + esc(t.quote) + '" ' + (t.approved ? '<span class="badge badge-win">approved</span>' : '<span class="badge badge-draw">pending</span>') + '</span>'
+        + '<button class="btn-refresh" style="padding:4px 10px;" onclick="setTestimonialApproval(' + attrJson(t.tag) + ',' + attrJson(t.created_at) + ',' + (!t.approved) + ')">' + (t.approved ? '🚫 Unapprove' : '✅ Approve') + '</button>'
+        + '</div>';
+    }).join('') : '<div class="empty-state"><div class="empty-state-icon">💬</div><div class="empty-state-title">No testimonials submitted yet</div></div>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error loading testimonials.</span>'; }
+}
+function setTestimonialApproval(tag, createdAt, approved) {
+  fetch('/admin/api/testimonials/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tag: tag, created_at: createdAt, approved: approved }) })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Updated.', 'ok'); loadTestimonialsQueue(); })
+    .catch(function(){ toast('Failed to update testimonial.', 'err'); });
+}
+
+// ── Idea #201: feature suggestions inbox ─────────────────────────────────────
+async function loadFeatureSuggestions() {
+  var el = document.getElementById('feature-suggestions-list');
+  try {
+    var res = await fetch('/admin/api/feature-suggestions');
+    var d = await res.json();
+    var items = d.suggestions || [];
+    el.innerHTML = items.length ? items.map(function(s) {
+      return '<div class="stat-row" style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border);">'
+        + '<span>' + esc(s.message) + ' <span style="color:var(--dim); font-size:11px;">— ' + esc(s.from_name || 'Anonymous') + '</span></span>'
+        + '<span class="badge ' + (s.status === 'reviewed' ? 'badge-win' : 'badge-draw') + '">' + esc(s.status) + '</span>'
+        + '</div>';
+    }).join('') : '<div class="empty-state"><div class="empty-state-icon">💡</div><div class="empty-state-title">No suggestions yet</div></div>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error loading suggestions.</span>'; }
+}
+
+// Idea #122: live welcome-DM preview, rendered like a Discord message bubble.
+function renderWelcomeDmPreview() {
+  var el = document.getElementById('welcome-dm-preview');
+  var raw = document.getElementById('set-welcome-msg').value || '';
+  el.textContent = raw; // textContent, not innerHTML — avoid interpreting the admin's text as markup
+}
+
+// Idea #69: test-DM button.
+function sendTestWelcomeDM() {
+  fetch('/admin/api/settings/test-welcome-dm', { method: 'POST' })
+    .then(function(r){ return r.json().then(function(d){ if(!r.ok) throw new Error(d.error||'failed'); return d; }); })
+    .then(function(d){ toast(d.message || 'Test DM queued.', 'ok'); })
+    .catch(function(e){ toast('Failed: ' + e.message, 'err'); });
+}
+
+// Idea #77: scheduled settings changes.
+function scheduleSettingChange() {
+  var applyAt = document.getElementById('schedule-apply-at').value;
+  var field = document.getElementById('schedule-field').value;
+  if (!applyAt) { toast('Pick a date/time first.', 'err'); return; }
+  var changes = {}; changes[field] = true;
+  fetch('/admin/api/settings/schedule', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ apply_at: new Date(applyAt).toISOString(), changes: changes })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Scheduled.', 'ok'); loadScheduledSettings(); })
+    .catch(function(){ toast('Failed to schedule.', 'err'); });
+}
+async function loadScheduledSettings() {
+  var el = document.getElementById('scheduled-settings-list');
+  try {
+    var res = await fetch('/admin/api/settings/scheduled');
+    var d = await res.json();
+    var items = d.scheduled || [];
+    el.innerHTML = items.length ? items.map(function(s){
+      return '<div>⏰ ' + esc(JSON.stringify(s.changes)) + ' at ' + esc(s.apply_at) + '</div>';
+    }).join('') : 'No scheduled changes.';
+  } catch(e) { /* non-critical */ }
 }
 
 // ── Harvest ────────────────────────────────────────────────────────────────────
@@ -1239,6 +2612,30 @@ async function saveBotSettings() {
     min_trophies:       parseInt(document.getElementById('set-min-trophies').value, 10) || 0,
     welcome_msg:        document.getElementById('set-welcome-msg').value,
     admin_role_ids:     document.getElementById('set-admin-roles').value,
+    min_clan_size:      parseInt(document.getElementById('set-min-clan-size').value, 10) || 40,
+    war_reset_hour_utc: parseInt(document.getElementById('set-war-reset-hour').value, 10) || 10,
+    beta_sync_role_id:  document.getElementById('set-beta-sync-role').value.trim(),
+    auto_strike_missed_war_threshold: parseInt(document.getElementById('set-auto-strike-threshold').value, 10) || 0,
+    changelog_channel_id: document.getElementById('set-changelog-channel').value.trim(),
+    announcements_channel_id: document.getElementById('set-announcements-channel').value.trim(),
+    leadership_channel_id: document.getElementById('set-leadership-channel').value.trim(),
+    quiet_hours_start: document.getElementById('set-quiet-start').value === '' ? null : parseInt(document.getElementById('set-quiet-start').value, 10),
+    quiet_hours_end:   document.getElementById('set-quiet-end').value === '' ? null : parseInt(document.getElementById('set-quiet-end').value, 10),
+    family_page_enabled: document.getElementById('set-family-enabled').checked,
+    family_clan_tags:    document.getElementById('set-family-tags').value,
+    testimonials_enabled: document.getElementById('set-testimonials-enabled').checked,
+    recruiting_banner_enabled: document.getElementById('set-recruiting-banner').checked,
+    auto_decline_stale_applications_enabled: document.getElementById('set-auto-decline-enabled').checked,
+    auto_decline_days: parseInt(document.getElementById('set-auto-decline-days').value, 10) || 14,
+    streaming_integration_enabled: document.getElementById('set-streaming-enabled').checked,
+    streaming_twitch_channel: document.getElementById('set-twitch-channel').value.trim(),
+    streaming_youtube_channel: document.getElementById('set-youtube-channel').value.trim(),
+    reddit_autopost_enabled: document.getElementById('set-reddit-enabled').checked,
+    reddit_subreddit: document.getElementById('set-reddit-subreddit').value.trim(),
+    beta_features_enabled: document.getElementById('set-beta-enabled').checked,
+    recruit_video_url: document.getElementById('set-recruit-video').value.trim(),
+    clan_founding_date: document.getElementById('set-founding-date').value,
+    culture_page_content: document.getElementById('set-culture-content').value,
   };
   btn.disabled = true; btn.textContent = 'Saving…';
   try {
@@ -1273,26 +2670,101 @@ async function triggerManualHarvest() {
   }
 }
 
+// ── Webhooks (ideas #242/#246) ───────────────────────────────────────────────────
+async function loadWebhooks() {
+  var el = document.getElementById('webhooks-list');
+  if (!el) return;
+  try {
+    var res = await fetch('/admin/api/webhooks');
+    var data = await res.json();
+    var hooks = data.webhooks || [];
+    el.innerHTML = hooks.length ? hooks.map(function(h) {
+      return '<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); font-size:12px; font-family:var(--font-mono);">'
+        + '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(h.url) + '</span>'
+        + '<span style="color:var(--dim);">' + esc((h.events||[]).join(', ')) + '</span>'
+        + '<button class="btn-danger" style="padding:2px 8px; font-size:11px;" onclick="deleteWebhook(' + attrJson(h.id) + ')">✕</button>'
+        + '</div>';
+    }).join('') : '<div style="font-size:12px; color:var(--dim);">No webhooks configured yet.</div>';
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--danger); font-size:12px;">Failed to load webhooks: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function addWebhook() {
+  var url = document.getElementById('webhook-url-input').value.trim();
+  var events = [];
+  if (document.getElementById('webhook-evt-war-end').checked) events.push('war_end');
+  if (document.getElementById('webhook-evt-harvest').checked) events.push('harvest_complete');
+  if (!url) { toast('Enter a webhook URL first.', 'err'); return; }
+  try {
+    var res = await fetch('/admin/api/webhooks', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ url: url, events: events })
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    document.getElementById('webhook-url-input').value = '';
+    toast('Webhook added.', 'ok');
+    loadWebhooks();
+  } catch(e) {
+    toast('Failed to add webhook: ' + e.message, 'err');
+  }
+}
+
+async function deleteWebhook(id) {
+  if (!confirm('Remove this webhook?')) return;
+  try {
+    var res = await fetch('/admin/api/webhooks/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    toast('Webhook removed.', 'ok');
+    loadWebhooks();
+  } catch(e) {
+    toast('Failed to remove webhook: ' + e.message, 'err');
+  }
+}
+
 // ── CSV Export ──────────────────────────────────────────────────────────────────
-async function handleCustomCSVExport() {
+async function fetchCustomCSVRecords() {
   var fields = Array.from(document.querySelectorAll('input[name="csv-fields"]:checked')).map(function(cb){ return cb.value; });
-  if (!fields.length) { toast('Select at least one field.', 'err'); return; }
+  if (!fields.length) { toast('Select at least one field.', 'err'); return null; }
   var formData = new FormData();
   fields.forEach(function(f){ formData.append('fields', f); });
   formData.set('export_format', 'json');
+  var res = await fetch('/admin/export/custom', { method: 'POST', body: formData });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  var records = await res.json();
+  if (!Array.isArray(records)) throw new Error('Invalid response format.');
+  var wantWinRate = document.getElementById('formula-winrate').checked;
+  var wantWarPart = document.getElementById('formula-warpart').checked;
+  records.forEach(function(row){
+    if (wantWinRate) { var w=row.totalWins||0, l=row.totalLosses||0; row['Computed_WinRate%'] = (w+l>0)?((w/(w+l))*100).toFixed(1):'0.0'; }
+    if (wantWarPart) { var used=row.decksUsedToday||0, rem=row.decksRemaining||0, tot=used+rem; row['Computed_WarParticipation%'] = tot>0?((used/tot)*100).toFixed(1):'0.0'; }
+  });
+  return records;
+}
+
+// Idea #72: dry-run preview of the first 5 rows before committing to a download.
+async function previewCustomCSVExport() {
+  var el = document.getElementById('csv-preview');
+  el.innerHTML = '<span style="color:var(--dim)"><span class="spin">↻</span> Fetching preview…</span>';
+  try {
+    var records = await fetchCustomCSVRecords();
+    if (!records) { el.innerHTML = ''; return; }
+    if (!records.length) { el.innerHTML = '<span style="color:var(--dim)">No records returned.</span>'; return; }
+    var headers = Object.keys(records[0]);
+    var rows = records.slice(0, 5);
+    el.innerHTML = '<table class="war-table"><thead><tr>' + headers.map(function(h){ return '<th>'+esc(h)+'</th>'; }).join('') + '</tr></thead><tbody>'
+      + rows.map(function(r){ return '<tr>' + headers.map(function(h){ return '<td>'+esc(r[h]!=null?r[h]:'—')+'</td>'; }).join('') + '</tr>'; }).join('')
+      + '</tbody></table><div style="font-size:11px; color:var(--dim); margin-top:6px;">Showing 5 of ' + records.length + ' rows.</div>';
+  } catch (e) { el.innerHTML = '<span style="color:var(--err)">Preview failed: ' + esc(e.message) + '</span>'; }
+}
+
+async function handleCustomCSVExport() {
   toast('Fetching data…', 'info');
   try {
-    var res = await fetch('/admin/export/custom', { method: 'POST', body: formData });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var records = await res.json();
-    if (!Array.isArray(records)) throw new Error('Invalid response format.');
+    var records = await fetchCustomCSVRecords();
+    if (!records) return;
     if (!records.length) { toast('No records returned.', 'err'); return; }
-    var wantWinRate = document.getElementById('formula-winrate').checked;
-    var wantWarPart = document.getElementById('formula-warpart').checked;
-    records.forEach(function(row){
-      if (wantWinRate) { var w=row.totalWins||0, l=row.totalLosses||0; row['Computed_WinRate%'] = (w+l>0)?((w/(w+l))*100).toFixed(1):'0.0'; }
-      if (wantWarPart) { var used=row.decksUsedToday||0, rem=row.decksRemaining||0, tot=used+rem; row['Computed_WarParticipation%'] = tot>0?((used/tot)*100).toFixed(1):'0.0'; }
-    });
     var headers = Object.keys(records[0]);
     var reportHeader = "Graveyard Clan Status Report - " + new Date().toLocaleDateString() + "\n\n";
     var csvContent = reportHeader + headers.join(',') + '\n';
@@ -1307,13 +2779,37 @@ async function handleCustomCSVExport() {
   } catch(err) { toast('Export error: ' + err.message, 'err'); }
 }
 
+// Idea #245: styled .xlsx export (not just CSV) — server does the actual
+// coloring/formatting (see admin_export_csv()'s export_format=='xlsx' branch
+// in web_routes.py), this just streams whatever fields are checked above to
+// the same endpoint with a different export_format and saves the blob.
+async function handleCustomXLSXExport() {
+  var fields = Array.from(document.querySelectorAll('input[name="csv-fields"]:checked')).map(function(cb){ return cb.value; });
+  if (!fields.length) { toast('Select at least one field.', 'err'); return; }
+  toast('Building Excel file…', 'info');
+  try {
+    var formData = new FormData();
+    fields.forEach(function(f){ formData.append('fields', f); });
+    formData.set('export_format', 'xlsx');
+    var res = await fetch('/admin/export/custom', { method: 'POST', body: formData });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var blob = await res.blob();
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob); link.setAttribute('download', 'Graveyard_Status_Report.xlsx'); link.style.display = 'none';
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    toast('Excel file downloaded.', 'ok');
+  } catch(err) { toast('Export error: ' + err.message, 'err'); }
+}
+
 // ── Admin tools ────────────────────────────────────────────────────────────────
 async function confirmFlushCache() {
   if (!confirm('Flush all CR API cache keys from Redis?')) return;
   try {
     var res = await fetch('/admin/flush-cache', { method: 'POST' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
     var data = await res.json();
+    // Idea #146: a stale session gets a friendly re-login prompt instead of a raw HTTP error.
+    if (res.status === 401 && data.error === 'reauth_required') { toast(data.message, 'err'); return; }
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
     toast(data.message||'Cache flushed.', 'ok');
     appendLog('Cache flushed.', 'warn');
     loadDiagnostics();
@@ -1325,7 +2821,7 @@ async function confirmFlushCache() {
 
 // ── UI Editor ──────────────────────────────────────────────────────────────────
 function _editorSetButtons(has) {
-  ['btn-preview','btn-deploy','btn-reset','btn-diff'].forEach(function(id){ var el=document.getElementById(id); if(el) el.disabled=!has; });
+  ['btn-preview','btn-deploy','btn-reset','btn-diff','btn-versions'].forEach(function(id){ var el=document.getElementById(id); if(el) el.disabled=!has; });
 }
 
 function _editorUpdateStatusBar(opts) {
@@ -1393,14 +2889,32 @@ document.addEventListener('DOMContentLoaded', function(){
 });
 
 // Auto-load the landing tab on page load
-document.addEventListener('DOMContentLoaded', function(){ loadRoster(); });
+document.addEventListener('DOMContentLoaded', function(){
+  loadRoster();
+  initOnboardingBanner();
+  checkMaintenanceWarning();
+  loadScheduledSettings();
+  renderWelcomeDmPreview();
+  document.addEventListener('click', function(e){
+    if (!e.target.closest('#global-search') && !e.target.closest('#global-search-results')) {
+      var r = document.getElementById('global-search-results'); if (r) r.style.display = 'none';
+    }
+  });
+});
 
 async function deployTemplate() {
   if (editorDeploying) return;
   var name=document.getElementById('editor-template-name').value;
   var html=document.getElementById('editor-html-content').value.trim();
   if (!html) { toast('Nothing to deploy.','err'); return; }
-  if (!confirm('Deploy this HTML as the live "'+name+'" template?')) return;
+  // Idea #66: a real preview, not just a name — first/last 120 chars + size delta
+  // vs. what's currently loaded, so "Deploy" isn't a blind single click.
+  var preview = html.length > 260 ? (html.slice(0,120) + '\n…\n' + html.slice(-120)) : html;
+  var delta = html.length - (editorOriginal||'').length;
+  var confirmMsg = 'Deploy this HTML as the live "'+name+'" template?\n\n'
+    + 'Size: ' + html.length + ' chars (' + (delta>=0?'+':'') + delta + ' vs. currently loaded)\n\n'
+    + '--- Preview ---\n' + preview;
+  if (!confirm(confirmMsg)) return;
   editorDeploying=true;
   var btn=document.getElementById('btn-deploy'); btn.disabled=true; btn.textContent='⏳ Deploying…';
   _editorUpdateStatusBar({dotClass:'deploying', state:'Deploying…'});
@@ -1430,6 +2944,33 @@ async function previewTemplate() {
     setTimeout(function(){URL.revokeObjectURL(url);}, 5000);
     if (!win) toast('Pop-up blocked.','err');
   } catch(e) { toast('Preview failed: '+e.message,'err'); }
+}
+
+// Idea #67: version history + rollback.
+async function loadTemplateVersions() {
+  var name = document.getElementById('editor-template-name').value;
+  var panel = document.getElementById('version-history-panel');
+  panel.style.display = 'block';
+  panel.innerHTML = '<span class="spin">↻</span> Loading version history…';
+  try {
+    var res = await fetch('/admin/api/template/versions/' + name);
+    var d = await res.json();
+    var versions = d.versions || [];
+    panel.innerHTML = versions.length ? ('<div style="font-size:11px; color:var(--dim); margin-bottom:8px; text-transform:uppercase;">Last ' + versions.length + ' deploys</div>' + versions.map(function(v, i){
+      return '<div class="diag-row"><span class="diag-key">' + esc((v.deployed_at||'').slice(0,19).replace('T',' ')) + ' (' + v.chars + ' chars)</span>'
+        + '<button class="btn-refresh" style="padding:3px 10px; font-size:11px;" onclick="rollbackToVersion(' + i + ')">↩ Rollback</button></div>';
+    }).join('')) : '<span style="color:var(--dim); font-size:12px;">No deploy history yet for this template.</span>';
+  } catch (e) { panel.innerHTML = '<span style="color:var(--err)">Failed to load version history.</span>'; }
+}
+
+function rollbackToVersion(index) {
+  var name = document.getElementById('editor-template-name').value;
+  if (!confirm('Roll back "' + name + '" to this version? This immediately replaces the live template.')) return;
+  fetch('/admin/api/template/rollback', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ template_name: name, index: index })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Rolled back successfully.', 'ok'); fetchTemplateForEditor('current'); })
+    .catch(function(){ toast('Rollback failed.', 'err'); });
 }
 
 async function resetTemplate() {
@@ -1546,6 +3087,46 @@ function filterRoster() {
   renderRoster(list);
 }
 
+// Idea #62: bulk actions.
+function getSelectedTags() {
+  return Array.from(document.querySelectorAll('.roster-bulk-check:checked')).map(function(cb){ return cb.dataset.tag; });
+}
+function updateBulkBar() {
+  var tags = getSelectedTags();
+  var bar = document.getElementById('bulk-action-bar');
+  if (tags.length) {
+    bar.style.display = 'flex';
+    document.getElementById('bulk-count').textContent = tags.length + ' selected';
+  } else {
+    bar.style.display = 'none';
+  }
+}
+function clearBulkSelection() {
+  document.querySelectorAll('.roster-bulk-check:checked').forEach(function(cb){ cb.checked = false; });
+  updateBulkBar();
+}
+function bulkIssueStrike() {
+  var tags = getSelectedTags();
+  if (!tags.length) return;
+  if (!confirm('Issue a strike to all ' + tags.length + ' selected member(s)?')) return;
+  fetch('/admin/api/roster/bulk-strike', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tags: tags })
+  }).then(function(r){ if(!r.ok) throw new Error(); return r.json(); })
+    .then(function(d){ toast('Struck ' + d.count + ' member(s).', 'ok'); clearBulkSelection(); loadRoster(); })
+    .catch(function(){ toast('Bulk strike failed.', 'err'); });
+}
+function bulkSendDM() {
+  var tags = getSelectedTags();
+  if (!tags.length) return;
+  var message = prompt('Message to send to ' + tags.length + ' selected member(s):', 'Please remember clan expectations — thanks!');
+  if (message == null) return;
+  fetch('/admin/api/roster/bulk-dm', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tags: tags, message: message })
+  }).then(function(r){ if(!r.ok) throw new Error(); return r.json(); })
+    .then(function(d){ toast('Queued DM for ' + d.count + ' linked member(s).', 'ok'); clearBulkSelection(); })
+    .catch(function(){ toast('Bulk DM failed.', 'err'); });
+}
+
 function renderRoster(members) {
   if (!members.length) {
     document.getElementById('roster-list').innerHTML =
@@ -1565,13 +3146,15 @@ function renderRoster(members) {
       ? '<span style="color:var(--ok); font-size:12px;" title="Discord linked">🔗</span>'
       : '<span style="color:var(--dim); font-size:12px;" title="Not linked">—</span>';
     var adminBadge = m.is_site_admin ? '<span style="color:#f1c40f; font-size:11px; font-family:var(--font-mono);">ADMIN</span>' : '';
+    var trialBadge = m.trial_member ? '<span style="color:var(--accent); font-size:11px; font-family:var(--font-mono);" title="Trial member (idea #213)">TRIAL</span>' : '';
 
     return '<div class="roster-card ' + strikeClass + '" id="card-' + cleanTag + '">'
-      + '<div class="roster-row" onclick="toggleDrawer(' + JSON.stringify(cleanTag) + ')">'
+      + '<div class="roster-row" onclick="toggleDrawer(' + attrJson(cleanTag) + ')">'
+      + '<input type="checkbox" class="roster-bulk-check" data-tag="' + esc(tag) + '" onclick="event.stopPropagation(); updateBulkBar();" style="margin-right:8px;">'
       + '<div class="roster-name">'
       + '<a href="/player/' + esc(cleanTag) + '" onclick="event.stopPropagation()" title="Open player profile">'
       + esc(m.name || 'Unknown') + '</a>'
-      + (adminBadge ? ' ' + adminBadge : '')
+      + (adminBadge ? ' ' + adminBadge : '') + (trialBadge ? ' ' + trialBadge : '')
       + '<div style="font-size:11px; color:var(--dim); font-family:var(--font-mono); margin-top:2px;">' + esc(tag) + '</div>'
       + '</div>'
       + '<span class="roster-role ' + esc(roleClass) + '">' + esc(roleLabel) + '</span>'
@@ -1580,7 +3163,7 @@ function renderRoster(members) {
       + '<div class="roster-stat"><span>🎁</span><strong>' + esc(m.donations || 0) + '</strong></div>'
       + '<div class="roster-stat" title="Strikes"><span>⚡</span><strong style="' + (strikes > 0 ? 'color:var(--err)' : '') + '">' + strikes + '</strong></div>'
       + '<div class="roster-linked" title="Discord link status">' + linkedBadge + '</div>'
-      + '<button class="roster-expand-btn" id="expand-btn-' + cleanTag + '" onclick="event.stopPropagation(); toggleDrawer(' + JSON.stringify(cleanTag) + ')">▾ Actions</button>'
+      + '<button class="roster-expand-btn" id="expand-btn-' + cleanTag + '" onclick="event.stopPropagation(); toggleDrawer(' + attrJson(cleanTag) + ')">▾ Actions</button>'
       + '</div>'
       + '<div class="player-drawer" id="drawer-' + cleanTag + '">'
       + buildDrawer(m)
@@ -1625,7 +3208,7 @@ function buildDrawer(m) {
     + '<div class="drawer-label" style="margin-top:12px;">Admin Notes</div>'
     + '<textarea class="drawer-textarea" id="notes-' + tag + '" placeholder="Record absences, behavior, excuses…">' + notes + '</textarea>'
     + '<div class="drawer-btn-row">'
-    + '<button class="drawer-btn drawer-btn-save" onclick="saveNotes(' + JSON.stringify(m.tag) + ', this)">💾 Save Notes</button>'
+    + '<button class="drawer-btn drawer-btn-save" onclick="saveNotes(' + attrJson(m.tag) + ', this)">💾 Save Notes</button>'
     + '<button class="drawer-btn drawer-btn-profile" onclick="window.open(\'/player/' + tag + '\', \'_blank\')">🔗 Full Profile</button>'
     + '</div>'
     + '</div>'
@@ -1639,23 +3222,167 @@ function buildDrawer(m) {
     + '<span style="font-family:var(--font-mono); font-size:11px; color:var(--dim);">/ 3 strikes</span>'
     + '</div>'
     + '<div class="drawer-btn-row">'
-    + '<button class="drawer-btn drawer-btn-strike" onclick="issueStrike(' + JSON.stringify(m.tag) + ', this)">➕ Issue Strike</button>'
-    + '<button class="drawer-btn drawer-btn-dm" onclick="sendWarningDM(' + JSON.stringify(m.tag) + ', this)">✉️ DM Warning</button>'
+    + '<button class="drawer-btn drawer-btn-strike" onclick="issueStrike(' + attrJson(m.tag) + ', this)">➕ Issue Strike</button>'
+    + '<button class="drawer-btn drawer-btn-dm" onclick="sendWarningDM(' + attrJson(m.tag) + ', this)">✉️ DM Warning</button>'
     + '</div>'
 
     + '<div class="drawer-label" style="margin-top:16px;">Discord Link</div>'
     + '<div class="drawer-link-row">'
     + '<input type="text" class="form-input" id="link-id-' + tag + '" placeholder="Discord User ID" value="' + linkedId + '">'
-    + '<button class="drawer-btn drawer-btn-link" onclick="manualLink(' + JSON.stringify(m.tag) + ', this)">🔗 Link</button>'
+    + '<button class="drawer-btn drawer-btn-link" onclick="manualLink(' + attrJson(m.tag) + ', this)">🔗 Link</button>'
     + '</div>'
 
     + '<div class="drawer-label" style="margin-top:16px;">Site Privileges</div>'
     + '<div class="drawer-btn-row">'
-    + '<button class="drawer-btn drawer-btn-admin" onclick="toggleAdmin(' + JSON.stringify(m.tag) + ', ' + (!isAdmin) + ', this)">'
+    + '<button class="drawer-btn drawer-btn-admin" onclick="toggleAdmin(' + attrJson(m.tag) + ', ' + (!isAdmin) + ', this)">'
     + (isAdmin ? '🔒 Revoke Admin' : '🔓 Grant Admin') + '</button>'
     + '</div>'
 
+    // Idea #213: temporary trial-member status for new recruits.
+    + '<div class="drawer-label" style="margin-top:16px;">Trial Status (idea #213)</div>'
+    + '<div class="drawer-btn-row">'
+    + '<button class="drawer-btn drawer-btn-profile" onclick="setTrialStatus(' + attrJson(m.tag) + ', ' + (!m.trial_member) + ', this)">'
+    + (m.trial_member ? '🎓 End Trial (Grant Full Member)' : '🧪 Mark as Trial Member') + '</button>'
+    + '</div>'
+
+    // Idea #9: one-click excuse from the current war. Idea #16: bench for N weeks.
+    + '<div class="drawer-label" style="margin-top:16px;">War Availability</div>'
+    + '<div class="drawer-btn-row">'
+    + '<button class="drawer-btn drawer-btn-profile" onclick="excuseFromWar(' + attrJson(m.tag) + ', this)">🌴 Excuse From This War</button>'
+    + '<input type="number" min="1" step="1" placeholder="weeks" style="width:70px;" class="form-input" id="bench-weeks-' + tag + '">'
+    + '<button class="drawer-btn drawer-btn-profile" onclick="benchMember(' + attrJson(m.tag) + ', this)">🛋️ Bench</button>'
+    + '</div>'
+
     + '</div></div>'; // end drawer-grid
+}
+
+// ── Idea #206/#211: scout an arbitrary player by tag ─────────────────────────
+async function scoutPlayer() {
+  var tag = document.getElementById('scout-tag-input').value.trim();
+  var el = document.getElementById('scout-result');
+  if (!tag) return;
+  el.innerHTML = '<span class="spin">↻</span> Scouting…';
+  try {
+    var res = await fetch('/admin/api/scout/' + tag.replace('#', ''));
+    var d = await res.json();
+    if (!res.ok || d.error) { el.innerHTML = '<span style="color:var(--err)">' + esc(d.error || 'Not found.') + '</span>'; return; }
+    var scoreColor = d.quality_score >= 70 ? 'var(--ok)' : d.quality_score >= 40 ? 'var(--warn)' : 'var(--err)';
+    el.innerHTML = '<div class="stat-row"><strong>' + esc(d.name) + '</strong> (' + esc(d.tag) + ') — '
+      + '<span style="color:' + scoreColor + '; font-weight:bold;">Quality Score: ' + d.quality_score + '/100</span><br>'
+      + '🏆 ' + esc(d.trophies) + ' trophies (best ' + esc(d.bestTrophies) + ') · Level ' + esc(d.expLevel) + ' · '
+      + (d.current_clan_name ? 'Currently in <strong>' + esc(d.current_clan_name) + '</strong> (' + esc(d.current_clan_role) + ')' : 'No current clan') + '<br>'
+      + '<button class="btn-refresh" style="margin-top:8px; padding:4px 10px;" onclick="addScoutToShortlist(' + attrJson(d.tag) + ',' + attrJson(d.name) + ')">➕ Add to Shortlist</button>'
+      + '</div>';
+  } catch (e) { el.innerHTML = '<span style="color:var(--err)">Scout lookup failed.</span>'; }
+}
+function addScoutToShortlist(tag, name) {
+  document.getElementById('recruit-tag').value = tag.replace('#', '');
+  document.getElementById('recruit-name').value = name;
+  addRecruit();
+}
+
+// ── Idea #208: rival clan snapshot ───────────────────────────────────────────
+async function loadRivalSnapshot() {
+  var tag = document.getElementById('rival-tag-input').value.trim();
+  var el = document.getElementById('rival-result');
+  if (!tag) return;
+  el.innerHTML = '<span class="spin">↻</span> Comparing…';
+  try {
+    var res = await fetch('/admin/api/rival-clan/' + tag.replace('#', ''));
+    var d = await res.json();
+    if (!res.ok || d.error) { el.innerHTML = '<span style="color:var(--err)">' + esc(d.error || 'Not found.') + '</span>'; return; }
+    el.innerHTML = '<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">'
+      + '<div><div style="font-weight:bold; margin-bottom:6px;">' + esc(d.us.name) + ' (us)</div>'
+      + '<div class="diag-row"><span class="diag-key">Members</span><span class="diag-val">' + d.us.memberCount + '/50</span></div>'
+      + '<div class="diag-row"><span class="diag-key">Avg Trophies</span><span class="diag-val">' + d.us.avg_trophies + '</span></div>'
+      + '<div class="diag-row"><span class="diag-key">War Trophies</span><span class="diag-val">' + d.us.clanWarTrophies + '</span></div></div>'
+      + '<div><div style="font-weight:bold; margin-bottom:6px;">' + esc(d.rival.name) + '</div>'
+      + '<div class="diag-row"><span class="diag-key">Members</span><span class="diag-val">' + d.rival.memberCount + '/50</span></div>'
+      + '<div class="diag-row"><span class="diag-key">Avg Trophies</span><span class="diag-val">' + d.rival.avg_trophies + '</span></div>'
+      + '<div class="diag-row"><span class="diag-key">War Trophies</span><span class="diag-val">' + d.rival.clanWarTrophies + '</span></div></div>'
+      + '</div>';
+  } catch (e) { el.innerHTML = '<span style="color:var(--err)">Comparison failed.</span>'; }
+}
+
+// ── Idea #209: recruit message templates ─────────────────────────────────────
+async function loadRecruitTemplates() {
+  var el = document.getElementById('templates-list');
+  try {
+    var res = await fetch('/admin/api/recruit-templates');
+    var d = await res.json();
+    var templates = d.templates || [];
+    el.innerHTML = templates.length ? templates.map(function(t) {
+      return '<div class="stat-row" style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border);">'
+        + '<span><strong>' + esc(t.name) + '</strong>: ' + esc(t.message) + '</span>'
+        + '<button class="btn-refresh" style="padding:4px 10px;" onclick="copyToClipboard(' + attrJson(t.message) + ')">📋 Copy</button>'
+        + '</div>';
+    }).join('') : '<span style="color:var(--dim)">No templates saved yet.</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error loading templates.</span>'; }
+}
+function addRecruitTemplate() {
+  var name = document.getElementById('template-name').value.trim();
+  var message = document.getElementById('template-message').value.trim();
+  if (!name || !message) { toast('Name and message are required.', 'err'); return; }
+  fetch('/admin/api/recruit-templates', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: name, message: message }) })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Template saved.', 'ok'); loadRecruitTemplates();
+      document.getElementById('template-name').value=''; document.getElementById('template-message').value=''; })
+    .catch(function(){ toast('Failed to save template.', 'err'); });
+}
+function copyToClipboard(text) {
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(function(){ toast('Copied!', 'ok'); });
+}
+
+// ── Idea #212: application review ────────────────────────────────────────────
+async function loadApplications() {
+  var el = document.getElementById('applications-list');
+  try {
+    var res = await fetch('/admin/api/applications');
+    var d = await res.json();
+    var apps = d.applications || [];
+    el.innerHTML = apps.length ? apps.map(function(a) {
+      var pillClass = a.status === 'invited' ? 'pill-ok' : a.status === 'declined' ? 'pill-err' : 'pill-warn';
+      return '<div class="stat-row" style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border);">'
+        + '<span><strong>' + esc(a.name) + '</strong> (' + esc(a.tag) + ') — ' + esc(a.message || '') + ' <span class="status-pill ' + pillClass + '">' + esc(a.status) + '</span></span>'
+        + '<span>'
+        + '<button class="btn-refresh" style="padding:4px 10px;" onclick="setApplicationStatus(' + attrJson(a.tag) + ',' + attrJson(a.created_at) + ',' + attrJson('invited') + ')">✅ Invite</button> '
+        + '<button class="btn-refresh" style="padding:4px 10px;" onclick="setApplicationStatus(' + attrJson(a.tag) + ',' + attrJson(a.created_at) + ',' + attrJson('declined') + ')">🚫 Decline</button>'
+        + '</span></div>';
+    }).join('') : '<div class="empty-state"><div class="empty-state-icon">📝</div><div class="empty-state-title">No applications yet</div></div>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error loading applications.</span>'; }
+}
+function setApplicationStatus(tag, createdAt, status) {
+  fetch('/admin/api/applications/status', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tag: tag, created_at: createdAt, status: status }) })
+    .then(function(r){ if(!r.ok) throw new Error(); toast('Application updated.', 'ok'); loadApplications(); })
+    .catch(function(){ toast('Failed to update application.', 'err'); });
+}
+
+// Idea #213
+function setTrialStatus(tag, trial, btn) {
+  var cleanTag = tag.replace('#', '');
+  fetch('/admin/api/player/' + cleanTag + '/trial-status', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ trial_member: trial })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast(trial ? 'Marked as trial member.' : 'Trial ended — full member.', 'ok'); loadRoster(); })
+    .catch(function(){ toast('Failed to update trial status.', 'err'); });
+}
+
+// Idea #9
+function excuseFromWar(tag, btn) {
+  fetch('/admin/api/player/excuse', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tag: tag, excused: true })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Excused from this war.', 'ok'); })
+    .catch(function(){ toast('Failed to excuse member.', 'err'); });
+}
+
+// Idea #16 — bench designation is specified in WEEKS, not days, per review feedback.
+function benchMember(tag, btn) {
+  var cleanTag = tag.replace('#','');
+  var weeksInput = document.getElementById('bench-weeks-' + cleanTag);
+  var weeks = parseFloat(weeksInput ? weeksInput.value : '') || 0;
+  if (weeks <= 0) { toast('Enter a number of weeks first.', 'err'); return; }
+  fetch('/admin/api/player/bench', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tag: tag, weeks: weeks })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Benched for ' + weeks + ' week(s).', 'ok'); })
+    .catch(function(){ toast('Failed to bench member.', 'err'); });
 }
 
 function toggleDrawer(cleanTag) {
@@ -1728,7 +3455,11 @@ async function issueStrike(tag, btn) {
     if (card && m) {
       card.className = 'roster-card ' + (m.strikes >= 3 ? 'has-strikes-3' : m.strikes === 2 ? 'has-strikes-2' : m.strikes === 1 ? 'has-strikes-1' : '');
     }
-    toast('Strike issued to ' + tag, 'ok');
+    // Idea #63: undo window on the toast itself.
+    toast('Strike issued to ' + tag, 'ok', 6000, function(){
+      fetch('/admin/api/player/unstrike', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag: tag}) })
+        .then(function(){ toast('Strike undone.', 'ok'); loadRoster(); });
+    });
     btn.innerHTML = '✅ Issued';
     setTimeout(function(){ btn.innerHTML = orig; btn.disabled = false; }, 1500);
   } catch(e) {
@@ -1791,6 +3522,7 @@ async function toggleAdmin(tag, grant, btn) {
       body: JSON.stringify({ tag: tag, is_admin: grant })
     });
     var data = await res.json();
+    if (res.status === 401 && data.error === 'reauth_required') { toast(data.message, 'err'); btn.innerHTML = orig; btn.disabled = false; return; }
     if (data.error) throw new Error(data.error);
     var m = _rosterData.find(function(x){ return x.tag === tag; });
     if (m) { m.is_site_admin = grant; }

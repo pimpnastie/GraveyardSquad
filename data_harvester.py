@@ -1,21 +1,77 @@
 import os
+import json
 import time
 import logging
 import threading
+from datetime import datetime, timezone, timedelta
 import requests
-from datetime import datetime, timezone
 from pymongo import MongoClient, UpdateOne
+import redis as _redis
 from dotenv import load_dotenv
 
 load_dotenv()
 log = logging.getLogger("harvester")
+
+def _as_aware_utc(dt):
+    """PyMongo returns naive datetimes by default (this project's MongoClient
+    doesn't set tz_aware=True), even though every value written here is UTC.
+    Re-attach tzinfo before subtracting from datetime.now(timezone.utc) so this
+    doesn't raise "can't subtract offset-naive and offset-aware datetimes" the
+    first time a value makes a real Mongo round-trip."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [HARVESTER] %(message)s")
+
+# Idea #17 (from the 250-ideas pass, revised in review): when a member leaves the
+# clan we don't want to lose their historical stats immediately, but we also don't
+# want player_profiles/player_snapshots/battle_history growing forever with dead
+# tags. Keep departed members' data queryable for this many weeks, then purge.
+DEPARTED_MEMBER_RETENTION_WEEKS = 23
+
+# River Race format: 3 training days (periodType "training") + 4 war days
+# (periodType "warDay") = 7 total periods per race. Used by the "projected finish"
+# calc (idea #4) to turn periodIndex into an elapsed/total fraction. Supercell
+# doesn't expose this as a constant in the API response, so it's hardcoded here —
+# if Supercell ever changes the race format, this needs updating too.
+RIVER_RACE_TOTAL_PERIODS = 7
+RIVER_RACE_MAX_FAME = 10000
+
+# Idea #105: round-number milestones that trigger an auto-congratulation post.
+# Lifetime `wins` and `bestTrophies` are both monotonically-increasing-ish fields
+# the CR API already gives us, so no extra tracking is needed to detect a crossing.
+MILESTONE_WIN_STEP = 500
+MILESTONE_TROPHY_STEP = 1000
+
+# Idea #107: how recently-joined a member can be and still count as "rising star"
+# eligible, and idea #115's weekly rivalry re-pairing cadence.
+RISING_STAR_WINDOW_DAYS = 45
+RIVALRY_REASSIGN_DAYS = 7
+
+# Idea #123: first-week check-in DM window — checked against joined_clan_at,
+# a few-day window (not an exact "day 7" match) so a 30-min harvest cadence
+# can't skip past the single instant a stricter equality check would require.
+FIRST_WEEK_CHECKIN_MIN_DAYS = 6
+FIRST_WEEK_CHECKIN_MAX_DAYS = 9
+
+# Idea #231/#232: must match web_routes.py's CR_API_CACHE_TTL_SECONDS /
+# _cr_api_cache_key exactly, since the harvester pre-warms the same Redis keys
+# the web process reads. Duplicated (not imported) to avoid a circular import
+# between the two modules — web_routes.py already imports FROM data_harvester.py.
+CR_API_CACHE_TTL_SECONDS = int(os.getenv("CR_API_CACHE_TTL_SECONDS", "60"))
+
+def _cr_api_cache_key(endpoint: str) -> str:
+    return f"crapi_cache:{endpoint}"
 
 class DataHarvester:
     def __init__(self):
-        self.mongo_client = MongoClient(os.getenv("MONGO_URL", "mongodb://localhost:27017"))
+        # Idea #238: explicit, env-tunable pool size — see the matching comment
+        # in web_routes.py's mongo_client_sync for why this was made explicit
+        # rather than left on the pymongo default (maxPoolSize=100/client).
+        mongo_max_pool_size = int(os.getenv("MONGO_MAX_POOL_SIZE", "50"))
+        self.mongo_client = MongoClient(os.getenv("MONGO_URL", "mongodb://localhost:27017"), maxPoolSize=mongo_max_pool_size)
         self.db = self.mongo_client["graveyardbot"]
-        
+
         self.col_battles = self.db["battle_history"]
         self.col_profiles = self.db["player_profiles"]
         self.col_war = self.db["war_tracking"]
@@ -23,6 +79,11 @@ class DataHarvester:
         self.col_snapshots = self.db["clan_snapshots"]
         self.col_player_snapshots = self.db["player_snapshots"]
         self.col_config = self.db["config"]
+        try:
+            self.redis_client = _redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+        except Exception as e:
+            log.warning(f"Redis unavailable at harvester startup (cache pre-warming disabled, non-fatal): {e}")
+            self.redis_client = None
 
         self._ensure_indexes()
 
@@ -97,6 +158,37 @@ class DataHarvester:
                 time.sleep(2 ** attempt)
         return None
 
+    def _fire_webhooks(self, event: str, payload: dict) -> None:
+        """Idea #242/#246: generic outbound-webhook dispatch for third-party
+        tools that want to react to clan events (a leadership spreadsheet
+        workflow, a Discord relay in another server, etc.) without us building
+        a bespoke integration for each one. Registered subscribers live in a
+        dedicated `webhooks` collection as {url, events: [...]} docs, managed
+        via the admin UI's Webhooks card / the /admin/api/webhooks routes in
+        web_routes.py. This is deliberately just "POST a JSON body to a URL" —
+        that shape is directly compatible with Zapier's "Webhooks by Zapier"
+        trigger and Make.com's "Custom webhook" module (idea #246), so those
+        platforms are supported for free with no dedicated Zapier/Make app.
+        Delivery is fire-and-forget/best-effort with a short timeout: a slow or
+        dead subscriber endpoint must never block or crash a harvest cycle.
+        """
+        try:
+            subs = list(self.col_config.database["webhooks"].find({"events": event}))
+        except Exception as e:
+            log.warning(f"Webhook subscriber lookup failed (non-fatal): {e}")
+            return
+        if not subs:
+            return
+        body = {"event": event, "fired_at": datetime.now(timezone.utc).isoformat(), "data": payload}
+        for sub in subs:
+            url = sub.get("url")
+            if not url:
+                continue
+            try:
+                requests.post(url, json=body, timeout=5)
+            except Exception as e:
+                log.warning(f"Webhook delivery to {url} failed (non-fatal): {e}")
+
     def backfill_missed_wars(self):
         """Checks the historical riverracelog to fill gaps if the bot missed a war end."""
         log.info("Checking for missed historical wars...")
@@ -106,17 +198,502 @@ class DataHarvester:
                 season_id = race.get("seasonId")
                 section_index = race.get("sectionIndex")
                 unique_war_id = f"season_{season_id}_section_{section_index}"
-                
+
+                # Idea #12/#20: only queue a post-war Discord summary + open a retro
+                # notes slot the FIRST time we see this race complete, so re-running
+                # backfill on every boot doesn't spam the war channel with reposts.
+                already_seen = self.col_war_history.find_one({"unique_war_id": unique_war_id}) is not None
+
                 # Upsert into war history so we don't save duplicates
                 self.col_war_history.update_one(
                     {"unique_war_id": unique_war_id},
-                    {"$set": {"unique_war_id": unique_war_id, "data": race}},
+                    {"$set": {"unique_war_id": unique_war_id, "data": race},
+                     "$setOnInsert": {"retro_notes": "", "retro_notes_updated_at": None}},
                     upsert=True
                 )
+
+                if not already_seen:
+                    self._queue_war_summary_post(unique_war_id, race)
+                    try:
+                        self._update_war_streaks_and_points(race)
+                    except Exception as e:
+                        log.error(f"War streak/points update failed (non-fatal): {e}")
+                    try:
+                        self._fire_webhooks("war_end", {
+                            "unique_war_id": unique_war_id,
+                            "season_id": season_id,
+                            "section_index": section_index,
+                        })
+                    except Exception as e:
+                        log.error(f"war_end webhook dispatch failed (non-fatal): {e}")
+
+    def _queue_war_summary_post(self, unique_war_id: str, race: dict):
+        """Idea #12: auto-compile a post-war recap (top fame, MVP comeback proxy,
+        slacker list) and queue it as a pending_action. clash_cog.py's existing
+        pending-actions consumer loop (process_pending_actions_loop) delivers it to
+        the configured war channel — this only ever queues, never posts directly,
+        since only the bot process holds a live Discord connection.
+        """
+        clan = race.get("clan", {})
+        participants = sorted(clan.get("participants", []), key=lambda p: p.get("fame", 0), reverse=True)
+        if not participants:
+            return
+        top_fame = participants[:3]
+        slackers = [p for p in participants if p.get("decksUsed", p.get("decksUsedToday", 0)) == 0]
+
+        lines = [f"**War recap — {clan.get('name', 'Clan')} finished with {clan.get('fame', 0):,} fame**"]
+        if top_fame:
+            lines.append("Top fame: " + ", ".join(f"{p.get('name')} ({p.get('fame', 0):,})" for p in top_fame))
+        if slackers:
+            lines.append("Zero decks used: " + ", ".join(p.get("name", "?") for p in slackers[:10]))
+        else:
+            lines.append("Every participant used at least one deck. Nice work, squad.")
+
+        self.col_config.database["pending_actions"].insert_one({
+            "kind": "war_summary_post",
+            "message": "\n".join(lines),
+            "unique_war_id": unique_war_id,
+            "created_at": datetime.now(timezone.utc),
+            "processed": False,
+        })
+
+    def _update_war_streaks_and_points(self, race: dict):
+        """Idea #103 (streak counters with streak-shields) + #104 (clan points
+        currency): runs once per newly-completed race (called from
+        backfill_missed_wars alongside _queue_war_summary_post, so it fires
+        exactly once per race the same way that already does).
+
+        Streak: +1 per race where the member used all 4 decks. Missing decks
+        would normally reset the streak to 0, but a banked "shield" absorbs one
+        bad week instead (research cited in 250_IDEAS.md #103 shows shields
+        meaningfully reduce drop-off after a single missed day). Shields are
+        earned back every 5-streak milestone, capped at 2 banked at a time.
+
+        Points: 1 clan point per deck used (0-4) plus a 10-point bonus for full
+        (4/4) participation — a lightweight currency redeemable via the player
+        page's flair "shop" (idea #104/#112).
+        """
+        participants = (race.get("clan", {}) or {}).get("participants", [])
+        ops = []
+        for p in participants:
+            tag = p.get("tag")
+            if not tag:
+                continue
+            decks_used = p.get("decksUsed", p.get("decksUsedToday", 0))
+            points_earned = decks_used + (10 if decks_used >= 4 else 0)
+            profile = self.col_profiles.find_one({"tag": tag}, {"war_participation_streak": 1, "streak_shields": 1})
+            streak = (profile or {}).get("war_participation_streak", 0)
+            shields = (profile or {}).get("streak_shields", 1)
+            if decks_used >= 4:
+                streak += 1
+                if streak % 5 == 0:
+                    shields = min(2, shields + 1)
+            elif shields > 0:
+                shields -= 1  # missed week absorbed by a shield; streak preserved
+            else:
+                streak = 0
+            ops.append(UpdateOne(
+                {"tag": tag},
+                {"$set": {"war_participation_streak": streak, "streak_shields": shields},
+                 "$inc": {"clan_points": points_earned}},
+                upsert=True,
+            ))
+        if ops:
+            self.col_profiles.bulk_write(ops)
+
+    def compute_weekly_spotlights(self, war_data: dict | None):
+        """Idea #102 (weekly MVP: highest fame + win-rate combo) and #107
+        (rising star: fastest-climbing member who joined within the last
+        RISING_STAR_WINDOW_DAYS). Recomputed every harvest cycle — "weekly" here
+        describes what the numbers represent, not a special weekly-only code
+        path, since re-running this on a 30-min cadence is cheap and always
+        gives the freshest read. Stored in config.weekly_spotlights for the
+        roster page and Discord announcements to read.
+        """
+        mvp = None
+        if war_data:
+            participants = (war_data.get("clan", {}) or {}).get("participants", [])
+            scored = []
+            for p in participants:
+                profile = self.col_profiles.find_one({"tag": p.get("tag")}, {"wins": 1, "losses": 1}) or {}
+                total = profile.get("wins", 0) + profile.get("losses", 0)
+                win_rate = (profile.get("wins", 0) / total) if total else 0
+                scored.append((p.get("fame", 0) + win_rate * 1000, p))
+            if scored:
+                mvp = max(scored, key=lambda x: x[0])[1]
+
+        rising_star = None
+        cutoff = datetime.now(timezone.utc) - timedelta(days=RISING_STAR_WINDOW_DAYS)
+        new_members = list(self.col_profiles.find(
+            {"joined_clan_at": {"$gte": cutoff}, "left_clan_at": {"$exists": False}}, {"tag": 1, "name": 1}
+        ))
+        best_delta = 0
+        for m in new_members:
+            snaps = list(self.col_player_snapshots.find({"tag": m["tag"]}, {"trophies": 1, "date": 1}).sort("date", 1))
+            if len(snaps) >= 2:
+                delta = snaps[-1].get("trophies", 0) - snaps[0].get("trophies", 0)
+                if delta > best_delta:
+                    best_delta = delta
+                    rising_star = {"tag": m["tag"], "name": m.get("name"), "delta": delta}
+
+        doc = {"computed_at": datetime.now(timezone.utc)}
+        if mvp:
+            doc.update({"mvp_tag": mvp.get("tag"), "mvp_name": mvp.get("name"), "mvp_fame": mvp.get("fame", 0)})
+        if rising_star:
+            doc.update({
+                "rising_star_tag": rising_star["tag"], "rising_star_name": rising_star["name"],
+                "rising_star_delta": rising_star["delta"],
+            })
+        self.col_config.update_one({"_id": "weekly_spotlights"}, {"$set": doc}, upsert=True)
+
+    def compute_clan_legends(self):
+        """Idea #110: an all-time 'legends' record book, separate from the
+        current-week Hall of Fame already shown on the roster page. Deliberately
+        avoids any per-member battle-log scan so this stays cheap to run every
+        harvest cycle regardless of how much history has piled up — the
+        "most war MVPs" record instead reuses the already-stored war_history
+        race docs (capped at the last 50 races)."""
+        profiles = list(self.col_profiles.find({}, {"tag": 1, "name": 1, "bestTrophies": 1, "donations": 1, "joined_clan_at": 1}))
+        if not profiles:
+            return
+        trophy_legend   = max(profiles, key=lambda p: p.get("bestTrophies", 0))
+        donation_legend = max(profiles, key=lambda p: p.get("donations", 0))
+        veteran = min((p for p in profiles if p.get("joined_clan_at")), key=lambda p: p["joined_clan_at"], default=None)
+
+        races = list(self.col_war_history.find({}, {"data.clan.participants": 1}).sort("data.seasonId", -1).limit(50))
+        mvp_counts = {}
+        for race in races:
+            participants = ((race.get("data", {}).get("clan") or {}).get("participants")) or []
+            if not participants:
+                continue
+            top = max(participants, key=lambda p: p.get("fame", 0))
+            key = (top.get("tag"), top.get("name"))
+            mvp_counts[key] = mvp_counts.get(key, 0) + 1
+        most_mvp = max(mvp_counts.items(), key=lambda kv: kv[1], default=((None, None), 0))
+
+        doc = {
+            "computed_at": datetime.now(timezone.utc),
+            "highest_trophies_ever": {"tag": trophy_legend.get("tag"), "name": trophy_legend.get("name"), "value": trophy_legend.get("bestTrophies", 0)},
+            # NOTE: "donations" is the CR API's current-season counter, not a true
+            # lifetime total (the API doesn't expose lifetime donations) — this is
+            # a documented approximation, same pattern as the war-timing approximations.
+            "top_season_donator": {"tag": donation_legend.get("tag"), "name": donation_legend.get("name"), "value": donation_legend.get("donations", 0)},
+            "most_war_mvps": {"tag": most_mvp[0][0], "name": most_mvp[0][1], "count": most_mvp[1]} if most_mvp[0][0] else None,
+            "clan_veteran": {"tag": veteran.get("tag"), "name": veteran.get("name"), "since": veteran.get("joined_clan_at")} if veteran else None,
+        }
+        self.col_config.update_one({"_id": "clan_legends"}, {"$set": doc}, upsert=True)
+
+    def assign_weekly_rivalries(self):
+        """Idea #115: pair up similar-trophy members for a fun head-to-head
+        tracked rivalry, re-shuffled roughly weekly. Head-to-head records are
+        computed on read (from battle_history opponent_tag matches) rather than
+        stored here, since re-pairing only needs to decide who's paired with whom."""
+        meta = self.col_config.find_one({"_id": "rivalries_meta"}) or {}
+        last_at = _as_aware_utc(meta.get("last_assigned_at"))
+        if last_at and (datetime.now(timezone.utc) - last_at) < timedelta(days=RIVALRY_REASSIGN_DAYS):
+            return
+        active = list(self.col_profiles.find(
+            {"left_clan_at": {"$exists": False}}, {"tag": 1, "name": 1, "trophies": 1}
+        ).sort("trophies", 1))
+        db = self.col_config.database
+        db["rivalries"].update_many({"active": True}, {"$set": {"active": False}})
+        pool = active[:]
+        while len(pool) >= 2:
+            a = pool.pop(0)
+            b = min(pool, key=lambda m: abs(m.get("trophies", 0) - a.get("trophies", 0)))
+            pool.remove(b)
+            db["rivalries"].insert_one({
+                "tag_a": a["tag"], "name_a": a.get("name"),
+                "tag_b": b["tag"], "name_b": b.get("name"),
+                "assigned_at": datetime.now(timezone.utc), "active": True,
+            })
+        self.col_config.update_one({"_id": "rivalries_meta"}, {"$set": {"last_assigned_at": datetime.now(timezone.utc)}}, upsert=True)
+
+    def check_first_week_checkins(self):
+        """Idea #123: a friendly automated DM about a week after a member joins,
+        instead of pure silence until their first war judgment. One-shot per
+        member via the `checkin_sent` flag — never re-sent even if this runs
+        every 30 minutes for days within the window."""
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(days=FIRST_WEEK_CHECKIN_MAX_DAYS)
+        window_end = now - timedelta(days=FIRST_WEEK_CHECKIN_MIN_DAYS)
+        candidates = list(self.col_profiles.find(
+            {
+                "joined_clan_at": {"$gte": window_start, "$lte": window_end},
+                "checkin_sent": {"$ne": True},
+                "left_clan_at": {"$exists": False},
+            },
+            {"tag": 1, "name": 1},
+        ))
+        if not candidates:
+            return
+        db = self.col_config.database
+        for c in candidates:
+            user = db["users"].find_one({"cr_tag": c["tag"]})
+            if user and user.get("discord_id"):
+                db["pending_actions"].insert_one({
+                    "kind": "first_week_checkin",
+                    "discord_id": user["discord_id"],
+                    "message": (
+                        f"👋 Hey {c.get('name', 'there')}! You've been in Graveyard Squad about a week now — "
+                        "how's it going? If you have any questions about war expectations, donations, or "
+                        "anything else, just ask in the server. Glad to have you here!"
+                    ),
+                    "created_at": now,
+                    "processed": False,
+                })
+            self.col_profiles.update_one({"tag": c["tag"]}, {"$set": {"checkin_sent": True}})
+
+    def auto_decline_stale_applications(self):
+        """Idea #214 — per your note, off by default: only runs when an admin
+        has explicitly turned on `bot_settings.auto_decline_stale_applications_enabled`.
+        Applications (from the /apply form, idea #212) still sitting at
+        "pending" after `auto_decline_days` get auto-marked declined, to keep
+        the recruiting pipeline from accumulating dead entries nobody ever
+        responded to."""
+        db = self.col_config.database
+        settings = self.col_config.find_one({"_id": "bot_settings"}) or {}
+        if not settings.get("auto_decline_stale_applications_enabled"):
+            return
+        days = int(settings.get("auto_decline_days", 14) or 14)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        result = db["applications"].update_many(
+            {"status": "pending", "created_at": {"$lte": cutoff}},
+            {"$set": {"status": "declined", "auto_declined": True}},
+        )
+        if result.modified_count:
+            log.info(f"[HARVESTER] Auto-declined {result.modified_count} stale application(s) older than {days} days.")
+
+    def check_streaming_status(self):
+        """Idea #243 — per your note, hidden behind
+        `bot_settings.streaming_integration_enabled` (the toggle itself was
+        added to the Settings UI in section 12's batch; this is the actual
+        plumbing behind it). Polls Twitch/YouTube for a configured channel
+        going live and, on the not-live -> live transition, queues a
+        "stream_live_post" pending_action for clash_cog.py to announce
+        (added to its generic announcements-channel bucket alongside
+        role_change_post/milestone_post/etc.).
+
+        This is a real implementation, not just a TODO stub, but it's a NO-OP
+        until real API credentials exist: no Twitch/YouTube developer account
+        has been set up for this clan, so TWITCH_CLIENT_ID/TWITCH_CLIENT_SECRET
+        and YOUTUBE_API_KEY are unset in this environment. Rather than crash or
+        silently do nothing forever, it logs a one-time "not configured"
+        notice (rate-limited via a config marker so it doesn't spam every
+        30-minute cycle) so whoever eventually sets up those credentials knows
+        exactly which env vars to fill in.
+        """
+        settings = self.col_config.find_one({"_id": "bot_settings"}) or {}
+        if not settings.get("streaming_integration_enabled"):
+            return
+        twitch_channel = settings.get("streaming_twitch_channel")
+        youtube_channel = settings.get("streaming_youtube_channel")
+        if not twitch_channel and not youtube_channel:
+            return  # toggle is on but no channel configured yet — nothing to poll
+
+        twitch_client_id = os.getenv("TWITCH_CLIENT_ID")
+        twitch_client_secret = os.getenv("TWITCH_CLIENT_SECRET")
+        youtube_api_key = os.getenv("YOUTUBE_API_KEY")
+        if not (twitch_client_id and twitch_client_secret) and not youtube_api_key:
+            self._log_once_per_day("streaming_creds_missing",
+                "streaming_integration_enabled is on but no TWITCH_CLIENT_ID/"
+                "TWITCH_CLIENT_SECRET or YOUTUBE_API_KEY is set — nothing to poll yet.")
+            return
+
+        status_doc = self.col_config.find_one({"_id": "streaming_status"}) or {}
+        was_live = status_doc.get("is_live", False)
+        now_live = False
+        live_url = None
+
+        if twitch_channel and twitch_client_id and twitch_client_secret:
+            try:
+                token_resp = requests.post(
+                    "https://id.twitch.tv/oauth2/token",
+                    params={"client_id": twitch_client_id, "client_secret": twitch_client_secret, "grant_type": "client_credentials"},
+                    timeout=8,
+                )
+                app_token = token_resp.json().get("access_token") if token_resp.status_code == 200 else None
+                if app_token:
+                    streams_resp = requests.get(
+                        "https://api.twitch.tv/helix/streams",
+                        headers={"Client-Id": twitch_client_id, "Authorization": f"Bearer {app_token}"},
+                        params={"user_login": twitch_channel}, timeout=8,
+                    )
+                    if streams_resp.status_code == 200 and streams_resp.json().get("data"):
+                        now_live = True
+                        live_url = f"https://twitch.tv/{twitch_channel}"
+            except Exception as e:
+                log.warning(f"Twitch live-status check failed (non-fatal): {e}")
+
+        if not now_live and youtube_channel and youtube_api_key:
+            try:
+                resp = requests.get(
+                    "https://www.googleapis.com/youtube/v3/search",
+                    params={"part": "snippet", "channelId": youtube_channel, "eventType": "live", "type": "video", "key": youtube_api_key},
+                    timeout=8,
+                )
+                items = resp.json().get("items", []) if resp.status_code == 200 else []
+                if items:
+                    now_live = True
+                    live_url = f"https://youtube.com/watch?v={items[0]['id']['videoId']}"
+            except Exception as e:
+                log.warning(f"YouTube live-status check failed (non-fatal): {e}")
+
+        self.col_config.update_one(
+            {"_id": "streaming_status"},
+            {"$set": {"is_live": now_live, "checked_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        if now_live and not was_live:
+            self.col_config.database["pending_actions"].insert_one({
+                "kind": "stream_live_post",
+                "message": f"🔴 **Going live now!** {live_url or 'Check the clan Discord for details.'}",
+                "created_at": datetime.now(timezone.utc),
+                "processed": False,
+            })
+
+    def post_recruitment_to_reddit(self):
+        """Idea #247 — per your note, hidden behind
+        `bot_settings.reddit_autopost_enabled`. Only worth posting when the
+        clan is actually under-strength (reuses the same <50-member condition
+        as the recruiting banner, idea #215), and rate-limited to at most once
+        every 7 days via a config marker so it can never spam a subreddit.
+
+        Same "real plumbing, but a no-op without credentials" situation as
+        check_streaming_status() above: submitting a Reddit post requires a
+        registered Reddit "script" app (REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET)
+        plus a REDDIT_REFRESH_TOKEN for the posting account, none of which
+        exist in this environment yet. Logs a one-time notice instead of
+        either crashing or posting nothing with no explanation.
+        """
+        settings = self.col_config.find_one({"_id": "bot_settings"}) or {}
+        if not settings.get("reddit_autopost_enabled"):
+            return
+        subreddit = settings.get("reddit_subreddit")
+        if not subreddit:
+            return
+
+        member_count = self.col_profiles.count_documents({"left_clan_at": {"$exists": False}})
+        if member_count >= 50:
+            return  # clan isn't under-strength right now — nothing to recruit for
+
+        marker = self.col_config.find_one({"_id": "reddit_autopost_meta"}) or {}
+        last_posted = marker.get("last_posted_at")
+        if last_posted and (datetime.now(timezone.utc) - last_posted) < timedelta(days=7):
+            return
+
+        client_id = os.getenv("REDDIT_CLIENT_ID")
+        client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+        refresh_token = os.getenv("REDDIT_REFRESH_TOKEN")
+        if not (client_id and client_secret and refresh_token):
+            self._log_once_per_day("reddit_creds_missing",
+                "reddit_autopost_enabled is on but REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET/"
+                "REDDIT_REFRESH_TOKEN aren't all set — nothing to post with yet.")
+            return
+
+        try:
+            token_resp = requests.post(
+                "https://www.reddit.com/api/v1/access_token",
+                data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                auth=(client_id, client_secret),
+                headers={"User-Agent": "GraveyardSquadBot/1.0"},
+                timeout=8,
+            )
+            access_token = token_resp.json().get("access_token") if token_resp.status_code == 200 else None
+            if not access_token:
+                log.warning("Reddit auto-post: failed to obtain access token (non-fatal).")
+                return
+            title = f"[Recruiting] Graveyard Squad — active Clash Royale clan looking for members ({member_count}/50)"
+            body = "We're a bit under-strength right now and looking for active war participants. Reply or DM if interested!"
+            submit_resp = requests.post(
+                "https://oauth.reddit.com/api/submit",
+                data={"sr": subreddit, "kind": "self", "title": title, "text": body},
+                headers={"Authorization": f"Bearer {access_token}", "User-Agent": "GraveyardSquadBot/1.0"},
+                timeout=8,
+            )
+            if submit_resp.status_code == 200:
+                self.col_config.update_one(
+                    {"_id": "reddit_autopost_meta"},
+                    {"$set": {"last_posted_at": datetime.now(timezone.utc)}},
+                    upsert=True,
+                )
+                log.info(f"[HARVESTER] Posted recruitment thread to r/{subreddit}.")
+            else:
+                log.warning(f"Reddit auto-post submit failed (non-fatal): HTTP {submit_resp.status_code}")
+        except Exception as e:
+            log.warning(f"Reddit auto-post failed (non-fatal): {e}")
+
+    def _log_once_per_day(self, marker_key: str, message: str):
+        """Shared helper for the two credential-missing notices above — logs at
+        most once per 24h per marker_key instead of every single harvest cycle."""
+        marker_id = f"log_once_{marker_key}"
+        doc = self.col_config.find_one({"_id": marker_id}) or {}
+        last = doc.get("last_logged_at")
+        if last and (datetime.now(timezone.utc) - last) < timedelta(hours=24):
+            return
+        log.info(f"[HARVESTER] {message}")
+        self.col_config.update_one({"_id": marker_id}, {"$set": {"last_logged_at": datetime.now(timezone.utc)}}, upsert=True)
+
+    def purge_expired_departed_members(self):
+        """Idea #17 (revised): a member who has left keeps their historical stats
+        queryable for DEPARTED_MEMBER_RETENTION_WEEKS, then gets cleaned up so the
+        DB doesn't grow forever with dead tags. Only ever deletes profiles that
+        were explicitly marked `left_clan_at` by _track_departures below — current
+        members are never touched by this method.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(weeks=DEPARTED_MEMBER_RETENTION_WEEKS)
+        expired = list(self.col_profiles.find(
+            {"left_clan_at": {"$lte": cutoff}}, {"tag": 1}
+        ))
+        if not expired:
+            return
+        tags = [p["tag"].replace("#", "") for p in expired]
+        self.col_profiles.delete_many({"tag": {"$in": [p["tag"] for p in expired]}})
+        self.col_player_snapshots.delete_many({"tag": {"$in": tags}})
+        self.col_battles.delete_many({"player_tag": {"$in": tags}})
+        log.info(f"Purged {len(tags)} departed member(s) past the {DEPARTED_MEMBER_RETENTION_WEEKS}-week retention window.")
+
+    def _track_departures(self, current_member_tags: list):
+        """Idea #17 (revised): diff the live clan roster against everyone we have a
+        non-departed profile for for. Anyone who's no longer in the clan gets
+        `left_clan_at` stamped once (idempotent — never overwritten on subsequent
+        runs), starting their retention countdown. Rejoining before the countdown
+        expires clears the flag so they're treated as a continuously-tracked member.
+        """
+        current_set = set(current_member_tags)
+        known_active = self.col_profiles.find(
+            {"left_clan_at": {"$exists": False}}, {"tag": 1}
+        )
+        for doc in known_active:
+            tag = doc["tag"].replace("#", "")
+            if tag not in current_set:
+                self.col_profiles.update_one(
+                    {"tag": doc["tag"]},
+                    {"$set": {"left_clan_at": datetime.now(timezone.utc)}}
+                )
+        # Rejoiners: clear the flag so they're not silently purged mid-membership.
+        self.col_profiles.update_many(
+            {"tag": {"$in": [f"#{t}" for t in current_member_tags]}},
+            {"$unset": {"left_clan_at": ""}}
+        )
 
     def harvest_clan_and_profiles(self):
         clan_data = self.fetch_api(f"clans/%23{self.clan_tag}")
         if not clan_data: return []
+
+        # Idea #232: pre-warm the web process's Redis cache (idea #231) with
+        # the clan data we just fetched anyway, so the first visitor to hit
+        # the roster page right after a harvest cycle gets an instant cache
+        # hit instead of paying live-fetch latency themselves.
+        if self.redis_client:
+            try:
+                self.redis_client.setex(
+                    _cr_api_cache_key(f"clans/%23{self.clan_tag}"),
+                    CR_API_CACHE_TTL_SECONDS,
+                    json.dumps(clan_data),
+                )
+            except Exception as e:
+                log.warning(f"Cache pre-warm failed (non-fatal): {e}")
 
         self.col_snapshots.insert_one({
             "timestamp": datetime.now(timezone.utc),
@@ -127,15 +704,56 @@ class DataHarvester:
         })
 
         member_tags = [m["tag"].replace("#", "") for m in clan_data.get("memberList", [])]
+        self._track_departures(member_tags)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         profile_operations = []
         snapshot_operations = []
         for tag in member_tags:
             profile_data = self.fetch_api(f"players/%23{tag}")
             if profile_data:
+                # Idea #39: log role changes (promotion/demotion) into the same
+                # audit_log array player.html's "Clan History Log" already reads,
+                # so leadership changes show up next to admin actions instead of
+                # being invisible. Compares against whatever role we last stored.
+                prior = self.col_profiles.find_one({"tag": profile_data["tag"]}, {"role": 1, "wins": 1, "bestTrophies": 1})
+                new_role = profile_data.get("role")
+                if prior and prior.get("role") and new_role and prior["role"] != new_role:
+                    self.col_profiles.update_one(
+                        {"tag": profile_data["tag"]},
+                        {"$push": {"audit_log": {
+                            "date": today,
+                            "action": f"Role changed: {prior['role']} → {new_role}",
+                        }}}
+                    )
+                    # Idea #111: an actual announcement instead of a silent DB update.
+                    self.col_config.database["pending_actions"].insert_one({
+                        "kind": "role_change_post",
+                        "message": f"🔔 **{profile_data.get('name', 'A member')}** is now **{new_role.capitalize()}** (was {prior['role'].capitalize()}).",
+                        "created_at": datetime.now(timezone.utc),
+                        "processed": False,
+                    })
+
+                # Idea #105: round-number milestone celebrations.
+                for msg in self._check_milestones(prior, profile_data):
+                    self.col_config.database["pending_actions"].insert_one({
+                        "kind": "milestone_post", "message": msg,
+                        "created_at": datetime.now(timezone.utc), "processed": False,
+                    })
+
                 profile_operations.append(UpdateOne(
                     {"tag": profile_data["tag"]},
-                    {"$set": {**profile_data, "last_updated": datetime.now(timezone.utc)}},
+                    {
+                        "$set": {**profile_data, "last_updated": datetime.now(timezone.utc)},
+                        # First time we see this tag: stamp when we started tracking them
+                        # (idea #107's rising-star window) and seed the gamification fields
+                        # (ideas #103/#104) so later $inc/$set calls never hit a missing field.
+                        "$setOnInsert": {
+                            "joined_clan_at": datetime.now(timezone.utc),
+                            "clan_points": 0,
+                            "war_participation_streak": 0,
+                            "streak_shields": 1,
+                        },
+                    },
                     upsert=True
                 ))
                 # One row per player per calendar day — later harvests the same day just
@@ -171,6 +789,25 @@ class DataHarvester:
 
         return member_tags
 
+    def _check_milestones(self, prior: dict | None, profile_data: dict) -> list[str]:
+        """Idea #105: detect a round-number crossing (e.g. 500 lifetime wins,
+        6000 personal-best trophies) between the last-harvested value and this
+        one. Returns zero or more ready-to-post celebration messages."""
+        if not prior:
+            return []
+        name = profile_data.get("name", "A member")
+        msgs = []
+        for field, step, label in (
+            ("wins", MILESTONE_WIN_STEP, "lifetime wins"),
+            ("bestTrophies", MILESTONE_TROPHY_STEP, "personal best trophies"),
+        ):
+            old_v = prior.get(field, 0) or 0
+            new_v = profile_data.get(field, 0) or 0
+            if new_v > 0 and new_v // step > old_v // step:
+                crossed = (new_v // step) * step
+                msgs.append(f"🎉 **{name}** just crossed **{crossed:,} {label}**!")
+        return msgs
+
     def harvest_battles(self, member_tags):
         battle_operations = []
         for tag in member_tags:
@@ -196,6 +833,19 @@ class DataHarvester:
                 b["opponent_tag"] = (opponent.get("tag") or "").replace("#", "")
                 b["battle_type"] = b.get("type", "")
                 b["result"] = "win" if team_crowns > opp_crowns else ("loss" if team_crowns < opp_crowns else "draw")
+                # BUGFIX (found while building section 14's archetype-trend feature,
+                # which sorts/filters on battle_time): the CR API's raw field is
+                # camelCase `battleTime`, and this function never renamed it to the
+                # snake_case `battle_time` every query elsewhere in web_routes.py,
+                # data_harvester.py, and clash_cog.py actually reads/sorts/filters on.
+                # That means every battle_time-based feature built across this whole
+                # project — trophy history, activity heatmap, war-participation streak
+                # math, the "active in last 24h" indicator, battle log ordering, and
+                # now section 14's trend/diversity calculations — has been silently
+                # querying a field that was never populated on real harvested battles.
+                # Fixing it here for all newly-harvested battles; see
+                # backfill_missing_battle_time() below for already-stored documents.
+                b["battle_time"] = b.get("battleTime", "")
 
                 battle_operations.append(UpdateOne(
                     {"unique_battle_id": unique_id},
@@ -209,27 +859,472 @@ class DataHarvester:
             self._harvest_meta["battles_saved"] += result.upserted_count
             log.info(f"Battle Catch-Up: {result.upserted_count} new battles found.")
 
+    def backfill_missing_battle_time(self):
+        """One-time (well, idempotent-forever) self-healing migration for the
+        battle_time bug documented above in harvest_battles(): any
+        battle_history document already stored before that fix went in has
+        `battleTime` but not `battle_time`. Rather than requiring you to run a
+        manual Mongo command, this runs once per harvest cycle, is cheap once
+        caught up (finds zero matching documents and does nothing), and
+        copies the value across for anything still missing it."""
+        to_fix = list(self.col_battles.find(
+            {"battle_time": {"$exists": False}, "battleTime": {"$exists": True}},
+            {"_id": 1, "battleTime": 1},
+        ).limit(2000))  # bounded per cycle so one huge backlog can't stall a harvest run
+        if not to_fix:
+            return
+        ops = [UpdateOne({"_id": d["_id"]}, {"$set": {"battle_time": d.get("battleTime", "")}}) for d in to_fix]
+        result = self.col_battles.bulk_write(ops)
+        log.info(f"[HARVESTER] Backfilled battle_time on {result.modified_count} previously-stored battle(s).")
+
+    def _day_progress_fraction(self, war_reset_hour_utc: int = 10) -> float:
+        """Approximate how far into the current war day we are, as a 0-1 fraction.
+        The CR API doesn't expose an exact "day started at" timestamp, so this
+        assumes a fixed daily reset hour (configurable via bot_settings.war_reset_hour_utc,
+        default 10 UTC) — documented approximation, not an exact read from the API.
+        """
+        now = datetime.now(timezone.utc)
+        elapsed_minutes = (now.hour * 60 + now.minute) - (war_reset_hour_utc * 60)
+        elapsed_minutes %= 24 * 60
+        return elapsed_minutes / (24 * 60)
+
+    def check_tiered_war_reminders(self, war_data: dict):
+        """Idea #13: a soft nudge once the war day is ~50% gone, a firmer one at
+        ~90%, instead of a single flat "DM all slackers" button. Queues into the
+        same pending_actions collection the manual nudge button already uses;
+        clash_cog.py's consumer loop is extended to handle these new kinds.
+        De-dupes per calendar day + tier via a small marker doc in `config` so a
+        30-minute harvest cadence doesn't re-queue the same tier repeatedly.
+        """
+        if not war_data or war_data.get("periodType") != "warDay":
+            return
+        bot_settings = self.col_config.find_one({"_id": "bot_settings"}) or {}
+        if not bot_settings.get("feature_auto_pings", False):
+            return
+        reset_hour = int(bot_settings.get("war_reset_hour_utc", 10))
+        fraction = self._day_progress_fraction(reset_hour)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        participants = (war_data.get("clan") or {}).get("participants", [])
+
+        def already_sent(tier):
+            marker_id = f"war_nudge_tier_{tier}_{today}"
+            existing = self.col_config.find_one({"_id": marker_id})
+            if existing:
+                return True
+            self.col_config.update_one({"_id": marker_id}, {"$set": {"sent_at": datetime.now(timezone.utc)}}, upsert=True)
+            return False
+
+        # Idea #131 (third tier: leadership escalation) + #139 (configurable
+        # escalation path): anyone still at 0 decks once the war day is almost
+        # over has, by construction, already been through both the soft (50%)
+        # and firm (90%) nudge tiers above — that's the "ignored 3 nudges"
+        # signal, without needing separate per-nudge-ignored counters.
+        if fraction >= 0.98:
+            ignored_everything = [p for p in participants if p.get("decksUsedToday", 0) == 0]
+            if ignored_everything and not already_sent(98):
+                self._queue_leadership_escalation(ignored_everything)
+
+        if fraction >= 0.9:
+            behind = [p for p in participants if p.get("decksUsedToday", 0) == 0]
+            if behind and not already_sent(90):
+                self._queue_tiered_nudge(behind, tier="firm")
+        elif fraction >= 0.5:
+            behind = [p for p in participants if p.get("decksUsedToday", 0) < 4]
+            if behind and not already_sent(50):
+                self._queue_tiered_nudge(behind, tier="soft")
+
+    def _eligible_discord_ids(self, tags: list, dm_kind_for_dedupe: str, dedupe_window_minutes: int = 90) -> list:
+        """Shared filter used by every DM-queuing path below:
+        - Idea #132: skip anyone who's opted out via users.notif_prefs.war_reminders.
+        - Idea #143: skip anyone who already has an unprocessed or very-recently-
+          queued DM of the same kind, so a 30-min harvest cadence can't double-DM
+          someone inside a short window.
+        """
+        db = self.col_config.database
+        users = list(db["users"].find({"cr_tag": {"$in": tags}}))
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=dedupe_window_minutes)
+        eligible = []
+        for u in users:
+            discord_id = u.get("discord_id")
+            if not discord_id:
+                continue
+            if (u.get("notif_prefs") or {}).get("war_reminders", True) is False:
+                continue
+            snoozed_until = _as_aware_utc(u.get("snoozed_until"))
+            if snoozed_until and snoozed_until > datetime.now(timezone.utc):
+                continue  # idea #141: member snoozed reminders — skip until it expires
+            recent = db["pending_actions"].find_one({
+                "discord_id": discord_id, "kind": dm_kind_for_dedupe,
+                "$or": [{"processed": False}, {"created_at": {"$gte": cutoff}}],
+            })
+            if recent:
+                continue
+            eligible.append(discord_id)
+        return eligible
+
+    def _queue_tiered_nudge(self, behind_participants: list, tier: str):
+        tags = [p.get("tag") for p in behind_participants if p.get("tag")]
+        discord_ids = self._eligible_discord_ids(tags, "war_nudge_tier")
+        if not discord_ids:
+            return
+        self.col_config.database["pending_actions"].insert_one({
+            "kind": "war_nudge_tier",
+            "tier": tier,
+            "discord_ids": discord_ids,
+            "created_at": datetime.now(timezone.utc),
+            "processed": False,
+        })
+
+    def _queue_leadership_escalation(self, ignored_participants: list):
+        """Idea #131/#139: notify leadership (not the member) once someone has
+        blown through every nudge tier for the day, instead of requiring a
+        leader to notice the slacker list manually."""
+        names = ", ".join(p.get("name", "?") for p in ignored_participants[:10])
+        self.col_config.database["pending_actions"].insert_one({
+            "kind": "leadership_escalation",
+            "message": f"🚨 **Escalation:** the following member(s) used 0 war decks all day despite reminders: {names}",
+            "created_at": datetime.now(timezone.utc),
+            "processed": False,
+        })
+
+    def check_meta_shifts(self):
+        """Idea #218: notify leadership when a previously-dominant archetype's
+        win rate drops sharply week over week — signaling a balance patch or
+        meta shift worth discussing, instead of leadership having to notice it
+        themselves in the Analytics tab. De-duped per ISO week, same pattern
+        as send_weekly_digest, so this only ever fires once a week even
+        though the harvest loop runs every 30 minutes."""
+        now = datetime.now(timezone.utc)
+        iso_year, iso_week, _ = now.isocalendar()
+        marker_id = f"meta_shift_check_{iso_year}_{iso_week}"
+        if self.col_config.find_one({"_id": marker_id}):
+            return
+        self.col_config.update_one({"_id": marker_id}, {"$set": {"checked_at": now}}, upsert=True)
+
+        week_ago = (now - timedelta(days=7)).strftime("%Y%m%dT%H%M%S")
+        two_weeks_ago = (now - timedelta(days=14)).strftime("%Y%m%dT%H%M%S")
+
+        def _bucket(start, end):
+            battles = list(self.col_battles.find(
+                {"battle_time": {"$gte": start, "$lt": end}},
+                {"team_cards": 1, "result": 1},
+            ))
+            archetypes = {}
+            for b in battles:
+                result = b.get("result")
+                if result not in ("win", "loss"):
+                    continue
+                cards = [c for c in (b.get("team_cards") or []) if c]
+                if len(cards) < 8:
+                    continue
+                sig = tuple(sorted(cards[:8]))
+                entry = archetypes.setdefault(sig, {"wins": 0, "games": 0})
+                entry["games"] += 1
+                if result == "win":
+                    entry["wins"] += 1
+            return {sig: v for sig, v in archetypes.items() if v["games"] >= 5}
+
+        this_week = _bucket(week_ago, now.strftime("%Y%m%dT%H%M%S"))
+        last_week = _bucket(two_weeks_ago, week_ago)
+
+        shifts = []
+        for sig, prev in last_week.items():
+            prev_wr = prev["wins"] / prev["games"] * 100
+            if prev_wr < 55:
+                continue  # only flag drops from previously-strong (dominant) decks
+            cur = this_week.get(sig)
+            if not cur:
+                continue
+            cur_wr = cur["wins"] / cur["games"] * 100
+            if prev_wr - cur_wr >= 15:  # a 15+ point win-rate drop is a real signal, not noise
+                shifts.append((sig, prev_wr, cur_wr))
+
+        if not shifts:
+            return
+        lines = ["📉 **Meta Shift Alert** — the following previously-strong decks dropped sharply this week:"]
+        for sig, prev_wr, cur_wr in shifts[:5]:
+            deck_desc = ", ".join(sig[:3]) + "..."
+            lines.append(f"- {deck_desc}: {prev_wr:.0f}% → {cur_wr:.0f}% win rate")
+        self.col_config.database["pending_actions"].insert_one({
+            "kind": "leadership_escalation", "message": "\n".join(lines),
+            "created_at": now, "processed": False,
+        })
+
+    def send_weekly_digest(self):
+        """Idea #135: a Monday digest — top chatters (most logged battles this
+        week), top war contributors (fame in the most recent completed race),
+        and a "what's new" recap of recent changelog/milestone posts. De-duped
+        per ISO week via a marker doc so this only ever fires once a week
+        regardless of how often the 30-min harvest loop runs on a Monday."""
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 0:  # Monday only
+            return
+        iso_year, iso_week, _ = now.isocalendar()
+        marker_id = f"weekly_digest_{iso_year}_{iso_week}"
+        if self.col_config.find_one({"_id": marker_id}):
+            return
+        self.col_config.update_one({"_id": marker_id}, {"$set": {"sent_at": now}}, upsert=True)
+
+        week_ago = (now - timedelta(days=7)).strftime("%Y%m%d")
+        chatter_pipeline = [
+            {"$match": {"battle_time": {"$gte": week_ago}}},
+            {"$group": {"_id": "$player_tag", "battles": {"$sum": 1}}},
+            {"$sort": {"battles": -1}}, {"$limit": 5},
+        ]
+        top_chatters = list(self.col_battles.aggregate(chatter_pipeline))
+
+        latest_race = self.col_war_history.find_one({}, sort=[("data.seasonId", -1)]) or {}
+        participants = ((latest_race.get("data", {}).get("clan") or {}).get("participants")) or []
+        top_fame = sorted(participants, key=lambda p: p.get("fame", 0), reverse=True)[:5]
+
+        lines = ["📊 **Weekly Digest**"]
+        if top_chatters:
+            names = {p["tag"].replace("#", ""): p.get("name") for p in participants}
+            lines.append("Most battles logged: " + ", ".join(
+                f"{names.get(c['_id'], c['_id'])} ({c['battles']})" for c in top_chatters
+            ))
+        if top_fame:
+            lines.append("Top war contributors (last race): " + ", ".join(
+                f"{p.get('name')} ({p.get('fame', 0):,})" for p in top_fame
+            ))
+        self.col_config.database["pending_actions"].insert_one({
+            "kind": "weekly_digest_post", "message": "\n".join(lines),
+            "created_at": now, "processed": False,
+        })
+        # Idea #138: email digest option — stubbed since sending real email needs
+        # SMTP credentials this project doesn't currently have configured.
+        # clash_cog.py's consumer just logs this one rather than dropping it
+        # silently, so it's visible in logs once email delivery is wired up.
+        email_users = list(self.col_config.database["users"].find({"email": {"$exists": True, "$ne": ""}}))
+        if email_users:
+            self.col_config.database["pending_actions"].insert_one({
+                "kind": "weekly_digest_email", "message": "\n".join(lines),
+                "recipient_emails": [u["email"] for u in email_users],
+                "created_at": now, "processed": False,
+            })
+
+    def check_war_start_reminders(self):
+        """Idea #136: event lead-up reminders (2 days out → tomorrow → now)
+        instead of a single start-of-war ping. Approximated from the clan's
+        stated Thu-Sun war window (documented in how_it_works.html / link.html)
+        since the CR API doesn't expose an exact "next war starts at" timestamp —
+        same documented-approximation pattern as this project's other timing
+        calculations. War days are Thursday(3)-Sunday(6) in Python's weekday()."""
+        now = datetime.now(timezone.utc)
+        bot_settings = self.col_config.find_one({"_id": "bot_settings"}) or {}
+        reset_hour = int(bot_settings.get("war_reset_hour_utc", 10))
+        weekday = now.weekday()  # Mon=0 .. Sun=6
+        days_until_thursday = (3 - weekday) % 7
+        tier = None
+        if days_until_thursday == 2 and now.hour == reset_hour:
+            tier = "2_days"
+        elif days_until_thursday == 1 and now.hour == reset_hour:
+            tier = "tomorrow"
+        elif days_until_thursday == 0 and now.hour == reset_hour:
+            tier = "now"
+        if not tier:
+            return
+        marker_id = f"war_start_reminder_{tier}_{now.strftime('%Y-%W')}"
+        if self.col_config.find_one({"_id": marker_id}):
+            return
+        self.col_config.update_one({"_id": marker_id}, {"$set": {"sent_at": now}}, upsert=True)
+        wording = {
+            "2_days": "📅 Heads up — war starts in 2 days.",
+            "tomorrow": "📅 War starts tomorrow — get your decks ready!",
+            "now": "⚔️ War day is here — go use those decks!",
+        }[tier]
+        self.col_config.database["pending_actions"].insert_one({
+            "kind": "war_start_reminder", "message": wording,
+            "created_at": now, "processed": False,
+        })
+
+    def check_anniversaries(self):
+        """Idea #137: a lightweight community-warmth touch — shout out a
+        member's clan-join anniversary using the joined_clan_at date this
+        project already tracks (idea #107's rising-star field, reused here).
+        De-duped per calendar year via `last_anniversary_shoutout_year`."""
+        now = datetime.now(timezone.utc)
+        candidates = list(self.col_profiles.find(
+            {"joined_clan_at": {"$exists": True}, "left_clan_at": {"$exists": False}},
+            {"tag": 1, "name": 1, "joined_clan_at": 1, "last_anniversary_shoutout_year": 1},
+        ))
+        for c in candidates:
+            joined = _as_aware_utc(c.get("joined_clan_at"))
+            if not joined or joined.year == now.year:
+                continue  # joined this same calendar year — not an anniversary yet
+            if (joined.month, joined.day) != (now.month, now.day):
+                continue
+            if c.get("last_anniversary_shoutout_year") == now.year:
+                continue
+            years = now.year - joined.year
+            self.col_config.database["pending_actions"].insert_one({
+                "kind": "anniversary_shoutout",
+                "message": f"🎉 Happy {years}-year clan anniversary, **{c.get('name', 'friend')}**! Thanks for being part of Graveyard Squad.",
+                "created_at": now, "processed": False,
+            })
+            self.col_profiles.update_one({"tag": c["tag"]}, {"$set": {"last_anniversary_shoutout_year": now.year}})
+
+    CONFIG_BACKUP_RETENTION = 14  # keep roughly two weeks of daily snapshots
+
+    def backup_config_collection(self):
+        """Idea #152: a bad template deploy currently has no rollback path
+        beyond the disk fallback (which only covers templates that were never
+        deployed to Mongo in the first place) or the last-5-versions history
+        idea #67 already tracks per-template. This adds a coarser daily safety
+        net: the WHOLE `config` collection, snapshotted once a day, so even a
+        catastrophic accidental `db.config.deleteMany({})` has a same-day
+        restore point. De-duped per calendar day; prunes anything older than
+        CONFIG_BACKUP_RETENTION days."""
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        db = self.col_config.database
+        if db["config_backups"].find_one({"backup_date": today}):
+            return
+        docs = list(self.col_config.find({}))
+        for d in docs:
+            d["_original_id"] = d.pop("_id")
+        db["config_backups"].insert_one({
+            "backup_date": today, "created_at": now, "docs": docs,
+        })
+        cutoff = now - timedelta(days=self.CONFIG_BACKUP_RETENTION)
+        db["config_backups"].delete_many({"created_at": {"$lt": cutoff}})
+
+    def apply_due_scheduled_settings(self):
+        """Idea #77: settings changes scheduled for a future time (queued via
+        web_routes.py's /admin/api/settings/schedule) get applied here once due."""
+        now = datetime.now(timezone.utc)
+        db = self.col_config.database
+        due = list(db["scheduled_settings"].find({"applied": False}))
+        for item in due:
+            try:
+                apply_at = item.get("apply_at")
+                # Stored as an ISO string from the browser's `Date().toISOString()`.
+                apply_dt = datetime.fromisoformat(str(apply_at).replace("Z", "+00:00")) if isinstance(apply_at, str) else apply_at
+                if apply_dt and apply_dt <= now:
+                    self.col_config.update_one({"_id": "bot_settings"}, {"$set": item.get("changes", {})}, upsert=True)
+                    db["scheduled_settings"].update_one({"_id": item["_id"]}, {"$set": {"applied": True, "applied_at": now}})
+                    log.info(f"Applied scheduled setting change: {item.get('changes')}")
+            except Exception as e:
+                log.error(f"Failed to apply scheduled setting {item.get('_id')}: {e}")
+
     def run_full_cycle(self, is_startup=False):
         start_time = time.time()
         log.info("Starting Harvester Cycle...")
-        
+
         if is_startup:
             self.backfill_missed_wars()
 
         tags = self.harvest_clan_and_profiles()
+        war_data = None
         if tags:
             self.harvest_battles(tags)
-            
+
             # Live war tracking
             war_data = self.fetch_api(f"clans/%23{self.clan_tag}/currentriverrace")
             if war_data:
                 war_data["harvest_time"] = datetime.now(timezone.utc)
                 self.col_war.insert_one(war_data)
+                try:
+                    self.check_tiered_war_reminders(war_data)
+                except Exception as e:
+                    log.error(f"Tiered war reminder check failed (non-fatal): {e}")
+
+        # Section 6 (gamification, ideas #102/#107/#110/#115): all cheap,
+        # bounded-cost aggregates, each independently non-fatal so one failing
+        # doesn't take down the rest of the harvest cycle.
+        try:
+            self.compute_weekly_spotlights(war_data)
+        except Exception as e:
+            log.error(f"Weekly spotlight computation failed (non-fatal): {e}")
+        try:
+            self.compute_clan_legends()
+        except Exception as e:
+            log.error(f"Clan legends computation failed (non-fatal): {e}")
+        try:
+            self.assign_weekly_rivalries()
+        except Exception as e:
+            log.error(f"Rivalry assignment failed (non-fatal): {e}")
+        try:
+            self.check_first_week_checkins()
+        except Exception as e:
+            log.error(f"First-week check-in failed (non-fatal): {e}")
+
+        # Idea #218: weekly, non-fatal, same pattern as the rest of this cycle.
+        try:
+            self.check_meta_shifts()
+        except Exception as e:
+            log.error(f"Meta-shift check failed (non-fatal): {e}")
+
+        # Section 8 (notifications, ideas #135/#136/#137): all independently
+        # non-fatal, same pattern as the rest of this cycle.
+        try:
+            self.send_weekly_digest()
+        except Exception as e:
+            log.error(f"Weekly digest failed (non-fatal): {e}")
+        try:
+            self.check_war_start_reminders()
+        except Exception as e:
+            log.error(f"War-start reminder check failed (non-fatal): {e}")
+        try:
+            self.check_anniversaries()
+        except Exception as e:
+            log.error(f"Anniversary check failed (non-fatal): {e}")
+        try:
+            self.backup_config_collection()
+        except Exception as e:
+            log.error(f"Config backup failed (non-fatal): {e}")
+
+        # Idea #214: off unless an admin explicitly enabled it in Settings.
+        try:
+            self.auto_decline_stale_applications()
+        except Exception as e:
+            log.error(f"Auto-decline stale applications failed (non-fatal): {e}")
+
+        try:
+            self.check_streaming_status()
+        except Exception as e:
+            log.error(f"Streaming status check failed (non-fatal): {e}")
+
+        try:
+            self.post_recruitment_to_reddit()
+        except Exception as e:
+            log.error(f"Reddit auto-post failed (non-fatal): {e}")
+
+        # Idea #17 (revised): cheap query, safe to run every cycle — only ever
+        # touches profiles already flagged departed past the retention window.
+        try:
+            self.purge_expired_departed_members()
+        except Exception as e:
+            log.error(f"Departed-member retention purge failed (non-fatal): {e}")
+
+        # Self-healing migration for the battle_time bug found while building
+        # section 14 — cheap no-op once existing data is caught up.
+        try:
+            self.backfill_missing_battle_time()
+        except Exception as e:
+            log.error(f"battle_time backfill failed (non-fatal): {e}")
+
+        # Idea #77: apply any due scheduled settings changes. Piggybacks on this
+        # already-running 30-min loop rather than a dedicated scheduler process.
+        try:
+            self.apply_due_scheduled_settings()
+        except Exception as e:
+            log.error(f"Scheduled settings apply failed (non-fatal): {e}")
 
         self._harvest_meta["last_run"] = datetime.now(timezone.utc).isoformat()
         self._harvest_meta["duration_s"] = round(time.time() - start_time, 2)
         self._save_harvest_meta()
         log.info(f"✅ Cycle Complete in {self._harvest_meta['duration_s']}s.")
+
+        try:
+            self._fire_webhooks("harvest_complete", {
+                "duration_s": self._harvest_meta["duration_s"],
+                "last_run": self._harvest_meta["last_run"],
+                "is_startup": is_startup,
+            })
+        except Exception as e:
+            log.error(f"harvest_complete webhook dispatch failed (non-fatal): {e}")
 
 # ---------------------------------------------------------------------------
 # SHARED SINGLETON (web_routes.py and clash_cog.py both call get_harvester())

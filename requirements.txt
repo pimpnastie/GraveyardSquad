@@ -10,3 +10,6 @@ waitress==3.0.0
 openpyxl==3.1.5
 tzdata==2024.1
 requests==2.32.3
+# Added for the shareable player-card image (#29) and profile QR code (#40).
+Pillow==10.4.0
+qrcode==7.4.2

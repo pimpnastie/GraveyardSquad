@@ -5,17 +5,59 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{{ player.name }} | Graveyard Squad</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/theme.css">
     <style>
         :root {
             --bg: #0b0c10; --surface: #111418; --border: #1e2530;
             --accent: #00e5ff; --danger: #e74c3c; --success: #2ecc71;
             --warning: #f1c40f; --text: #c5c6c7; --dim: #888;
             --font-mono: 'Courier New', monospace;
+            /* Idea #171: pure white on these dark surfaces is harsher than
+               necessary — off-white reduces eye strain per current dark-mode
+               accessibility guidance, used for the several high-emphasis
+               labels/values below that previously hardcoded `color: white`. */
+            --text-bright: #f0f0f0;
         }
         *, *::before, *::after { box-sizing: border-box; }
         body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding-bottom: 60px; }
         a { text-decoration: none; color: inherit; transition: opacity 0.2s; }
         a:hover { opacity: 0.8; }
+
+        /* Idea #166: visible, consistent focus outlines for keyboard navigation,
+           tested against this page's dark background specifically. */
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+        /* Idea #168: respect prefers-reduced-motion for spin/hover-transform animations. */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+            }
+        }
+
+        /* Idea #167: skip-to-content link, visible only on keyboard focus. */
+        .skip-link {
+            position: absolute; left: -9999px; top: 0; background: var(--accent); color: #000;
+            padding: 10px 16px; z-index: 10000; font-weight: bold; border-radius: 0 0 6px 0;
+        }
+        .skip-link:focus { left: 0; }
+
+        /* Idea #174: sticky back-to-top for this fairly long page. */
+        .back-to-top {
+            position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border);
+            color: var(--text-bright); width: 44px; height: 44px; border-radius: 50%; display: none;
+            align-items: center; justify-content: center; font-size: 18px; cursor: pointer; z-index: 500;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+        .back-to-top.visible { display: flex; }
+
+        /* Idea #170: print-friendly stylesheet — strip chrome, keep the stats readable on paper. */
+        @media print {
+            .topbar, .skip-link, .back-to-top, button, .cr-link-btn, #notif-unread-badge { display: none !important; }
+            body { background: #fff; color: #000; }
+            .card { break-inside: avoid; border: 1px solid #ccc; }
+        }
 
         /* ── Topbar ── */
         .topbar { display: flex; align-items: center; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
@@ -25,7 +67,7 @@
 
         /* ── Hero ── */
         .hero { background: linear-gradient(180deg, #1a222c 0%, var(--bg) 100%); padding: 40px 20px; text-align: center; border-bottom: 1px solid var(--border); }
-        .hero-name { font-size: 32px; color: white; margin: 0 0 10px 0; display: flex; justify-content: center; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .hero-name { font-size: 32px; color: var(--text-bright); margin: 0 0 10px 0; display: flex; justify-content: center; align-items: center; gap: 12px; flex-wrap: wrap; }
         .hero-tag { font-family: var(--font-mono); color: var(--dim); font-size: 14px; background: rgba(255,255,255,0.05); padding: 4px 10px; border-radius: 4px; }
         .role-badge { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; padding: 4px 12px; border-radius: 20px; border: 1px solid var(--accent); color: var(--accent); }
         .cr-link-btn { margin-top: 16px; display: inline-block; padding: 8px 16px; background: rgba(0,229,255,0.1); border: 1px solid var(--accent); color: var(--accent); border-radius: 6px; font-weight: bold; font-size: 13px; text-transform: uppercase; }
@@ -38,11 +80,11 @@
 
         /* ── Cards ── */
         .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 24px; }
-        .card-title { font-size: 14px; font-family: var(--font-mono); text-transform: uppercase; color: white; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+        .card-title { font-size: 14px; font-family: var(--font-mono); text-transform: uppercase; color: var(--text-bright); margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
         .stat-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
         .stat-row:last-child { border-bottom: none; }
         .stat-label { color: var(--dim); font-size: 14px; }
-        .stat-val { font-weight: bold; color: white; font-size: 15px; }
+        .stat-val { font-weight: bold; color: var(--text-bright); font-size: 15px; }
         .stat-val.trend-up   { color: var(--success); }
         .stat-val.trend-down { color: var(--danger); }
 
@@ -71,7 +113,7 @@
         .superlative-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 14px; margin-bottom: 20px; }
         .superlative-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
         .superlative-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin-bottom: 6px; }
-        .superlative-value { font-size: 17px; font-weight: bold; color: white; }
+        .superlative-value { font-size: 17px; font-weight: bold; color: var(--text-bright); }
         .superlative-sub { font-size: 11px; color: var(--dim); margin-top: 4px; }
         .usage-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
         .usage-row:last-child { border-bottom: none; }
@@ -83,21 +125,24 @@
         /* ── Admin zone ── */
         .admin-zone { border-color: var(--danger); box-shadow: 0 0 15px rgba(231,76,60,0.1); }
         .admin-zone .card-title { color: var(--danger); border-bottom-color: rgba(231,76,60,0.3); }
-        .db-textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); color: white; padding: 12px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; min-height: 100px; resize: vertical; margin-bottom: 12px; outline: none; }
+        .db-textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text-bright); padding: 12px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; min-height: 100px; resize: vertical; margin-bottom: 12px; outline: none; }
         .db-textarea:focus { border-color: var(--danger); }
         .btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
         .btn { flex: 1; padding: 10px; border-radius: 6px; font-weight: 600; font-size: 12px; text-transform: uppercase; cursor: pointer; border: none; transition: 0.2s; font-family: var(--font-mono); text-align: center; }
         .btn-strike { background: rgba(241,196,15,0.1); border: 1px solid var(--warning); color: var(--warning); }
         .btn-strike:hover { background: var(--warning); color: #000; }
         .btn-dm { background: rgba(231,76,60,0.1); border: 1px solid var(--danger); color: var(--danger); }
-        .btn-dm:hover { background: var(--danger); color: white; }
+        /* Idea #175: was `color: white` on var(--danger) background — 3.82:1,
+           below WCAG AA's 4.5:1 minimum for this button's 12px text. Black
+           text on the same background clears AA comfortably. */
+        .btn-dm:hover { background: var(--danger); color: #000; }
         .btn-save { background: rgba(46,204,113,0.1); border: 1px solid var(--success); color: var(--success); }
         .btn-save:hover { background: var(--success); color: #000; }
 
         /* ── Audit log ── */
         .audit-log { max-height: 200px; overflow-y: auto; font-family: var(--font-mono); font-size: 12px; background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
         .audit-item { padding: 8px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); color: var(--dim); }
-        .audit-item span { color: white; }
+        .audit-item span { color: var(--text-bright); }
 
         /* ── Battle log ── */
         .battle-log { display: flex; flex-direction: column; gap: 12px; }
@@ -114,7 +159,7 @@
         .badge-win  { background: rgba(46,204,113,0.15); color: var(--success); border: 1px solid rgba(46,204,113,0.3); }
         .badge-loss { background: rgba(231,76,60,0.15);  color: var(--danger);  border: 1px solid rgba(231,76,60,0.3); }
         .badge-draw { background: rgba(136,136,136,0.15); color: var(--dim);    border: 1px solid rgba(136,136,136,0.3); }
-        .battle-score { font-size: 20px; font-weight: 700; color: white; white-space: nowrap; }
+        .battle-score { font-size: 20px; font-weight: 700; color: var(--text-bright); white-space: nowrap; }
         .battle-vs    { font-size: 12px; color: var(--dim); }
         .battle-opp   { font-size: 14px; font-weight: 600; color: var(--text); }
         .battle-meta  { font-size: 11px; color: var(--dim); font-family: var(--font-mono); margin-left: auto; text-align: right; line-height: 1.6; }
@@ -129,6 +174,13 @@
         .deck-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
         .deck-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
         @media (max-width: 600px) { .deck-grid { grid-template-columns: repeat(4, 1fr); gap: 6px; } }
+        /* Idea #172: on very narrow *portrait* phone widths, 4 columns crams
+           the card art too small to read — drop to 2 columns there. Landscape
+           orientation (even on a phone) keeps 4, since the extra horizontal
+           space makes 4 columns comfortable again. */
+        @media (max-width: 380px) and (orientation: portrait) {
+            .deck-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+        }
 
         .card-chip {
             background: #0d1117; border: 1px solid var(--border);
@@ -147,14 +199,28 @@
         .battles-loading { text-align: center; padding: 30px; color: var(--dim); font-family: var(--font-mono); font-size: 13px; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .spin { display: inline-block; animation: spin 0.8s linear infinite; }
+        .compare-table { width:100%; border-collapse: collapse; font-size: 13px; }
+        .compare-table td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 </head>
 <body>
 
+<a href="#main-content" class="skip-link">Skip to main content</a>
+
 <div class="topbar">
     <div class="topbar-title">Player Dossier</div>
-    <a href="/" class="back-link">← Back to Roster</a>
+    <!-- Idea #187: dark/light theme toggle; dark stays the default. -->
+    <button type="button" class="theme-toggle-btn" id="themeToggleBtn" onclick="toggleTheme()" aria-label="Toggle light/dark theme" style="margin-left:auto;">🌙</button>
+    {% if is_admin %}
+    <a href="/admin" class="back-link" style="margin-left:16px;">🛡️ Admin Panel</a>
+    {% endif %}
+    <a href="/" class="back-link" style="margin-left:16px;">← Back to Roster</a>
 </div>
+
+<button id="backToTopBtn" class="back-to-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="Back to top" title="Back to top">↑</button>
+
+<main id="main-content">
 
 <div class="hero">
     <h1 class="hero-name">
@@ -162,7 +228,16 @@
         <span class="role-badge">{{ player.role | replace('coLeader', 'Co-Leader') | title }}</span>
     </h1>
     <span class="hero-tag">{{ player.tag }}</span><br>
-    <a href="clashroyale://player/{{ player.tag | replace('#', '') }}" class="cr-link-btn">📱 Open in Game</a>
+    <!-- Idea #162: clashroyale:// silently no-ops on desktop with no fallback —
+         detect non-mobile UAs client-side and swap to a "copy tag" action instead. -->
+    <a href="clashroyale://player/{{ player.tag | replace('#', '') }}" class="cr-link-btn" id="openInGameBtn" data-tag="{{ player.tag }}">📱 Open in Game</a>
+    <div style="margin-top:10px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+        <a href="/player/{{ player.tag | replace('#', '') }}/card.png" target="_blank" class="cr-link-btn" style="font-size:11px; padding:6px 12px;">🖼️ Shareable Card</a>
+        <a href="/player/{{ player.tag | replace('#', '') }}/qr.png" target="_blank" class="cr-link-btn" style="font-size:11px; padding:6px 12px;">📱 QR Code</a>
+    </div>
+    {% if player.player_since %}
+    <div style="margin-top:10px; font-size:12px; color:var(--dim); font-family:var(--font-mono);">Player Since: {{ player.player_since }}</div>
+    {% endif %}
 </div>
 
 <div class="container">
@@ -209,6 +284,208 @@
                     <span class="stat-val">{{ player.warDayWins | default(0) }}</span>
                 </div>
             </div>
+
+            <!-- ── PERSONAL BESTS + CLAN COMPARISON (ideas #23, #30, #35, #38) ── -->
+            <div class="card">
+                <div class="card-title">🌟 Personal Bests &amp; Clan Standing</div>
+                <div class="stat-row">
+                    <span class="stat-label">Highest Trophies Tracked</span>
+                    <span class="stat-val" style="color: var(--warning);">{{ player.personal_best_trophies_tracked | default(player.trophies) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Longest Win Streak (All-Time)</span>
+                    <span class="stat-val">{{ player.personal_best_win_streak | default(0) }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Biggest Single-Battle Crowns</span>
+                    <span class="stat-val">{{ player.personal_best_crowns | default(0) }}</span>
+                </div>
+                {% if player.clan_rank_local %}
+                <div class="stat-row">
+                    <span class="stat-label">Clan Rank (Trophies)</span>
+                    <span class="stat-val">#{{ player.clan_rank_local }}</span>
+                </div>
+                {% endif %}
+                {% if player.clan_avg_trophies %}
+                <div class="stat-row">
+                    <span class="stat-label">Trophies vs. Clan Average</span>
+                    <span class="stat-val {% if player.trophies >= player.clan_avg_trophies %}trend-up{% else %}trend-down{% endif %}">
+                        {{ player.trophies - player.clan_avg_trophies }} ({{ player.clan_avg_trophies }} avg)
+                    </span>
+                </div>
+                {% endif %}
+                {% if player.clan_avg_win_rate %}
+                {% set my_total = (player.wins | default(0)) + (player.losses | default(0)) %}
+                {% set my_wr = (player.wins / my_total * 100) if my_total > 0 else 0 %}
+                <div class="stat-row">
+                    <span class="stat-label">Win Rate vs. Clan Average</span>
+                    <span class="stat-val {% if my_wr >= player.clan_avg_win_rate %}trend-up{% else %}trend-down{% endif %}">
+                        {{ "%+.1f" | format(my_wr - player.clan_avg_win_rate) }}% ({{ player.clan_avg_win_rate }}% avg)
+                    </span>
+                </div>
+                {% endif %}
+                {% if player.trophies_1_week_ago is not none or player.trophies_1_month_ago is not none %}
+                <div class="stat-row" style="flex-direction:column; align-items:flex-start; gap:4px;">
+                    <span class="stat-label">Trophy Callback</span>
+                    <span class="stat-val" style="font-size:12px; font-weight:normal; color:var(--dim);">
+                        {% if player.trophies_1_week_ago is not none %}1 week ago: <b style="color:var(--text)">{{ player.trophies_1_week_ago }}</b>{% endif %}
+                        {% if player.trophies_1_month_ago is not none %} &nbsp;|&nbsp; 1 month ago: <b style="color:var(--text)">{{ player.trophies_1_month_ago }}</b>{% endif %}
+                    </span>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- ── TROPHY HISTORY (idea #21) ── -->
+            <div class="card">
+                <div class="card-title">📈 Trophy History</div>
+                <canvas id="trophyHistoryChart" height="120"></canvas>
+            </div>
+
+            <!-- ── PROGRESSIVE DISCLOSURE (idea #118): social/gamification depth is ──
+                 collapsed by default for brand-new members (joined < 3 days ago),
+                 expanded by default for everyone else. Nothing is actually removed —
+                 just collapsed, one click away. -->
+            <details {% if not is_new_member %}open{% endif %} style="margin-bottom:0;">
+            <summary style="cursor:pointer; color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:1px; padding:8px 0; font-family:var(--font-mono);">
+                {% if is_new_member %}🌱 New here — click to explore deeper stats & clan features{% else %}Deck, Social & Clan Features{% endif %}
+            </summary>
+
+            <!-- ── DECK USAGE BREAKDOWN + GRADE (ideas #24, #36) ── -->
+            <div class="card">
+                <div class="card-title">
+                    🃏 Most-Played Decks
+                    {% if player.deck_grade %}<span style="font-size:20px; color:var(--accent);">Grade: {{ player.deck_grade }}</span>{% endif %}
+                </div>
+                {% if player.own_deck_breakdown %}
+                {% for d in player.own_deck_breakdown %}
+                <div class="usage-row">
+                    <span class="usage-name">{{ d.cards | join(', ') }}</span>
+                    <span class="usage-meta">{{ d.games }} games · {{ d.win_rate }}% WR</span>
+                </div>
+                {% endfor %}
+                {% else %}
+                <div class="empty-note">No full 8-card deck records yet.</div>
+                {% endif %}
+            </div>
+
+            <!-- ── COMPARE WITH ANOTHER MEMBER (idea #25) ── -->
+            <div class="card">
+                <div class="card-title">⚖️ Compare With Another Member</div>
+                <div style="display:flex; gap:8px; margin-bottom:12px;">
+                    <input type="text" id="compareTagInput" class="db-textarea" style="min-height:auto; margin-bottom:0;" placeholder="Enter their tag, e.g. ABC123">
+                    <button class="btn btn-save" style="flex:0 0 auto;" onclick="loadComparison('{{ player.tag | replace('#','') }}')">Compare</button>
+                </div>
+                <div id="compareResult"></div>
+            </div>
+
+            <!-- ── PROFILE FLAIR (idea #27) ── -->
+            <div class="card">
+                <div class="card-title">💬 Motto &amp; Flair</div>
+                <textarea id="flairMotto" class="db-textarea" style="min-height:50px;" placeholder="A short motto or catchphrase…" maxlength="80"></textarea>
+                <button class="btn btn-save" onclick="saveFlair('{{ player.tag }}')">💾 Save Flair</button>
+                <div id="customBadgeDisplay" style="margin-top:8px; font-size:12px; color:var(--dim);"></div>
+                <label style="display:flex; align-items:center; gap:6px; margin-top:10px; font-size:12px; color:var(--dim); cursor:pointer;">
+                    <input type="checkbox" id="leaderboardOptout" onchange="saveLeaderboardOptout('{{ player.tag }}')">
+                    Hide me from public leaderboards (idea #108)
+                </label>
+            </div>
+
+            <!-- ── NOTIFICATION PREFERENCES (idea #132/#138) — own profile only ── -->
+            {% if own_profile %}
+            <div class="card">
+                <div class="card-title">🔔 Notification Preferences</div>
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#ddd; cursor:pointer; margin-bottom:10px;">
+                    <input type="checkbox" id="notifWarReminders" checked onchange="saveNotifPrefs()">
+                    Send me war reminder DMs
+                </label>
+                <label style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); display:block; margin-bottom:6px;">Email (optional, for digest)</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="email" id="notifEmail" class="db-textarea" style="min-height:auto; margin-bottom:0;" placeholder="you@example.com">
+                    <button class="btn btn-save" style="flex:0 0 auto;" onclick="saveNotifPrefs()">Save</button>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- ── KUDOS (idea #197) — separate from formal strikes/admin actions ── -->
+            <div class="card">
+                <div class="card-title">🙌 Kudos</div>
+                <div id="kudosContent" style="margin-bottom:10px;">Loading…</div>
+                {% if session.get('discord_id') and not own_profile %}
+                <div style="display:flex; gap:8px;">
+                    <input type="text" id="kudosMessage" class="db-textarea" style="min-height:auto; margin-bottom:0;" placeholder="Thank them for something…" maxlength="200">
+                    <button class="btn btn-save" style="flex:0 0 auto;" onclick="sendKudos('{{ player.tag }}')">Send</button>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- ── COMMENTS / REACTIONS (idea #191) ── -->
+            <div class="card">
+                <div class="card-title">💬 Comments</div>
+                <div id="commentsContent" style="margin-bottom:10px;">Loading…</div>
+                {% if session.get('discord_id') %}
+                <div style="display:flex; gap:8px;">
+                    <input type="text" id="commentMessage" class="db-textarea" style="min-height:auto; margin-bottom:0;" placeholder="Say something nice…" maxlength="280">
+                    <button class="btn btn-save" style="flex:0 0 auto;" onclick="postComment('{{ player.tag }}')">Post</button>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- ── ACHIEVEMENT BADGES (idea #101/#113) ── -->
+            <div class="card">
+                <div class="card-title">🏅 Clan Badges</div>
+                <div id="badgesContent" style="display:flex; flex-wrap:wrap; gap:8px;">Loading…</div>
+            </div>
+
+            <!-- ── SEASONAL CHALLENGES (idea #109) ── -->
+            <div class="card">
+                <div class="card-title">🎯 Seasonal Challenges</div>
+                <div id="challengesContent">Loading…</div>
+            </div>
+
+            <!-- ── CLAN POINTS & SHOP (idea #104/#112) ── -->
+            <div class="card">
+                <div class="card-title">🪙 Clan Points</div>
+                <div class="stat-row">
+                    <span class="stat-label">Balance</span>
+                    <span class="stat-val" id="clanPointsBalance">—</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">War Streak</span>
+                    <span class="stat-val" id="warStreakVal">—</span>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <input type="text" id="shopBadgeInput" class="db-textarea" style="min-height:auto; margin-bottom:0;" placeholder="Custom badge text (100 pts)" maxlength="24">
+                    <button class="btn btn-save" style="flex:0 0 auto;" onclick="redeemShopBadge('{{ player.tag }}')">Redeem</button>
+                </div>
+            </div>
+
+            <!-- ── FRIENDLY RIVALRY (idea #115) ── -->
+            <div class="card">
+                <div class="card-title">🤺 Friendly Rivalry</div>
+                <div id="rivalryContent">Loading…</div>
+            </div>
+
+            <!-- ── SEASON RECAP (idea #114) ── -->
+            <div class="card">
+                <div class="card-title">📼 Season Recap</div>
+                <div id="seasonRecapContent">
+                    <button class="btn btn-save" onclick="loadSeasonRecap('{{ player.tag }}')">Generate Recap</button>
+                </div>
+            </div>
+
+            </details>
+
+            <!-- Idea #125: mentor pairing, shown for new members with one assigned -->
+            {% if mentor_pair %}
+            <div class="card">
+                <div class="card-title">🧑‍🏫 Your Clan Mentor</div>
+                <div class="stat-row">
+                    <span class="stat-label">Assigned Mentor</span>
+                    <span class="stat-val"><a href="/player/{{ mentor_pair.mentor_tag | replace('#','') }}">{{ mentor_pair.mentor_name }}</a></span>
+                </div>
+                <div class="empty-note">Reach out to them with any questions about war, decks, or clan culture!</div>
+            </div>
+            {% endif %}
 
             <div class="card">
                 <div class="card-title">⚔️ Battle Record</div>
@@ -274,8 +551,12 @@
                     ⚔️ Last 10 Battles
                     <button id="battles-refresh-btn" onclick="loadBattles()" style="font-size:11px; font-family:var(--font-mono); background:none; border:1px solid var(--border); color:var(--dim); padding:3px 10px; border-radius:4px; cursor:pointer; text-transform:uppercase; letter-spacing:1px; transition:all 0.15s;">↻ Refresh</button>
                 </div>
-                <div id="battles-section" class="battle-log">
-                    <div class="battles-loading"><span class="spin">↻</span> Loading battles…</div>
+                <!-- Idea #173: ARIA live region so screen readers announce when this async content finishes loading. -->
+                <div id="battles-section" class="battle-log" aria-live="polite" aria-atomic="false">
+                    <!-- Idea #181: skeleton placeholder instead of a bare spinner. -->
+                    <div class="skeleton skeleton-line w-80"></div>
+                    <div class="skeleton skeleton-line w-60"></div>
+                    <div class="skeleton skeleton-line w-80"></div>
                 </div>
             </div>
 
@@ -285,7 +566,7 @@
                     🧠 Battle Intelligence
                     <button id="insights-refresh-btn" onclick="loadInsights()" style="font-size:11px; font-family:var(--font-mono); background:none; border:1px solid var(--border); color:var(--dim); padding:3px 10px; border-radius:4px; cursor:pointer; text-transform:uppercase; letter-spacing:1px; transition:all 0.15s;">↻ Refresh</button>
                 </div>
-                <div id="insights-section">
+                <div id="insights-section" aria-live="polite" aria-atomic="false">
                     <div class="empty-note"><span class="spin">↻</span> Crunching battle history…</div>
                 </div>
             </div>
@@ -382,6 +663,8 @@
     </div>
 </div>
 
+</main>
+
 <script>
 // CSRF protection: attach the per-session token to every same-origin POST
 // (saveAdminData / addStrike / sendWarningDM all hit /admin/* routes).
@@ -392,12 +675,55 @@
   window.fetch = function(input, init) {
     init = init || {};
     var method = (init.method || 'GET').toUpperCase();
-    if (method === 'POST') {
+    if (method === 'POST' || method === 'DELETE' || method === 'PUT') {
       init.headers = new Headers(init.headers || {});
       init.headers.set('X-CSRF-Token', token);
     }
     return origFetch(input, init);
   };
+})();
+
+// ── Idea #174: sticky back-to-top button, shown after scrolling past the hero ──
+window.addEventListener('scroll', function() {
+    var btn = document.getElementById('backToTopBtn');
+    if (btn) btn.classList.toggle('visible', window.scrollY > 500);
+});
+
+// ── Idea #187: dark/light theme toggle, persisted across visits ─────────────
+(function() {
+    var saved = localStorage.getItem('gy_theme');
+    if (saved === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+        var btn = document.getElementById('themeToggleBtn');
+        if (btn) btn.textContent = '☀️';
+    }
+})();
+function toggleTheme() {
+    var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    var next = isLight ? 'dark' : 'light';
+    if (next === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('gy_theme', next);
+    var btn = document.getElementById('themeToggleBtn');
+    if (btn) btn.textContent = next === 'light' ? '☀️' : '🌙';
+}
+
+// ── Idea #162: desktop-aware "Open in Game" button ──────────────────────────────
+(function() {
+    var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    var btn = document.getElementById('openInGameBtn');
+    if (!btn || isMobile) return;
+    var tag = btn.getAttribute('data-tag');
+    btn.removeAttribute('href');
+    btn.style.cursor = 'pointer';
+    btn.textContent = '📋 Copy Tag';
+    btn.addEventListener('click', function() {
+        navigator.clipboard.writeText(tag).then(function() {
+            var orig = btn.textContent;
+            btn.textContent = '✅ Copied!';
+            setTimeout(function() { btn.textContent = orig; }, 1500);
+        });
+    });
 })();
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -448,6 +774,15 @@ function buildDeckGrid(cards) {
 
 // ── Battle entry renderer ──────────────────────────────────────────────────────
 let _openBattle = null;
+// idea #233: the deck-grid markup (16 <img> chips per battle: your deck + opponent's)
+// used to be built for EVERY battle up front in buildBattleEntry, even though
+// .battle-decks starts collapsed and most rows are never expanded. On a full battle
+// log that's potentially hundreds of <img> nodes created (and, in some browsers,
+// requested) before the user ever clicks anything. _battleDeckData stores the raw
+// card arrays per row index; toggleBattleDecks() builds+injects the deck-grid HTML
+// lazily the first time a row is actually expanded, then caches it (data-built="1")
+// so re-toggling the same row doesn't rebuild it.
+const _battleDeckData = {};
 
 function toggleBattleDecks(idx) {
     const decks = document.getElementById('decks-' + idx);
@@ -466,6 +801,16 @@ function toggleBattleDecks(idx) {
         btn.textContent = '▾ Decks';
         _openBattle = null;
     } else {
+        // Lazily build the deck-grid markup on first expand only.
+        if (decks.dataset.built !== '1') {
+            const data = _battleDeckData[idx] || { teamCards: [], oppCards: [] };
+            decks.innerHTML = `
+                <div class="deck-label">Your Deck</div>
+                ${buildDeckGrid(data.teamCards)}
+                <div class="deck-label">Opponent's Deck</div>
+                ${buildDeckGrid(data.oppCards)}`;
+            decks.dataset.built = '1';
+        }
         decks.classList.add('open');
         btn.textContent = '▴ Hide';
         _openBattle = idx;
@@ -484,6 +829,9 @@ function buildBattleEntry(b, idx) {
 
     const teamCards = Array.isArray(b.team_cards)     ? b.team_cards     : [];
     const oppCards  = Array.isArray(b.opponent_cards) ? b.opponent_cards : [];
+    // Stash the raw card data for lazy deck-grid construction; don't build the
+    // grid markup here (see toggleBattleDecks).
+    _battleDeckData[idx] = { teamCards, oppCards };
 
     return `
     <div class="battle-entry ${entryBorderCls}" id="battle-${idx}">
@@ -498,12 +846,7 @@ function buildBattleEntry(b, idx) {
             <div class="battle-meta">${esc(time)}</div>
             <button class="battle-toggle" id="toggle-btn-${idx}" onclick="event.stopPropagation(); toggleBattleDecks(${idx})">▾ Decks</button>
         </div>
-        <div class="battle-decks" id="decks-${idx}">
-            <div class="deck-label">Your Deck</div>
-            ${buildDeckGrid(teamCards)}
-            <div class="deck-label">Opponent's Deck</div>
-            ${buildDeckGrid(oppCards)}
-        </div>
+        <div class="battle-decks" id="decks-${idx}"></div>
     </div>`;
 }
 
@@ -511,7 +854,8 @@ function buildBattleEntry(b, idx) {
 async function loadBattles() {
     const section = document.getElementById('battles-section');
     const btn     = document.getElementById('battles-refresh-btn');
-    section.innerHTML = '<div class="battles-loading"><span class="spin">↻</span> Loading battles…</div>';
+    // Idea #181: skeleton placeholder instead of a bare spinner.
+    section.innerHTML = '<div class="skeleton skeleton-line w-80"></div><div class="skeleton skeleton-line w-60"></div><div class="skeleton skeleton-line w-80"></div>';
     if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
     _openBattle = null;
 
@@ -524,7 +868,10 @@ async function loadBattles() {
         const battles = await res.json();
 
         if (!battles.length) {
-            section.innerHTML = '<div class="battles-loading">No battles found. Run a harvest to populate history.</div>';
+            // Idea #180: a friendlier empty state than a bare text line.
+            section.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⚔️</div>'
+                + '<div class="empty-state-title">No battles found</div>'
+                + '<div class="empty-state-sub">Run a harvest to populate this player\'s history.</div></div>';
             return;
         }
 
@@ -667,10 +1014,271 @@ async function loadInsights() {
     }
 }
 
+// ── Trophy history chart (idea #21) ─────────────────────────────────────────────
+async function loadTrophyHistory() {
+    var tag = {{ player.tag | tojson }};
+    var cleanTag = tag.replace('#', '');
+    var canvas = document.getElementById('trophyHistoryChart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    try {
+        var res = await fetch('/api/player/' + cleanTag + '/trophy-history?days=30');
+        var points = await res.json();
+        if (!points.length) return;
+        new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: points.map(function(p){ return p.date; }),
+                datasets: [{
+                    label: 'Trophies', data: points.map(function(p){ return p.trophies; }),
+                    borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)',
+                    fill: true, tension: 0.25, pointRadius: 2,
+                }]
+            },
+            options: {
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: '#888', maxTicksLimit: 6 }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                    y: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                },
+            },
+        });
+    } catch (e) { /* chart is a nice-to-have; fail silently */ }
+}
+
+// ── Compare with another member (idea #25) ──────────────────────────────────────
+async function loadComparison(myTag) {
+    var otherTag = document.getElementById('compareTagInput').value.trim().replace('#', '');
+    var out = document.getElementById('compareResult');
+    if (!otherTag) { out.innerHTML = '<div class="empty-note">Enter a tag first.</div>'; return; }
+    out.innerHTML = '<div class="empty-note"><span class="spin">↻</span> Comparing…</div>';
+    try {
+        var res = await fetch('/api/compare/' + myTag + '/' + otherTag);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var d = await res.json();
+        var p1 = d.player_1, p2 = d.player_2;
+        var fields = [
+            ['Trophies', 'trophies'], ['Best Trophies', 'bestTrophies'], ['Wins', 'wins'], ['Losses', 'losses'],
+            ['3-Crown Wins', 'threeCrownWins'], ['Donations', 'donations'], ['War Day Wins', 'warDayWins'],
+            ['XP Level', 'expLevel'], ['Best Win Streak', 'personal_best_win_streak'], ['Deck Grade', 'deck_grade'],
+        ];
+        var rows = fields.map(function(f) {
+            return '<tr><td>' + esc(p1[f[1]]) + '</td><td style="color:var(--dim); text-align:center;">' + f[0] + '</td><td style="text-align:right;">' + esc(p2[f[1]]) + '</td></tr>';
+        }).join('');
+        out.innerHTML = '<table class="compare-table"><thead><tr><th>' + esc(p1.name) + '</th><th></th><th>' + esc(p2.name) + '</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    } catch (e) {
+        out.innerHTML = '<div class="empty-note">Could not load comparison: ' + esc(e.message) + '</div>';
+    }
+}
+
+// ── Profile flair (idea #27) ────────────────────────────────────────────────────
+async function loadFlair(tag) {
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/flair');
+        var d = await res.json();
+        document.getElementById('flairMotto').value = d.motto || '';
+        if (d.custom_badge) document.getElementById('customBadgeDisplay').textContent = '🏷️ ' + d.custom_badge;
+    } catch (e) { /* non-critical */ }
+}
+
+function saveFlair(tag) {
+    var motto = document.getElementById('flairMotto').value;
+    fetch('/api/player/' + tag.replace('#', '') + '/flair', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ motto: motto })
+    })
+    .then(function(r) { if (!r.ok) throw new Error(); alert('✅ Flair saved!'); })
+    .catch(function() { alert('❌ Could not save flair (you may need to be the linked owner or an admin).'); });
+}
+
+// ── Leaderboard opt-out (idea #108) ─────────────────────────────────────────────
+async function loadLeaderboardOptout(tag) {
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/leaderboard-optout');
+        var d = await res.json();
+        document.getElementById('leaderboardOptout').checked = !!d.optout;
+    } catch (e) { /* non-critical */ }
+}
+function saveLeaderboardOptout(tag) {
+    var optout = document.getElementById('leaderboardOptout').checked;
+    fetch('/api/player/' + tag.replace('#', '') + '/leaderboard-optout', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ optout: optout })
+    }).catch(function() { alert('❌ Could not update leaderboard visibility.'); });
+}
+
+// ── Notification preferences (idea #132/#138) ───────────────────────────────────
+async function loadNotifPrefs() {
+    try {
+        var res = await fetch('/api/onboarding');
+        var d = await res.json();
+        document.getElementById('notifWarReminders').checked = !!(d.notif_prefs || {}).war_reminders;
+        document.getElementById('notifEmail').value = d.email || '';
+    } catch (e) { /* non-critical */ }
+}
+function saveNotifPrefs() {
+    var warReminders = document.getElementById('notifWarReminders').checked;
+    var email = document.getElementById('notifEmail').value.trim();
+    fetch('/api/onboarding', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ notif_prefs: { war_reminders: warReminders }, email: email })
+    }).catch(function() { alert('❌ Could not save notification preferences.'); });
+}
+
+// ── Kudos (idea #197) ────────────────────────────────────────────────────────
+async function loadKudos(tag) {
+    var el = document.getElementById('kudosContent');
+    try {
+        var res = await fetch('/api/kudos?tag=' + encodeURIComponent(tag.replace('#', '')));
+        var d = await res.json();
+        var items = d.kudos || [];
+        el.innerHTML = items.length
+            ? items.map(function(k) { return '<div style="font-size:13px; padding:6px 0; border-bottom:1px solid var(--border);">🙌 <strong>' + esc(k.from_name) + '</strong>: ' + esc(k.message) + '</div>'; }).join('')
+            : '<span class="empty-note">No kudos yet — be the first to thank them!</span>';
+    } catch (e) { el.innerHTML = '<span class="empty-note">Could not load kudos.</span>'; }
+}
+async function sendKudos(tag) {
+    var input = document.getElementById('kudosMessage');
+    var message = input.value.trim();
+    if (!message) return;
+    try {
+        var res = await fetch('/api/kudos', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ to_tag: tag.replace('#', ''), message: message }),
+        });
+        var d = await res.json();
+        if (!res.ok || d.error) { alert('❌ ' + (d.error || 'Failed to send kudos.')); return; }
+        input.value = '';
+        loadKudos(tag);
+    } catch (e) { alert('❌ Failed to send kudos.'); }
+}
+
+// ── Comments/reactions (idea #191) ──────────────────────────────────────────
+async function loadComments(tag) {
+    var el = document.getElementById('commentsContent');
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/comments');
+        var d = await res.json();
+        var items = d.comments || [];
+        el.innerHTML = items.length
+            ? items.map(function(c) { return '<div style="font-size:13px; padding:6px 0; border-bottom:1px solid var(--border);">' + (c.reaction ? c.reaction + ' ' : '') + '<strong>' + esc(c.from_name) + '</strong>' + (c.message ? ': ' + esc(c.message) : '') + '</div>'; }).join('')
+            : '<span class="empty-note">No comments yet.</span>';
+    } catch (e) { el.innerHTML = '<span class="empty-note">Could not load comments.</span>'; }
+}
+async function postComment(tag) {
+    var input = document.getElementById('commentMessage');
+    var message = input.value.trim();
+    if (!message) return;
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/comments', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ message: message }),
+        });
+        var d = await res.json();
+        if (!res.ok || d.error) { alert('❌ ' + (d.error || 'Failed to post.')); return; }
+        input.value = '';
+        loadComments(tag);
+    } catch (e) { alert('❌ Failed to post.'); }
+}
+
+// ── Achievement badges (idea #101/#113) ─────────────────────────────────────────
+async function loadBadges(tag) {
+    var el = document.getElementById('badgesContent');
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/badges');
+        var d = await res.json();
+        el.innerHTML = (d.badges || []).map(function(b) {
+            return '<span style="background:#1e2530; border-radius:20px; padding:6px 12px; font-size:12px;">' + b.emoji + ' ' + esc(b.label) + '</span>';
+        }).join('') || '<span class="empty-note">No badges earned yet — keep battling!</span>';
+    } catch (e) { el.innerHTML = '<span class="empty-note">Could not load badges.</span>'; }
+}
+
+// ── Seasonal challenges (idea #109) ─────────────────────────────────────────────
+async function loadChallenges(tag) {
+    var el = document.getElementById('challengesContent');
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/challenges');
+        var d = await res.json();
+        el.innerHTML = (d.challenges || []).map(function(c) {
+            var pct = Math.round((c.progress / c.target) * 100);
+            return '<div style="margin-bottom:10px;">' +
+                '<div style="font-size:13px; margin-bottom:4px;">' + (c.complete ? '✅ ' : '') + esc(c.desc) + ' (' + c.progress + '/' + c.target + ')</div>' +
+                '<div style="background:#1e2530; border-radius:6px; height:8px; overflow:hidden;"><div style="background:var(--accent, #00e5ff); height:100%; width:' + pct + '%;"></div></div>' +
+                '</div>';
+        }).join('') || '<span class="empty-note">No active challenges.</span>';
+    } catch (e) { el.innerHTML = '<span class="empty-note">Could not load challenges.</span>'; }
+}
+
+// ── Clan points & shop (idea #104/#112) ─────────────────────────────────────────
+async function loadClanPoints(tag) {
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/points');
+        var d = await res.json();
+        document.getElementById('clanPointsBalance').textContent = d.clan_points + ' 🪙';
+        document.getElementById('warStreakVal').textContent = d.war_participation_streak + (d.streak_shields ? ' (🛡️x' + d.streak_shields + ')' : '');
+    } catch (e) { /* non-critical */ }
+}
+function redeemShopBadge(tag) {
+    var text = document.getElementById('shopBadgeInput').value.trim();
+    if (!text) { alert('Enter a badge text first.'); return; }
+    fetch('/api/player/' + tag.replace('#', '') + '/shop/redeem', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ badge_text: text })
+    })
+    .then(function(r) { return r.json().then(function(d) { if (!r.ok) throw new Error(d.error || 'Redeem failed'); return d; }); })
+    .then(function(d) {
+        alert('✅ Redeemed! Badge: ' + d.custom_badge);
+        document.getElementById('customBadgeDisplay').textContent = '🏷️ ' + d.custom_badge;
+        loadClanPoints(tag);
+    })
+    .catch(function(e) { alert('❌ ' + e.message); });
+}
+
+// ── Friendly rivalry (idea #115) ────────────────────────────────────────────────
+async function loadRivalry(tag) {
+    var el = document.getElementById('rivalryContent');
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/rivalry');
+        var d = await res.json();
+        if (!d.rivalry) { el.innerHTML = '<span class="empty-note">No rivalry assigned yet — check back after the next data refresh.</span>'; return; }
+        var r = d.rivalry;
+        el.innerHTML = '<div class="stat-row"><span class="stat-label">Rival</span><span class="stat-val">' + esc(r.opponent_name) + '</span></div>' +
+            '<div class="stat-row"><span class="stat-label">Head-to-Head</span><span class="stat-val">' + r.head_to_head.wins + 'W / ' + r.head_to_head.losses + 'L</span></div>';
+    } catch (e) { el.innerHTML = '<span class="empty-note">Could not load rivalry.</span>'; }
+}
+
+// ── Season recap (idea #114) ────────────────────────────────────────────────────
+async function loadSeasonRecap(tag) {
+    var el = document.getElementById('seasonRecapContent');
+    el.innerHTML = '<span class="empty-note"><span class="spin">↻</span> Generating…</span>';
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/season-recap');
+        var d = await res.json();
+        el.innerHTML =
+            '<div class="stat-row"><span class="stat-label">Trophies</span><span class="stat-val">' + d.season_trophies + '</span></div>' +
+            '<div class="stat-row"><span class="stat-label">Wins / Losses</span><span class="stat-val">' + d.wins + ' / ' + d.losses + '</span></div>' +
+            '<div class="stat-row"><span class="stat-label">3-Crown Wins</span><span class="stat-val">' + d.three_crown_wins + '</span></div>' +
+            '<div class="stat-row"><span class="stat-label">Longest Win Streak</span><span class="stat-val">' + d.longest_win_streak + '</span></div>' +
+            '<div class="stat-row"><span class="stat-label">War Participation Streak</span><span class="stat-val">' + d.war_participation_streak + '</span></div>' +
+            '<div class="stat-row"><span class="stat-label">Clan Points Earned</span><span class="stat-val">' + d.clan_points + '</span></div>';
+    } catch (e) { el.innerHTML = '<span class="empty-note">Could not generate recap.</span>'; }
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function() {
     loadBattles();
     loadInsights();
+    loadTrophyHistory();
+    loadFlair({{ player.tag | tojson }});
+    loadLeaderboardOptout({{ player.tag | tojson }});
+    loadBadges({{ player.tag | tojson }});
+    loadChallenges({{ player.tag | tojson }});
+    loadClanPoints({{ player.tag | tojson }});
+    loadRivalry({{ player.tag | tojson }});
+    loadKudos({{ player.tag | tojson }});
+    loadComments({{ player.tag | tojson }});
+    {% if own_profile %}
+    loadNotifPrefs();
+    {% endif %}
 });
 </script>
 </body>

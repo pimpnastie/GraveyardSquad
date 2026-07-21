@@ -1,0 +1,19 @@
+{
+  "name": "Graveyard Squad Dashboard",
+  "short_name": "Graveyard Squad",
+  "description": "Clash Royale clan roster, war status, and stats at a glance.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b0c10",
+  "theme_color": "#0b0c10",
+  "icons": [
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

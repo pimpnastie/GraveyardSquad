@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clan Family | Graveyard Squad</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/theme.css">
+    <style>
+        :root { --surface: #111418; --border: #1e2530; --accent: #00e5ff; --text: #c5c6c7; --dim: #888; --font-mono: monospace; --bg: #0b0c10; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding-bottom: 60px; }
+        a { text-decoration: none; color: var(--accent); }
+        .topbar { display: flex; align-items: center; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
+        .topbar-title { font-size: 20px; font-weight: 700; text-transform: uppercase; color: var(--accent); }
+        .back-link { margin-left: auto; font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 30px 20px; }
+        h1 { color: var(--gy-text-bright); font-size: 26px; }
+        .clan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 16px; margin-top: 20px; }
+        .clan-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+        .clan-name { font-weight: bold; color: var(--gy-text-bright); font-size: 16px; }
+        .clan-tag { color: var(--dim); font-family: var(--font-mono); font-size: 12px; margin-bottom: 10px; }
+        .clan-stat { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    </style>
+</head>
+<body>
+<div class="topbar"><div class="topbar-title">☠ Squad Family</div><a href="/" class="back-link">← Back to Roster</a></div>
+<div class="container">
+    <h1>Clan Family</h1>
+    <p style="color:var(--dim)">Idea #198 — a combined view across all linked clans in the family.</p>
+    <div class="clan-grid">
+        {% for c in clans %}
+        <div class="clan-card">
+            <div class="clan-name">{{ c.name }}</div>
+            <div class="clan-tag">{{ c.tag }}</div>
+            <div class="clan-stat"><span>Members</span><span>{{ c.memberCount }}/50</span></div>
+            <div class="clan-stat"><span>War Trophies</span><span>{{ c.clanWarTrophies }}</span></div>
+        </div>
+        {% else %}
+        <p style="color:var(--dim)">No family clans configured yet — an admin can add clan tags in Settings.</p>
+        {% endfor %}
+    </div>
+</div>
+</body>
+</html>

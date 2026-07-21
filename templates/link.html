@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Graveyard Squad | Link Account</title>
+    <title>Link Account | Graveyard Squad</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/theme.css">
     <style>
         /* Base Variables & Shell (Matches Roster) */
         :root { 
@@ -41,14 +43,14 @@
 
         /* Left Side: The Form */
         .form-section { padding: 40px; }
-        .form-section h1 { margin: 0 0 10px 0; color: white; font-size: 28px; }
+        .form-section h1 { margin: 0 0 10px 0; color: var(--gy-text-bright); font-size: 28px; }
         .form-section p { color: var(--dim); font-size: 15px; margin-bottom: 30px; line-height: 1.5; }
         
         .input-group { margin-bottom: 24px; position: relative; }
         .input-group label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin-bottom: 8px; }
         .input-group input {
             width: 100%; box-sizing: border-box; padding: 14px 16px; background: var(--bg);
-            border: 2px solid var(--border); border-radius: 8px; color: white;
+            border: 2px solid var(--border); border-radius: 8px; color: var(--gy-text-bright);
             font-family: var(--font-mono); font-size: 18px; text-transform: uppercase;
             outline: none; transition: 0.2s;
         }
@@ -73,11 +75,41 @@
         .req-list li::before { content: "🎯"; font-size: 16px; }
         .perk-list li::before { content: "✨"; font-size: 16px; }
 
-        /* Mobile Optimization */
+        /* Mobile Optimization (idea #128: mobile-first pass on the linking flow) */
         @media (max-width: 768px) {
             .portal-grid { grid-template-columns: 1fr; }
             .info-section { border-left: none; border-top: 1px solid var(--border); }
+            .form-section, .info-section { padding: 24px 20px; }
+            .form-section h1 { font-size: 22px; }
+            .input-group input { font-size: 16px; padding: 12px 14px; } /* 16px avoids iOS auto-zoom-on-focus */
+            .submit-btn { padding: 14px; font-size: 14px; }
         }
+
+        /* Idea #130: linked-state badge */
+        .link-status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-bottom: 20px; }
+        .link-status-badge.linked { background: rgba(46,204,113,0.15); color: #2ecc71; border: 1px solid rgba(46,204,113,0.3); }
+        .link-status-badge.unlinked { background: rgba(241,196,15,0.12); color: #f1c40f; border: 1px solid rgba(241,196,15,0.3); }
+
+        /* Error banner (was previously computed by the backend but never rendered) */
+        .error-banner { background: rgba(231,76,60,0.12); border: 1px solid rgba(231,76,60,0.4); color: #e74c3c; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; }
+
+        /* Idea #129: FAQ accordion */
+        .faq-item { border-bottom: 1px solid var(--border); }
+        .faq-q { padding: 12px 0; cursor: pointer; font-size: 14px; color: #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .faq-a { max-height: 0; overflow: hidden; transition: max-height 0.2s ease; font-size: 13px; color: var(--dim); line-height: 1.5; }
+        .faq-item.open .faq-a { max-height: 200px; padding-bottom: 12px; }
+        .faq-item.open .faq-q .chev { transform: rotate(180deg); }
+        .faq-q .chev { transition: 0.2s; }
+
+        /* Idea #121: first-time tooltip tutorial */
+        .tut-tooltip {
+            position: absolute; top: -14px; right: 12px; transform: translateY(-100%);
+            background: var(--accent); color: #000; font-size: 12px; font-weight: bold;
+            padding: 8px 12px; border-radius: 8px; max-width: 220px; z-index: 10;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+        .tut-tooltip::after { content: ""; position: absolute; bottom: -6px; right: 20px; width: 12px; height: 12px; background: var(--accent); transform: rotate(45deg); }
+        .tut-tooltip button { display: block; margin-top: 6px; background: rgba(0,0,0,0.2); border: none; color: #000; font-size: 11px; padding: 3px 8px; border-radius: 4px; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -91,21 +123,51 @@
     <div class="portal-grid">
         
         <div class="form-section">
+            {% if already_linked %}
+                <div class="link-status-badge linked">✅ Fully Linked — #{{ linked_tag }}</div>
+            {% else %}
+                <div class="link-status-badge unlinked">🔓 Not Linked Yet</div>
+            {% endif %}
+
             <h1>Welcome, {{ name }}!</h1>
-            <p>To join the Graveyard Squad dashboard and unlock your Discord roles, we need to locate your Clash Royale account.</p>
-            
+            <p>
+                {% if already_linked %}
+                    Your Discord is linked to <strong>#{{ linked_tag }}</strong>. Paste a different tag below to re-link to another account.
+                {% else %}
+                    To join the Graveyard Squad dashboard and unlock your Discord roles, we need to locate your Clash Royale account.
+                {% endif %}
+            </p>
+
+            {% if error %}
+            <div class="error-banner">⚠️ {{ error }}</div>
+            {% endif %}
+
             <form method="POST" action="/link" id="linkForm">
-                <div class="input-group">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="input-group" style="position:relative;">
                     <label for="cr_tag">Player Tag</label>
                     <input type="text" id="cr_tag" name="tag" placeholder="#ABC123XYZ" autocomplete="off" required>
-                    <span class="tag-helper">Found under your name in the in-game profile.</span>
+                    <span class="tag-helper">Found under your name in the in-game profile, or paste a royaleapi.com/clan link and we'll pull the tag out automatically.</span>
+                    <div id="tagTutorialTip" class="tut-tooltip" style="display:none;">
+                        👋 First time? Paste your tag here — we'll auto-format it for you.
+                        <button type="button" onclick="dismissTagTutorial()">Got it</button>
+                    </div>
                 </div>
-                
+
                 <button type="submit" class="submit-btn" id="submitBtn">Verify & Link Account</button>
             </form>
         </div>
 
         <div class="info-section">
+            {% if recruit_video_url %}
+            <!-- Idea #200: recruitment video/trailer embed. -->
+            <div class="info-box">
+                <h3>Meet the Squad</h3>
+                <div style="position:relative; padding-bottom:56.25%; height:0; border-radius:8px; overflow:hidden;">
+                    <iframe src="{{ recruit_video_url | replace('watch?v=', 'embed/') }}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen title="Clan recruitment video"></iframe>
+                </div>
+            </div>
+            {% endif %}
             <div class="info-box">
                 <h3>Clan Requirements</h3>
                 <ul class="req-list">
@@ -122,6 +184,23 @@
                     <li><strong>Deep Analytics:</strong> Track your war history, nemesis matchups, and predicted matchmaking.</li>
                     <li><strong>LFG Pings:</strong> Ping the server directly from the web to find 2v2 or war practice partners.</li>
                 </ul>
+            </div>
+
+            <!-- Idea #129: FAQ / troubleshooting accordion -->
+            <div class="info-box">
+                <h3>Common Issues</h3>
+                <div class="faq-item">
+                    <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">My tag isn't found <span class="chev">▾</span></div>
+                    <div class="faq-a">Double-check for lookalike characters in your tag, and copy it directly from your in-game profile to avoid typos.</div>
+                </div>
+                <div class="faq-item">
+                    <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">I'm already linked to someone else <span class="chev">▾</span></div>
+                    <div class="faq-a">Each Clash Royale tag can only be linked to one Discord account at a time. If this is your account and someone else linked it by mistake, ask an admin to unlink it via the Admin Panel.</div>
+                </div>
+                <div class="faq-item">
+                    <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Do I need admin approval? <span class="chev">▾</span></div>
+                    <div class="faq-a">No — linking takes effect immediately once your tag is verified. There's no separate "pending approval" step for this clan.</div>
+                </div>
             </div>
         </div>
 
@@ -156,6 +235,36 @@ form.addEventListener('submit', function() {
     btn.style.cursor = "not-allowed";
     btn.disabled = true; // Prevent double-clicking
 });
+
+// ---------------------------------------------------
+// Idea #127: auto-detect a tag pasted as part of a full URL
+// (e.g. https://royaleapi.com/player/ABC123XYZ or a clan-page link)
+// instead of requiring the bare tag to be typed/pasted manually.
+// ---------------------------------------------------
+tagInput.addEventListener('paste', function(e) {
+    const pasted = (e.clipboardData || window.clipboardData).getData('text');
+    const urlMatch = pasted.match(/royaleapi\.com\/(?:player|clan)\/([A-Z0-9]{3,})/i)
+        || pasted.match(/link\.clashroyale\.com\/[^\s]*tag=([A-Z0-9]{3,})/i);
+    if (urlMatch) {
+        e.preventDefault();
+        let tag = urlMatch[1].toUpperCase();
+        this.value = '#' + tag;
+    }
+    // otherwise let the normal 'input' handler above clean up a bare pasted tag
+});
+
+// ---------------------------------------------------
+// Idea #121: a one-time tooltip tutorial the first time someone hits /link,
+// dismissible and remembered via localStorage (acceptable here since this is
+// the real production site, not a Claude artifact sandbox).
+// ---------------------------------------------------
+function dismissTagTutorial() {
+    document.getElementById('tagTutorialTip').style.display = 'none';
+    localStorage.setItem('link_tutorial_seen', '1');
+}
+if (!localStorage.getItem('link_tutorial_seen')) {
+    document.getElementById('tagTutorialTip').style.display = 'block';
+}
 </script>
 
 </body>

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alumni | Graveyard Squad</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/theme.css">
+    <style>
+        :root { --surface: #111418; --border: #1e2530; --accent: #00e5ff; --text: #c5c6c7; --dim: #888; --font-mono: monospace; --bg: #0b0c10; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding-bottom: 60px; }
+        a { text-decoration: none; color: var(--accent); }
+        .topbar { display: flex; align-items: center; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
+        .topbar-title { font-size: 20px; font-weight: 700; text-transform: uppercase; color: var(--accent); }
+        .back-link { margin-left: auto; font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+        .container { max-width: 900px; margin: 0 auto; padding: 30px 20px; }
+        h1 { color: var(--gy-text-bright); font-size: 26px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th { text-align: left; font-size: 11px; text-transform: uppercase; color: var(--dim); border-bottom: 1px solid var(--border); padding: 8px; }
+        td { padding: 10px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
+        .empty-note { color: var(--dim); font-style: italic; margin-top: 20px; }
+    </style>
+</head>
+<body>
+<div class="topbar"><div class="topbar-title">☠ Alumni</div><a href="/" class="back-link">← Back to Roster</a></div>
+<div class="container">
+    <h1>Alumni</h1>
+    <p style="color:var(--dim)">Idea #199 — former members who left on good terms, and what they contributed while they were here.</p>
+    {% if alumni %}
+    <table>
+        <tr><th>Name</th><th>Tag</th><th>Member Since</th><th>Left</th><th>Best Trophies</th></tr>
+        {% for a in alumni %}
+        <tr>
+            <td>{{ a.name }}</td>
+            <td style="font-family:var(--font-mono)">{{ a.tag }}</td>
+            <td>{{ a.joined_clan_at.strftime('%Y-%m-%d') if a.joined_clan_at else '—' }}</td>
+            <td>{{ a.left_clan_at.strftime('%Y-%m-%d') if a.left_clan_at else '—' }}</td>
+            <td>{{ a.bestTrophies or '—' }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p class="empty-note">No alumni on record yet.</p>
+    {% endif %}
+</div>
+</body>
+</html>
