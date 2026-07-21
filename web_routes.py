@@ -550,7 +550,14 @@ def _security_headers(response):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
-            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+            # admin.html's <head> links a Google Fonts stylesheet
+            # (fonts.googleapis.com) which itself serves @font-face rules
+            # pointing at fonts.gstatic.com for the actual woff2 files — both
+            # need to be allowlisted or the browser silently blocks the whole
+            # font (falls back to the OS default font, plus a noisy CSP
+            # console warning on every admin page load).
+            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
             "img-src 'self' data: https:; "
             "connect-src 'self'; "
             "frame-ancestors 'none'"

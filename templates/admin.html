@@ -1738,7 +1738,7 @@ function renderDiagnostics(d) {
       : '<div style="font-size:11px;color:var(--dim);">No slow calls recorded (threshold '+(sq.threshold_ms||500)+'ms).</div>';
     sqEl.innerHTML = (routeRows.length ? renderRows(routeRows) : '<div style="font-size:12px;color:var(--dim);">No timing data yet — open the Analytics tab to populate this.</div>')
       + '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">' + recentHtml + '</div>';
-  ]);
+  }
   var harv = d.harvest||{}, harvOk = !!harv.last_run;
   setStatCard('sc-harvest', harv.last_run||'Never', harv.snapshots_saved?harv.snapshots_saved+' snaps':'no data', harvOk?'ok':'warn');
   // Idea #186: freshness glow — green if the last harvest ran within the hour,
