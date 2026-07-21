@@ -1291,6 +1291,31 @@
   </main>
 </div>
 
+<!-- Re-authentication modal: shown whenever a sensitive action (cache flush,
+     battle_history cleanup, etc.) comes back 401 reauth_required because the
+     current session's login is older than the 4-hour window. Replaces the old
+     "log out, then log back in" instruction with a single button that sends
+     you straight through Discord's own login screen — if your Discord account
+     uses a passkey, Discord will prompt for it there, same as any fresh
+     Discord sign-in, no separate app-level logout required. -->
+<div id="reauth-modal" class="modal" onclick="closeReauthModal()">
+  <div class="modal-content" onclick="event.stopPropagation()" style="max-width:420px;">
+    <div class="modal-header">
+      <h3>🔒 Re-authentication Required</h3>
+      <button class="modal-close" onclick="closeReauthModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="color:var(--dim); font-size:14px; line-height:1.5;">
+        For your security, this action needs you to prove you're still you — your last Discord sign-in was more than 4 hours ago.
+      </p>
+      <p style="color:var(--dim); font-size:14px; line-height:1.5;">
+        Click below to go through Discord's sign-in screen (passkeys work here if your Discord account has one set up), then come back and try the action again.
+      </p>
+      <button class="btn-refresh" style="width:100%; margin-top:12px;" onclick="reauthenticateNow()">🔑 Re-authenticate with Discord</button>
+    </div>
+  </div>
+</div>
+
 <!-- Battle detail modal -->
 <div id="battle-modal" class="modal" onclick="closeModal()">
   <div class="modal-content" onclick="event.stopPropagation()">
@@ -1322,12 +1347,50 @@
       init.headers = new Headers(init.headers || {});
       init.headers.set('X-CSRF-Token', token);
     }
-    return origFetch(input, init);
+    return origFetch(input, init).then(function(res) {
+      // Global reauth-required interceptor: rather than every sensitive-action
+      // caller (Cache Flush, the battle_history cleanup button, etc.) having to
+      // separately detect a 401 and tell the user to log out/back in, catch it
+      // here once and show a proper re-authentication modal instead. Individual
+      // callers may still show their own toast too — harmless duplication, and
+      // keeps this a pure addition rather than requiring every call site to be
+      // rewritten. Response body is read via a clone() so the original caller's
+      // own .json() call still works normally afterward.
+      if (res.status === 401) {
+        res.clone().json().then(function(data) {
+          if (data && data.error === 'reauth_required') {
+            showReauthModal();
+          }
+        }).catch(function() { /* not JSON, or already consumed — ignore */ });
+      }
+      return res;
+    });
   };
 })();
 
+function showReauthModal() {
+  var m = document.getElementById('reauth-modal');
+  if (m) m.classList.add('open');
+}
+
+function closeReauthModal() {
+  var m = document.getElementById('reauth-modal');
+  if (m) m.classList.remove('open');
+}
+
+function reauthenticateNow() {
+  // Idea: send the admin straight through Discord's own sign-in screen
+  // (where a passkey prompt can appear if their Discord account has one)
+  // instead of requiring a separate app-level logout first. Preserves which
+  // admin tab they were on via a ?tab= param so they land back where they
+  // were rather than the default Roster tab.
+  var next = '/admin?tab=' + encodeURIComponent(_currentAdminTab || 'roster');
+  location.href = '/login?next=' + encodeURIComponent(next);
+}
+
 var allBattles = [], filteredBattles = [], _logLines = [];
 var editorOriginal = '', editorDirty = false, editorDeploying = false, editorTemplateName = '';
+var _currentAdminTab = 'roster';
 
 function showTab(name, btn) {
   document.querySelectorAll('.tab-pane').forEach(function(p){ p.classList.remove('active'); });
@@ -1335,9 +1398,26 @@ function showTab(name, btn) {
   var pane = document.getElementById('tab-' + name);
   if (pane) pane.classList.add('active');
   if (btn)  btn.classList.add('active');
+  _currentAdminTab = name;
   // Idea #161: picking a section on mobile should close the off-canvas sidebar.
   if (window.innerWidth <= 900) toggleSidebar(false);
 }
+
+// Restores whichever tab the admin was on before a reauthenticateNow()
+// round-trip through Discord's login screen (see reauthenticateNow() above) —
+// otherwise they'd land back on the default Roster tab and have to
+// re-navigate to wherever they were (e.g. Admin Tools) to retry their action.
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var tab = params.get('tab');
+  if (tab) {
+    var btn = document.querySelector('.nav-btn[onclick*="showTab(\'' + tab + '\'"]');
+    showTab(tab, btn);
+    // Clean the URL so refreshing doesn't keep re-triggering this / doesn't
+    // leave a confusing ?tab= param sitting in the address bar.
+    history.replaceState(null, '', '/admin');
+  }
+})();
 
 // Idea #161: hamburger toggle for the off-canvas sidebar under ~900px.
 function toggleSidebar(force) {
@@ -2815,8 +2895,9 @@ async function confirmFlushCache() {
   try {
     var res = await fetch('/admin/flush-cache', { method: 'POST' });
     var data = await res.json();
-    // Idea #146: a stale session gets a friendly re-login prompt instead of a raw HTTP error.
-    if (res.status === 401 && data.error === 'reauth_required') { toast(data.message, 'err'); return; }
+    // Idea #146: the global fetch interceptor above already shows the
+    // re-authentication modal for this case — just stop here quietly.
+    if (res.status === 401 && data.error === 'reauth_required') { return; }
     if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
     toast(data.message||'Cache flushed.', 'ok');
     appendLog('Cache flushed.', 'warn');
@@ -2834,8 +2915,9 @@ async function confirmCleanupBattleHistoryNulls() {
   try {
     var res = await fetch('/admin/api/cleanup/battle-history-nulls', { method: 'POST' });
     var data = await res.json();
-    // Idea #146: a stale session gets a friendly re-login prompt instead of a raw HTTP error.
-    if (res.status === 401 && data.error === 'reauth_required') { toast(data.message, 'err'); statusEl.textContent = ''; return; }
+    // Idea #146: the global fetch interceptor above already shows the
+    // re-authentication modal for this case — just stop here quietly.
+    if (res.status === 401 && data.error === 'reauth_required') { statusEl.textContent = ''; return; }
     if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
     toast(data.message || 'Cleanup complete.', data.index_rebuilt ? 'ok' : 'warn');
     statusEl.textContent = data.message || '';
@@ -3550,7 +3632,9 @@ async function toggleAdmin(tag, grant, btn) {
       body: JSON.stringify({ tag: tag, is_admin: grant })
     });
     var data = await res.json();
-    if (res.status === 401 && data.error === 'reauth_required') { toast(data.message, 'err'); btn.innerHTML = orig; btn.disabled = false; return; }
+    // The global fetch interceptor above already shows the re-authentication
+    // modal for this case — just stop here quietly.
+    if (res.status === 401 && data.error === 'reauth_required') { btn.innerHTML = orig; btn.disabled = false; return; }
     if (data.error) throw new Error(data.error);
     var m = _rosterData.find(function(x){ return x.tag === tag; });
     if (m) { m.is_site_admin = grant; }

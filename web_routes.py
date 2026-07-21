@@ -576,7 +576,11 @@ def get_player_analytical_data(tag):
     clean = clean_tag(tag)
     player = fetch_cr_api(f"players/%23{clean}")
     if not player: return None
-    history = list(db_sync["battle_history"].find({"player_tag": clean}).sort("battle_time", -1).limit(10))
+    # Defensive: exclude _id (ObjectId isn't JSON-serializable) even though
+    # this currently only reaches Jinja templates, not jsonify() directly —
+    # same bug class as the config_backups crash above, cheap to prevent here
+    # before some future response dict starts including recent_battles as-is.
+    history = list(db_sync["battle_history"].find({"player_tag": clean}, {"_id": 0}).sort("battle_time", -1).limit(10))
     player["recent_battles"] = history
 
     # Collection completion — how much of their full card collection is maxed.
@@ -2068,7 +2072,14 @@ def admin_departed_members():
     now = datetime.now(timezone.utc)
     out = []
     for d in departed:
-        left_at = d.get("left_clan_at")
+        # Bugfix: pymongo returns naive datetimes (this project's MongoClient
+        # never sets tz_aware=True), so left_clan_at came back naive while
+        # `now` above is timezone-aware — subtracting them crashed with
+        # "can't subtract offset-naive and offset-aware datetimes" the moment
+        # a real departed member existed. Same pattern already fixed
+        # elsewhere in this file via _as_aware_utc(); this line just predated
+        # that fix and wasn't caught by the earlier grep sweep.
+        left_at = _as_aware_utc(d.get("left_clan_at"))
         purge_at = left_at + timedelta(weeks=DEPARTED_MEMBER_RETENTION_WEEKS) if left_at else None
         out.append({
             "tag": d.get("tag"), "name": d.get("name"),
@@ -3975,7 +3986,13 @@ def admin_config_backups():
     """Idea #152: visibility into the daily config-collection backups
     (data_harvester.py's backup_config_collection())."""
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    # Bugfix: the projection excluded "docs" but not "_id" — Mongo's ObjectId
+    # isn't JSON-serializable, so jsonify() 500'd the moment a real backup
+    # document existed (empty results serialize fine as `[]`, which is why
+    # this went unnoticed until the daily backup job actually produced one).
     backups = list(db_sync["config_backups"].find({}, {"docs": 0}).sort("created_at", -1).limit(20))
+    for b in backups:
+        b["id"] = str(b.pop("_id"))
     return jsonify({"backups": backups})
 
 

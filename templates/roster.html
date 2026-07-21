@@ -194,6 +194,13 @@
 
     {% if session.get('discord_id') %}
     <button class="lfg-btn" onclick="triggerLFG()">⚔️ LFG / Practice</button>
+    {% else %}
+    <!-- No entry point existed on this page for a logged-out visitor (or
+         someone who closed/skipped the Discord OAuth prompt) to actually log
+         in — every other button on this bar only appears once you already
+         have a session. next=/ so they land back on the roster after Discord
+         redirects back through /callback. -->
+    <a href="/login?next=%2F" class="lfg-btn" style="background:#1e2530; border:1px solid var(--accent);">🔑 Login with Discord</a>
     {% endif %}
     <a href="/how-it-works" class="lfg-btn" style="background:#1e2530; border:1px solid var(--border);">📖 How It Works</a>
     <!-- Ideas #192/#196/#203/#204: consolidated wall-of-fame/timeline/culture page. -->
