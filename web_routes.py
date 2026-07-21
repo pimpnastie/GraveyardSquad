@@ -224,6 +224,37 @@ _HTML_CACHE = {}
 def clean_tag(tag: str) -> str:
     return tag.strip().upper().replace("#", "")
 
+def _normalize_card_names(cards) -> list:
+    """Bugfix: some older battle_history records store team_cards/
+    opponent_cards entries as raw CR API card objects ({"name": ...,
+    "level": ...}) instead of plain name strings. harvest_battles() has
+    always extracted just the name going forward (see the equivalent
+    "Ensure card lists are name strings" normalization already applied in the
+    paginated /admin/api/battles and /api/player/<tag>/battles routes), but
+    records saved before that convention was established can still have
+    dict-shaped entries. Every card-stats function in this file assumes a
+    flat list of name strings — using a dict as a dict key raises
+    `TypeError: unhashable type: 'dict'`, and sorting a mix of dicts and
+    strings raises `TypeError: '<' not supported between instances of 'dict'
+    and 'dict'` — which is exactly the live crash this fixes (a specific
+    player's deck-breakdown computation on /player/<tag> hit an old
+    dict-shaped record and 500'd). Call this right after reading
+    team_cards/opponent_cards from Mongo, before doing anything else with it.
+    """
+    out = []
+    for c in (cards or []):
+        if not c:
+            continue
+        if isinstance(c, str):
+            out.append(c)
+        elif isinstance(c, dict):
+            name = c.get("name")
+            if name:
+                out.append(name)
+        else:
+            out.append(str(c))
+    return out
+
 SENSITIVE_ACTION_MAX_SESSION_AGE = timedelta(hours=4)
 
 def require_recent_login() -> bool:
@@ -609,7 +640,7 @@ def get_player_analytical_data(tag):
     # done in admin_analytics_archetypes, just scoped to one player.
     deck_stats = {}
     for b in db_sync["battle_history"].find({"player_tag": clean}, {"team_cards": 1, "result": 1}):
-        cards_played = [c for c in (b.get("team_cards") or []) if c]
+        cards_played = _normalize_card_names(b.get("team_cards"))
         if len(cards_played) < 8:
             continue
         sig = tuple(sorted(cards_played[:8]))
@@ -703,7 +734,7 @@ def _compute_archetypes(min_games: int = 3) -> dict:
         result = b.get("result")
         if result not in ("win", "loss"):
             continue
-        cards = [c for c in (b.get("team_cards") or []) if c]
+        cards = _normalize_card_names(b.get("team_cards"))
         if len(cards) < 8:
             continue
         signature = tuple(sorted(cards[:8]))
@@ -2683,8 +2714,7 @@ def admin_analytics_battles():
         type_counts[btype] = type_counts.get(btype, 0) + 1
         if result not in ("win", "loss"):
             continue
-        for card in (b.get("team_cards") or []):
-            if not card: continue
+        for card in _normalize_card_names(b.get("team_cards")):
             entry = card_stats.setdefault(card, {"wins": 0, "games": 0})
             entry["games"] += 1
             if result == "win": entry["wins"] += 1
@@ -2756,7 +2786,7 @@ def admin_analytics_archetypes():
         result = b.get("result")
         if result not in ("win", "loss"):
             continue
-        cards = [c for c in (b.get("team_cards") or []) if c]
+        cards = _normalize_card_names(b.get("team_cards"))
         if len(cards) < 8:
             continue  # incomplete deck record — skip rather than mis-group
         signature = tuple(sorted(cards[:8]))
@@ -2868,7 +2898,7 @@ def admin_counter_pick_prep():
         result = b.get("result")
         if result not in ("win", "loss"):
             continue
-        cards = [c for c in (b.get("team_cards") or []) if c]
+        cards = _normalize_card_names(b.get("team_cards"))
         if len(cards) < 8:
             continue
         sig = tuple(sorted(cards[:8]))
@@ -2947,9 +2977,7 @@ def admin_hard_counters_report():
     )
     counts = {}
     for b in recent:
-        for card in (b.get("opponent_cards") or []):
-            if not card:
-                continue
+        for card in _normalize_card_names(b.get("opponent_cards")):
             counts[card] = counts.get(card, 0) + 1
     report = sorted(
         [{"card": c, "loss_appearances": n} for c, n in counts.items()],
@@ -2985,9 +3013,7 @@ def admin_tier_list():
         result = b.get("result")
         if result not in ("win", "loss"):
             continue
-        for card in (b.get("team_cards") or []):
-            if not card:
-                continue
+        for card in _normalize_card_names(b.get("team_cards")):
             entry = card_stats.setdefault(card, {"wins": 0, "games": 0})
             entry["games"] += 1
             if result == "win":
@@ -3037,9 +3063,7 @@ def admin_underused_gems():
         if result not in ("win", "loss"):
             continue
         total_games += 1
-        for card in (b.get("team_cards") or []):
-            if not card:
-                continue
+        for card in _normalize_card_names(b.get("team_cards")):
             entry = card_stats.setdefault(card, {"wins": 0, "games": 0})
             entry["games"] += 1
             if result == "win":
