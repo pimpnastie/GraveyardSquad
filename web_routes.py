@@ -178,6 +178,63 @@ def _elixir_curve(cards: list) -> dict:
 web_bp = Blueprint("web", __name__)
 log = logging.getLogger("web_routes")
 
+# Idea #188: custom 404/500 error pages matching the site's dark visual
+# identity instead of Flask's default plain-text error output. Kept as a
+# small inline template (rather than a Mongo-backed get_template() entry)
+# since it has to work even when Mongo itself is the thing that's down.
+#
+# Moved here from mainbot.py (which originally registered these via
+# @app.errorhandler on its own Flask app object) so they live on the
+# blueprint itself via @web_bp.app_errorhandler instead. Flask applies a
+# blueprint's app_errorhandler to whatever app the blueprint gets
+# registered on — mainbot.py's real app still gets them exactly as before,
+# but so does any other app that registers web_bp, including the sandboxed
+# test harnesses used throughout this project's development (which build a
+# bare `Flask(__name__)` + `register_blueprint(web_bp)` and nothing else,
+# since discord.py isn't installed there). Previously those harnesses could
+# only verify the handler by re-executing an extracted copy of the mainbot.py
+# code against a throwaway app; the "custom 404 page renders" check in
+# run_harness_s11.py has been failing for exactly that reason — it hits a
+# real 404 against the harness's own bare app, which never had mainbot.py's
+# handler registered on it. Registering here fixes that for real instead of
+# further special-casing the test.
+_ERROR_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title} | Graveyard Squad</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  body {{ background: var(--gy-bg, #0b0c10); color: var(--gy-text, #c5c6c7); font-family: 'Segoe UI', system-ui, sans-serif;
+          min-height: 100vh; display: flex; align-items: center; justify-content: center; margin: 0; text-align: center; padding: 24px; }}
+  .err-code {{ font-size: 72px; font-weight: 700; color: var(--gy-accent, #00e5ff); text-shadow: 0 0 24px rgba(0,229,255,0.35); margin-bottom: 8px; }}
+  .err-skull {{ font-size: 40px; margin-bottom: 12px; }}
+  .err-msg {{ font-size: 16px; color: var(--gy-dim, #888); margin-bottom: 24px; }}
+  .err-link {{ color: var(--gy-accent, #00e5ff); text-decoration: none; font-weight: 700; }}
+  .err-link:hover {{ opacity: 0.8; }}
+</style>
+</head>
+<body>
+  <div>
+    <div class="err-skull">☠</div>
+    <div class="err-code">{code}</div>
+    <div class="err-msg">{message}</div>
+    <a class="err-link" href="/">← Back to the Roster</a>
+  </div>
+</body>
+</html>"""
+
+@web_bp.app_errorhandler(404)
+def _handle_404(e):
+    return _ERROR_PAGE.format(title="Not Found", code="404", message="That page doesn't exist — maybe it wandered into the graveyard."), 404
+
+@web_bp.app_errorhandler(500)
+def _handle_500(e):
+    log.error(f"Unhandled 500 error: {e}")
+    return _ERROR_PAGE.format(title="Server Error", code="500", message="Something broke on our end. It's been logged — try again shortly."), 500
+
 CLAN_TAG = os.getenv("CLAN_TAG", "9LVY89UP").strip().upper().replace("#", "")
 MAX_CARD_LEVEL = int(os.getenv("MAX_CARD_LEVEL", 15))
 
@@ -945,6 +1002,21 @@ def link_account():
 # ---------------------------------------------------------------------------
 # 5. PUBLIC FRONTEND ROUTES
 # ---------------------------------------------------------------------------
+@web_bp.route("/healthz")
+def healthz():
+    """Lightweight keep-alive endpoint for uptime pings / Render Cron Jobs.
+    Deliberately does NOT call fetch_cr_api() or render any template — a
+    keep-alive check has no business making a live CR API call or paying the
+    cost of a full Jinja render every ping interval. This exists specifically
+    because a cron job was pinging '/' directly instead: that returns the
+    entire roster page (which has grown substantially across this project's
+    many feature additions), and its response size eventually exceeded
+    Render's cron-job output-capture limit, showing as "Failed (output too
+    large)" even though the app itself wasn't erroring. Point any uptime/
+    keep-alive cron job at this route instead of the homepage.
+    """
+    return jsonify({"status": "ok"}), 200
+
 @web_bp.route("/")
 def index():
     clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
@@ -2179,6 +2251,33 @@ def api_player_battles(tag):
             for c in (b.get("opponent_cards") or [])
         ]
     return jsonify(battles)
+
+
+@web_bp.route("/api/cards/icons")
+def api_cards_icons():
+    """Name -> icon URL map for rendering real card art instead of the 🃏
+    placeholder on the player page's battle log.
+
+    Root cause this exists to fix: harvest_battles() in data_harvester.py has
+    always flattened team_cards/opponent_cards down to plain name strings
+    before storage (needed to avoid the dict-sorting/dict-key crashes fixed
+    elsewhere in this file via _normalize_card_names() — storing rich card
+    objects there reintroduces that exact bug class). That means no icon URL
+    ever reached the frontend, and every card chip on every player's battle
+    log always fell back to a placeholder, on every deploy, forever.
+
+    Rather than resurrecting rich card objects in battle_history, the
+    harvester now separately upserts name->icon-URL pairs (real data seen
+    from the CR API, not hand-typed/guessed) into a small `card_icons`
+    collection as battles are harvested. This route just serves that map.
+    Public/no-auth: it's static card-art metadata, nothing player-specific.
+    """
+    icons = {
+        doc["_id"]: doc["icon_url"]
+        for doc in db_sync["card_icons"].find({}, {"icon_url": 1})
+        if doc.get("icon_url")
+    }
+    return jsonify(icons)
 
 
 @web_bp.route("/api/player/<tag>/insights")
