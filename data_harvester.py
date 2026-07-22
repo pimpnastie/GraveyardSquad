@@ -48,6 +48,14 @@ MILESTONE_TROPHY_STEP = 1000
 RISING_STAR_WINDOW_DAYS = 45
 RIVALRY_REASSIGN_DAYS = 7
 
+# How many days back "this week"/"7-day" superlatives (Hall of Fame, Spotlights)
+# look for battle-log-derived categories (win rate, 3-crowns, shutouts, etc.).
+WEEKLY_LOOKBACK_DAYS = 7
+# Minimum battles logged in the lookback window before a member is eligible for
+# a rate-based category (win rate, 3-crown rate) -- otherwise one lucky/unlucky
+# battle out of 1 would swing a whole leaderboard.
+MIN_BATTLES_FOR_RATE_CATEGORY = 3
+
 # Idea #123: first-week check-in DM window — checked against joined_clan_at,
 # a few-day window (not an exact "day 7" match) so a 30-min harvest cadence
 # can't skip past the single instant a stricter equality check would require.
@@ -301,16 +309,225 @@ class DataHarvester:
         if ops:
             self.col_profiles.bulk_write(ops)
 
-    def compute_weekly_spotlights(self, war_data: dict | None):
-        """Idea #102 (weekly MVP: highest fame + win-rate combo) and #107
-        (rising star: fastest-climbing member who joined within the last
-        RISING_STAR_WINDOW_DAYS). Recomputed every harvest cycle — "weekly" here
-        describes what the numbers represent, not a special weekly-only code
-        path, since re-running this on a 30-min cadence is cheap and always
-        gives the freshest read. Stored in config.weekly_spotlights for the
-        roster page and Discord announcements to read.
+    @staticmethod
+    def _lb_entry(tag, name, value, value_label):
+        """Build one leaderboard-category entry. `value` is the raw number used
+        to decide "is this cycle's result actually better than nothing" (see
+        _merge_leaderboard_entry); `value_label` is the pre-formatted display
+        string (e.g. "1,234 donations", "68% win rate over 5 games")."""
+        if not tag or value is None:
+            return None
+        return {"tag": tag, "name": name, "value": value, "value_label": value_label}
+
+    @staticmethod
+    def _merge_leaderboard_entry(existing_categories: dict, key: str, new_entry: dict | None, computed_at):
+        """Zero-handling for every Hall of Fame / Spotlight category: if nobody
+        qualifies this cycle (new_entry is None, or its value is falsy — 0
+        donations, 0 battles played, etc.), that means the category genuinely
+        isn't applicable *this cycle*, not that the previous leader suddenly
+        stopped being the leader. Keep whatever was last stored for this key
+        (a real, previously-nonzero result) and mark it "stale" so the frontend
+        can show something like "(last known, as of Jul 14)" instead of
+        silently displaying a misleading "Name: 0".
+        Returns None only if there has truly never been any data for this
+        category (a legitimate "not enough data yet" case, not a zero).
         """
-        mvp = None
+        if new_entry and new_entry.get("value"):
+            new_entry = dict(new_entry)
+            new_entry["stale"] = False
+            new_entry["as_of"] = computed_at.strftime("%Y-%m-%d")
+            return new_entry
+        old = existing_categories.get(key)
+        if old:
+            old = dict(old)
+            old["stale"] = True
+            # as_of is left untouched from whenever it was last genuinely refreshed.
+            return old
+        return None
+
+    # Definitions live alongside the compute function (not at module level) so the
+    # label/emoji/tooltip travel with the exact logic that decides who wins each
+    # category — a reader shouldn't have to jump elsewhere to see both halves.
+    def compute_weekly_hall_of_fame(self):
+        """Weekly Hall of Fame: 10 quantitative "who's on top right now"
+        superlatives, separate in spirit from Weekly Spotlights (more
+        community/improvement-flavored) and All-Time Legends (career-spanning).
+        Every category is computed from data already harvested (player_profiles,
+        player_snapshots, battle_history, the latest war_tracking doc) — no new
+        Clash Royale API calls. Stored in config.weekly_hall_of_fame for the
+        roster page to read; each category independently falls back to its
+        last known non-zero leader via _merge_leaderboard_entry when nobody
+        qualifies this cycle (e.g. first harvest of a fresh war before anyone's
+        played yet)."""
+        now = datetime.now(timezone.utc)
+        existing_doc = self.col_config.find_one({"_id": "weekly_hall_of_fame"}) or {}
+        existing_categories = existing_doc.get("categories", {})
+
+        profiles = list(self.col_profiles.find(
+            {"left_clan_at": {"$exists": False}},
+            {"tag": 1, "name": 1, "donations": 1, "donationsReceived": 1, "trophies": 1}
+        ))
+        by_tag = {p["tag"]: p for p in profiles if p.get("tag")}
+
+        categories = {}
+
+        # 1. Highest Donator (season-to-date) — straight from the CR API's
+        # per-member donation counter, refreshed every harvest cycle.
+        new_entry = None
+        if profiles:
+            top = max(profiles, key=lambda p: p.get("donations", 0) or 0)
+            new_entry = self._lb_entry(top.get("tag"), top.get("name"), top.get("donations", 0),
+                                       f"{top.get('donations', 0):,} donations")
+        categories["top_donator"] = self._merge_leaderboard_entry(existing_categories, "top_donator", new_entry, now)
+
+        # 2. Most Donations Received (season-to-date).
+        new_entry = None
+        if profiles:
+            top = max(profiles, key=lambda p: p.get("donationsReceived", 0) or 0)
+            new_entry = self._lb_entry(top.get("tag"), top.get("name"), top.get("donationsReceived", 0),
+                                       f"{top.get('donationsReceived', 0):,} received")
+        categories["most_donations_received"] = self._merge_leaderboard_entry(existing_categories, "most_donations_received", new_entry, now)
+
+        # 3. Top Trophy Pusher (current trophies).
+        new_entry = None
+        if profiles:
+            top = max(profiles, key=lambda p: p.get("trophies", 0) or 0)
+            new_entry = self._lb_entry(top.get("tag"), top.get("name"), top.get("trophies", 0),
+                                       f"{top.get('trophies', 0):,} 🏆")
+        categories["top_trophy_pusher"] = self._merge_leaderboard_entry(existing_categories, "top_trophy_pusher", new_entry, now)
+
+        # 4. Biggest Trophy Climb (7-day delta) — same baseline as the individual
+        # player page's trophy_trend_7d, just across every member to find the max.
+        week_ago = (now - timedelta(days=WEEKLY_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        best_climb = None
+        for p in profiles:
+            tag = p.get("tag")
+            old_snap = self.col_player_snapshots.find_one({"tag": tag, "date": {"$gte": week_ago}}, sort=[("date", 1)])
+            if not old_snap:
+                continue
+            delta = (p.get("trophies", 0) or 0) - old_snap.get("trophies", 0)
+            if delta > 0 and (best_climb is None or delta > best_climb[0]):
+                best_climb = (delta, tag, p.get("name"))
+        new_entry = self._lb_entry(best_climb[1], best_climb[2], best_climb[0], f"+{best_climb[0]:,} 🏆 this week") if best_climb else None
+        categories["biggest_trophy_climb"] = self._merge_leaderboard_entry(existing_categories, "biggest_trophy_climb", new_entry, now)
+
+        # 5. War Fame Leader (current war) — from the latest stored war_tracking doc.
+        latest_war = self.col_war.find_one({}, sort=[("harvest_time", -1)]) or {}
+        war_participants = ((latest_war.get("clan") or {}).get("participants")) or []
+        new_entry = None
+        if war_participants:
+            top = max(war_participants, key=lambda p: p.get("fame", 0) or 0)
+            if top.get("fame", 0):
+                new_entry = self._lb_entry(top.get("tag"), top.get("name"), top.get("fame", 0), f"{top.get('fame', 0):,} fame")
+        categories["war_fame_leader"] = self._merge_leaderboard_entry(existing_categories, "war_fame_leader", new_entry, now)
+
+        # 6. Perfect War Attendance (all 4 war-day decks used, current war).
+        perfect = [p for p in war_participants if p.get("decksUsedToday", p.get("decksUsed", 0)) >= 4]
+        new_entry = None
+        if perfect:
+            # Multiple members can qualify; surface whichever has the most fame among them.
+            top = max(perfect, key=lambda p: p.get("fame", 0) or 0)
+            new_entry = self._lb_entry(top.get("tag"), top.get("name"), 1, "4/4 war decks used")
+        categories["perfect_war_attendance"] = self._merge_leaderboard_entry(existing_categories, "perfect_war_attendance", new_entry, now)
+
+        # 7-9: battle_history-derived categories over the last WEEKLY_LOOKBACK_DAYS.
+        week_ago_battle_str = (now - timedelta(days=WEEKLY_LOOKBACK_DAYS)).strftime("%Y%m%d")
+        recent_battles = list(self.col_battles.find(
+            {"battle_time": {"$gte": week_ago_battle_str}},
+            {"player_tag": 1, "result": 1, "team_crowns": 1}
+        ))
+        per_player = {}
+        for b in recent_battles:
+            tag = b.get("player_tag")
+            if not tag:
+                continue
+            stats = per_player.setdefault(tag, {"games": 0, "wins": 0, "three_crowns": 0})
+            stats["games"] += 1
+            if b.get("result") == "win":
+                stats["wins"] += 1
+                if b.get("team_crowns", 0) == 3:
+                    stats["three_crowns"] += 1
+
+        def _name_for(tag):
+            p = by_tag.get(f"#{tag}") or by_tag.get(tag)
+            return p.get("name") if p else None
+
+        # 7. Best Win Rate (7-day, min MIN_BATTLES_FOR_RATE_CATEGORY games).
+        best_wr = None
+        for tag, s in per_player.items():
+            if s["games"] < MIN_BATTLES_FOR_RATE_CATEGORY:
+                continue
+            wr = s["wins"] / s["games"]
+            if wr > 0 and (best_wr is None or wr > best_wr[0]):
+                best_wr = (wr, tag, s["games"])
+        new_entry = None
+        if best_wr:
+            full_tag = f"#{best_wr[1]}"
+            new_entry = self._lb_entry(full_tag, _name_for(best_wr[1]), best_wr[0],
+                                        f"{round(best_wr[0]*100)}% over {best_wr[2]} games")
+        categories["best_win_rate"] = self._merge_leaderboard_entry(existing_categories, "best_win_rate", new_entry, now)
+
+        # 8. Most 3-Crown Wins (7-day).
+        best_3c = None
+        for tag, s in per_player.items():
+            if s["three_crowns"] > 0 and (best_3c is None or s["three_crowns"] > best_3c[0]):
+                best_3c = (s["three_crowns"], tag)
+        new_entry = None
+        if best_3c:
+            full_tag = f"#{best_3c[1]}"
+            new_entry = self._lb_entry(full_tag, _name_for(best_3c[1]), best_3c[0], f"{best_3c[0]} three-crown wins")
+        categories["most_three_crowns"] = self._merge_leaderboard_entry(existing_categories, "most_three_crowns", new_entry, now)
+
+        # 9. Most Active (most battles logged, 7-day).
+        best_active = None
+        for tag, s in per_player.items():
+            if s["games"] > 0 and (best_active is None or s["games"] > best_active[0]):
+                best_active = (s["games"], tag)
+        new_entry = None
+        if best_active:
+            full_tag = f"#{best_active[1]}"
+            new_entry = self._lb_entry(full_tag, _name_for(best_active[1]), best_active[0], f"{best_active[0]} battles this week")
+        categories["most_active"] = self._merge_leaderboard_entry(existing_categories, "most_active", new_entry, now)
+
+        # 10. Longest Active Win Streak (current running streak, all-time —
+        # capped to each member's last 100 logged battles for performance).
+        best_streak = None
+        for p in profiles:
+            tag = p.get("tag")
+            clean = (tag or "").replace("#", "")
+            chrono = list(self.col_battles.find({"player_tag": clean}, {"result": 1}).sort("battle_time", -1).limit(100))
+            streak = 0
+            for b in chrono:  # most-recent-first; count back until the first non-win
+                if b.get("result") == "win":
+                    streak += 1
+                else:
+                    break
+            if streak > 0 and (best_streak is None or streak > best_streak[0]):
+                best_streak = (streak, tag, p.get("name"))
+        new_entry = self._lb_entry(best_streak[1], best_streak[2], best_streak[0], f"{best_streak[0]} wins in a row") if best_streak else None
+        categories["longest_win_streak"] = self._merge_leaderboard_entry(existing_categories, "longest_win_streak", new_entry, now)
+
+        doc = {"computed_at": now, "categories": {k: v for k, v in categories.items() if v}}
+        self.col_config.update_one({"_id": "weekly_hall_of_fame"}, {"$set": doc}, upsert=True)
+
+    def compute_weekly_spotlights(self, war_data: dict | None):
+        """Idea #102 (weekly MVP) + #107 (rising star), expanded with 8 more
+        community/improvement-flavored categories — deliberately distinct in
+        character from the more purely quantitative Weekly Hall of Fame above
+        (this is "who deserves recognition this week", not just "who's on top
+        of a raw leaderboard"). Recomputed every harvest cycle — "weekly" here
+        describes what the numbers represent, not a special weekly-only code
+        path. Stored in config.weekly_spotlights in the same
+        {computed_at, categories: {key: {...}}} shape as weekly_hall_of_fame,
+        with the same per-category zero-fallback via _merge_leaderboard_entry.
+        """
+        now = datetime.now(timezone.utc)
+        existing_doc = self.col_config.find_one({"_id": "weekly_spotlights"}) or {}
+        existing_categories = existing_doc.get("categories", {})
+        categories = {}
+
+        # 1. War MVP — highest fame + win-rate composite score, current war.
+        new_entry = None
         if war_data:
             participants = (war_data.get("clan", {}) or {}).get("participants", [])
             scored = []
@@ -320,30 +537,196 @@ class DataHarvester:
                 win_rate = (profile.get("wins", 0) / total) if total else 0
                 scored.append((p.get("fame", 0) + win_rate * 1000, p))
             if scored:
-                mvp = max(scored, key=lambda x: x[0])[1]
+                score, mvp = max(scored, key=lambda x: x[0])
+                if mvp.get("fame", 0):
+                    new_entry = self._lb_entry(mvp.get("tag"), mvp.get("name"), mvp.get("fame", 0), f"{mvp.get('fame', 0):,} fame this war")
+        categories["mvp"] = self._merge_leaderboard_entry(existing_categories, "mvp", new_entry, now)
 
-        rising_star = None
-        cutoff = datetime.now(timezone.utc) - timedelta(days=RISING_STAR_WINDOW_DAYS)
+        # 2. Rising Star — fastest-climbing member who joined within RISING_STAR_WINDOW_DAYS.
+        cutoff = now - timedelta(days=RISING_STAR_WINDOW_DAYS)
         new_members = list(self.col_profiles.find(
             {"joined_clan_at": {"$gte": cutoff}, "left_clan_at": {"$exists": False}}, {"tag": 1, "name": 1}
         ))
         best_delta = 0
+        rising_star = None
         for m in new_members:
             snaps = list(self.col_player_snapshots.find({"tag": m["tag"]}, {"trophies": 1, "date": 1}).sort("date", 1))
             if len(snaps) >= 2:
                 delta = snaps[-1].get("trophies", 0) - snaps[0].get("trophies", 0)
                 if delta > best_delta:
                     best_delta = delta
-                    rising_star = {"tag": m["tag"], "name": m.get("name"), "delta": delta}
+                    rising_star = m
+        new_entry = self._lb_entry(rising_star["tag"], rising_star.get("name"), best_delta, f"+{best_delta:,} 🏆 since joining") if rising_star else None
+        categories["rising_star"] = self._merge_leaderboard_entry(existing_categories, "rising_star", new_entry, now)
 
-        doc = {"computed_at": datetime.now(timezone.utc)}
-        if mvp:
-            doc.update({"mvp_tag": mvp.get("tag"), "mvp_name": mvp.get("name"), "mvp_fame": mvp.get("fame", 0)})
-        if rising_star:
-            doc.update({
-                "rising_star_tag": rising_star["tag"], "rising_star_name": rising_star["name"],
-                "rising_star_delta": rising_star["delta"],
-            })
+        # Shared lookups for the community-flavored categories below.
+        week_ago_dt = now - timedelta(days=WEEKLY_LOOKBACK_DAYS)
+        users_by_discord_id = {u["discord_id"]: u for u in self.col_config.database["users"].find({}, {"discord_id": 1, "cr_tag": 1})}
+
+        def _profile_for_discord_id(discord_id):
+            u = users_by_discord_id.get(discord_id)
+            if not u or not u.get("cr_tag"):
+                return None
+            return self.col_profiles.find_one({"tag": u["cr_tag"]}, {"tag": 1, "name": 1})
+
+        # 3. Most Helpful — most kudos RECEIVED this week.
+        kudos_recent = list(self.col_config.database["kudos"].find({"created_at": {"$gte": week_ago_dt}}, {"to_tag": 1}))
+        received_counts = {}
+        for k in kudos_recent:
+            to_tag = k.get("to_tag")
+            if to_tag:
+                received_counts[to_tag] = received_counts.get(to_tag, 0) + 1
+        new_entry = None
+        if received_counts:
+            top_tag, count = max(received_counts.items(), key=lambda kv: kv[1])
+            profile = self.col_profiles.find_one({"tag": top_tag}, {"name": 1}) or {}
+            new_entry = self._lb_entry(top_tag, profile.get("name"), count, f"{count} kudos received this week")
+        categories["most_helpful"] = self._merge_leaderboard_entry(existing_categories, "most_helpful", new_entry, now)
+
+        # 4. Most Generous — most kudos GIVEN this week (kudos are logged by
+        # Discord account, not CR tag, so this joins through `users` first).
+        # kudos_recent above was projected to to_tag only, so re-query for from_discord_id.
+        given_counts = {}
+        kudos_recent_full = list(self.col_config.database["kudos"].find({"created_at": {"$gte": week_ago_dt}}, {"from_discord_id": 1}))
+        for k in kudos_recent_full:
+            did = k.get("from_discord_id")
+            if did:
+                given_counts[did] = given_counts.get(did, 0) + 1
+        new_entry = None
+        if given_counts:
+            top_did, count = max(given_counts.items(), key=lambda kv: kv[1])
+            profile = _profile_for_discord_id(top_did)
+            if profile:
+                new_entry = self._lb_entry(profile.get("tag"), profile.get("name"), count, f"{count} kudos given this week")
+        categories["most_generous"] = self._merge_leaderboard_entry(existing_categories, "most_generous", new_entry, now)
+
+        # 5. Most Improved — win rate this week vs. the week before, min
+        # MIN_BATTLES_FOR_RATE_CATEGORY battles logged in BOTH windows.
+        two_weeks_ago_str = (now - timedelta(days=WEEKLY_LOOKBACK_DAYS * 2)).strftime("%Y%m%d")
+        week_ago_str = (now - timedelta(days=WEEKLY_LOOKBACK_DAYS)).strftime("%Y%m%d")
+        prior_window = list(self.col_battles.find(
+            {"battle_time": {"$gte": two_weeks_ago_str, "$lt": week_ago_str}}, {"player_tag": 1, "result": 1}
+        ))
+        recent_window = list(self.col_battles.find(
+            {"battle_time": {"$gte": week_ago_str}}, {"player_tag": 1, "result": 1}
+        ))
+        def _wr_by_player(battles):
+            agg = {}
+            for b in battles:
+                tag = b.get("player_tag")
+                if not tag:
+                    continue
+                s = agg.setdefault(tag, {"games": 0, "wins": 0})
+                s["games"] += 1
+                if b.get("result") == "win":
+                    s["wins"] += 1
+            return agg
+        prior_wr, recent_wr = _wr_by_player(prior_window), _wr_by_player(recent_window)
+        best_improvement = None
+        for tag, recent_s in recent_wr.items():
+            prior_s = prior_wr.get(tag)
+            if not prior_s or recent_s["games"] < MIN_BATTLES_FOR_RATE_CATEGORY or prior_s["games"] < MIN_BATTLES_FOR_RATE_CATEGORY:
+                continue
+            improvement = (recent_s["wins"] / recent_s["games"]) - (prior_s["wins"] / prior_s["games"])
+            if improvement > 0 and (best_improvement is None or improvement > best_improvement[0]):
+                best_improvement = (improvement, tag)
+        new_entry = None
+        if best_improvement:
+            full_tag = f"#{best_improvement[1]}"
+            profile = self.col_profiles.find_one({"tag": full_tag}, {"name": 1}) or {}
+            new_entry = self._lb_entry(full_tag, profile.get("name"), best_improvement[0], f"win rate up {round(best_improvement[0]*100)} pts week-over-week")
+        categories["most_improved"] = self._merge_leaderboard_entry(existing_categories, "most_improved", new_entry, now)
+
+        # 6. Comeback Player — most wins that immediately followed a loss, this week.
+        battles_by_player_chrono = {}
+        for b in list(self.col_battles.find({"battle_time": {"$gte": week_ago_str}}, {"player_tag": 1, "result": 1, "battle_time": 1}).sort("battle_time", 1)):
+            tag = b.get("player_tag")
+            if tag:
+                battles_by_player_chrono.setdefault(tag, []).append(b)
+        best_comeback = None
+        for tag, battles in battles_by_player_chrono.items():
+            comebacks = sum(1 for i in range(1, len(battles)) if battles[i-1].get("result") == "loss" and battles[i].get("result") == "win")
+            if comebacks > 0 and (best_comeback is None or comebacks > best_comeback[0]):
+                best_comeback = (comebacks, tag)
+        new_entry = None
+        if best_comeback:
+            full_tag = f"#{best_comeback[1]}"
+            profile = self.col_profiles.find_one({"tag": full_tag}, {"name": 1}) or {}
+            new_entry = self._lb_entry(full_tag, profile.get("name"), best_comeback[0], f"bounced back from a loss {best_comeback[0]}x this week")
+        categories["comeback_player"] = self._merge_leaderboard_entry(existing_categories, "comeback_player", new_entry, now)
+
+        # 7. Defensive Wall — most shutout wins (opponent 0 crowns) this week.
+        shutouts_recent = list(self.col_battles.find(
+            {"battle_time": {"$gte": week_ago_str}, "result": "win", "opponent_crowns": 0}, {"player_tag": 1}
+        ))
+        shutout_counts = {}
+        for b in shutouts_recent:
+            tag = b.get("player_tag")
+            if tag:
+                shutout_counts[tag] = shutout_counts.get(tag, 0) + 1
+        new_entry = None
+        if shutout_counts:
+            top_tag, count = max(shutout_counts.items(), key=lambda kv: kv[1])
+            full_tag = f"#{top_tag}"
+            profile = self.col_profiles.find_one({"tag": full_tag}, {"name": 1}) or {}
+            new_entry = self._lb_entry(full_tag, profile.get("name"), count, f"{count} shutout wins this week")
+        categories["defensive_wall"] = self._merge_leaderboard_entry(existing_categories, "defensive_wall", new_entry, now)
+
+        # 8. Sharpshooter — highest 3-crown rate this week, min MIN_BATTLES_FOR_RATE_CATEGORY games.
+        # recent_window (from category 5 above) wasn't projected with team_crowns, so re-query.
+        three_crown_stats = {}
+        three_crown_battles = list(self.col_battles.find(
+            {"battle_time": {"$gte": week_ago_str}}, {"player_tag": 1, "result": 1, "team_crowns": 1}
+        ))
+        for b in three_crown_battles:
+            tag = b.get("player_tag")
+            if not tag:
+                continue
+            s = three_crown_stats.setdefault(tag, {"games": 0, "three_crowns": 0})
+            s["games"] += 1
+            if b.get("result") == "win" and b.get("team_crowns", 0) == 3:
+                s["three_crowns"] += 1
+        best_rate = None
+        for tag, s in three_crown_stats.items():
+            if s["games"] < MIN_BATTLES_FOR_RATE_CATEGORY:
+                continue
+            rate = s["three_crowns"] / s["games"]
+            if rate > 0 and (best_rate is None or rate > best_rate[0]):
+                best_rate = (rate, tag, s["games"])
+        new_entry = None
+        if best_rate:
+            full_tag = f"#{best_rate[1]}"
+            profile = self.col_profiles.find_one({"tag": full_tag}, {"name": 1}) or {}
+            new_entry = self._lb_entry(full_tag, profile.get("name"), best_rate[0], f"{round(best_rate[0]*100)}% three-crown rate over {best_rate[2]} games")
+        categories["sharpshooter"] = self._merge_leaderboard_entry(existing_categories, "sharpshooter", new_entry, now)
+
+        # 9. Community Voice — most comments posted (on others' profiles) this week.
+        comments_recent = list(self.col_config.database["profile_comments"].find({"created_at": {"$gte": week_ago_dt}}, {"from_discord_id": 1}))
+        comment_counts = {}
+        for c in comments_recent:
+            did = c.get("from_discord_id")
+            if did:
+                comment_counts[did] = comment_counts.get(did, 0) + 1
+        new_entry = None
+        if comment_counts:
+            top_did, count = max(comment_counts.items(), key=lambda kv: kv[1])
+            profile = _profile_for_discord_id(top_did)
+            if profile:
+                new_entry = self._lb_entry(profile.get("tag"), profile.get("name"), count, f"{count} comments posted this week")
+        categories["community_voice"] = self._merge_leaderboard_entry(existing_categories, "community_voice", new_entry, now)
+
+        # 10. Clan Points Leader — all-time clan_points total (war participation
+        # currency, idea #104). A running total rather than a weekly delta
+        # (no weekly clan_points snapshot exists to diff against), framed here
+        # as ongoing recognition rather than "this week specifically".
+        points_profiles = list(self.col_profiles.find({"clan_points": {"$gt": 0}}, {"tag": 1, "name": 1, "clan_points": 1}))
+        new_entry = None
+        if points_profiles:
+            top = max(points_profiles, key=lambda p: p.get("clan_points", 0))
+            new_entry = self._lb_entry(top.get("tag"), top.get("name"), top.get("clan_points", 0), f"{top.get('clan_points', 0):,} clan points")
+        categories["clan_points_leader"] = self._merge_leaderboard_entry(existing_categories, "clan_points_leader", new_entry, now)
+
+        doc = {"computed_at": now, "categories": {k: v for k, v in categories.items() if v}}
         self.col_config.update_one({"_id": "weekly_spotlights"}, {"$set": doc}, upsert=True)
 
     def compute_clan_legends(self):
@@ -808,6 +1191,42 @@ class DataHarvester:
                 msgs.append(f"🎉 **{name}** just crossed **{crossed:,} {label}**!")
         return msgs
 
+    def _cache_card_icons(self, cards):
+        """Upsert name->icon-URL pairs into the card_icons collection.
+
+        `cards` is a list of raw CR API card objects (as returned in a
+        battlelog's team/opponent "cards" array), i.e. still shaped like
+        {"name": ..., "iconUrls": {"medium": "https://..."}, "level": ...}
+        -- the *original* shape, before harvest_battles() flattens it down
+        to plain name strings for storage in team_cards/opponent_cards.
+
+        This is intentionally a separate, additive, name-keyed collection
+        rather than storing the icon URL on the battle record itself, so
+        that team_cards/opponent_cards can stay plain string lists (see the
+        comment at the call site in harvest_battles()). Safe to call
+        repeatedly with overlapping data -- it's just upserts keyed by name.
+        """
+        if not cards:
+            return
+        ops = []
+        for c in cards:
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name")
+            icon_url = (c.get("iconUrls") or {}).get("medium")
+            if not name or not icon_url:
+                continue
+            ops.append(UpdateOne(
+                {"_id": name},
+                {"$set": {"_id": name, "icon_url": icon_url}},
+                upsert=True
+            ))
+        if ops:
+            try:
+                self.db["card_icons"].bulk_write(ops, ordered=False)
+            except Exception:
+                log.exception("Failed to cache card icon URLs (non-fatal)")
+
     def harvest_battles(self, member_tags):
         battle_operations = []
         for tag in member_tags:
@@ -825,6 +1244,25 @@ class DataHarvester:
                 opponent = (b.get("opponent") or [{}])[0]
                 team_crowns = team.get("crowns", 0)
                 opp_crowns = opponent.get("crowns", 0)
+                all_cards_this_battle = list(team.get("cards") or []) + list(opponent.get("cards") or [])
+                # BUGFIX (card images never showing up on the player page's
+                # battle log): team_cards/opponent_cards have always been
+                # flattened to plain name strings below (needed — storing raw
+                # card objects here is what caused the earlier "unhashable
+                # dict"/"'<' not supported" crashes across every analytics
+                # route once mixed with legacy data). But that meant the
+                # iconUrls the CR API actually returns per card were being
+                # discarded entirely, so templates/player.html's card-chip
+                # renderer (which expects an icon URL) never had one to show
+                # and silently fell back to a placeholder for every single
+                # card, on every battle, always. Rather than putting rich
+                # objects back into team_cards/opponent_cards (which would
+                # reintroduce that exact crash class), cache name->icon-URL
+                # pairs in a small separate collection as they're seen — see
+                # _cache_card_icons() below — and serve that as its own
+                # lookup (GET /api/cards/icons in web_routes.py) that the
+                # frontend joins against by card name instead.
+                self._cache_card_icons(all_cards_this_battle)
                 b["team_cards"] = [c.get("name", "") for c in (team.get("cards") or [])]
                 b["opponent_cards"] = [c.get("name", "") for c in (opponent.get("cards") or [])]
                 b["team_crowns"] = team_crowns
@@ -1237,6 +1675,10 @@ class DataHarvester:
             self.compute_weekly_spotlights(war_data)
         except Exception as e:
             log.error(f"Weekly spotlight computation failed (non-fatal): {e}")
+        try:
+            self.compute_weekly_hall_of_fame()
+        except Exception as e:
+            log.error(f"Weekly Hall of Fame computation failed (non-fatal): {e}")
         try:
             self.compute_clan_legends()
         except Exception as e:

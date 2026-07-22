@@ -118,10 +118,21 @@
         }
         
         /* Hall of Fame specific */
-        .hof-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 14px; }
+        .hof-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 14px; gap: 10px; }
         .hof-label { color: var(--dim); display: flex; align-items: center; gap: 6px; }
-        .hof-value { font-weight: bold; color: var(--text-bright); }
+        .hof-value { font-weight: bold; color: var(--text-bright); text-align: right; }
         .hof-value span { color: var(--dim); font-size: 12px; font-family: var(--font-mono); margin-left: 6px; }
+        /* A category still showing its last known (non-zero) leader rather than
+           a fresh result this cycle -- see _merge_leaderboard_entry in
+           data_harvester.py for why this exists instead of ever showing "Name: 0". */
+        .hof-item.stale .hof-value { color: var(--dim); opacity: 0.75; }
+        .hof-stale-note { display: block; font-size: 10px; font-style: italic; color: var(--dim); font-weight: normal; }
+
+        /* Small "ⓘ" info icon next to a card title -- native title="" tooltip on
+           hover/focus, explaining the calculation behind that section. Keyboard-
+           focusable (tabindex) so the explanation isn't mouse-hover-only. */
+        .info-tip { cursor: help; color: var(--dim); font-size: 13px; font-weight: normal; text-transform: none; letter-spacing: 0; margin-left: auto; }
+        .info-tip:hover, .info-tip:focus-visible { color: var(--accent); }
 
         /* Leadership specific */
         .leader-list { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -240,6 +251,14 @@
     <div style="color:var(--dim); font-size: 13px; font-family: var(--font-mono);">
         {{ clan_data.memberCount | default('0') }} / 50
     </div>
+    {% if clan_tracked_since %}
+    <!-- Clash Royale's API doesn't expose a true clan-founding date anywhere,
+         so this is honestly labeled as tracking history, not clan age. -->
+    <div style="color:var(--dim); font-size: 11px; font-family: var(--font-mono); cursor:help;"
+         title="Clash Royale's API doesn't expose when a clan was actually founded — this is the earliest date our own bot has a record of this clan, which may well be later than the clan's real founding date.">
+        📊 Tracking since {{ clan_tracked_since }} ⓘ
+    </div>
+    {% endif %}
 </div>
 
 <!-- Idea #156: clanwide graceful-degradation banner when the CR API is rate-limited -->
@@ -308,19 +327,11 @@
     <div class="dashboard-grid">
         
         <div class="dash-card">
-            <div class="dash-card-title">✨ Weekly Hall of Fame</div>
-            
-            {% set top_donator = clan_data.memberList | sort(attribute='donations', reverse=True) | first %}
-            {% set top_trophies = clan_data.memberList | sort(attribute='trophies', reverse=True) | first %}
-            
-            <div class="hof-item">
-                <span class="hof-label">🎁 Highest Donator</span>
-                <!-- Idea #184: animated number counter on page load. -->
-                <span class="hof-value">{{ top_donator.name }} <span class="js-counter" data-target="{{ top_donator.donations }}">0</span></span>
+            <div class="dash-card-title">✨ Weekly Hall of Fame
+                <span class="info-tip" tabindex="0" title="10 live leaderboard categories, recomputed every harvest cycle from donations, trophies, war fame, and logged battles. If a category has no fresh qualifier this cycle (e.g. nobody's donated yet since the season reset), it shows the last time someone actually led that category instead of a misleading zero — marked '(last known)'.">ⓘ</span>
             </div>
-            <div class="hof-item">
-                <span class="hof-label">🏆 Top Trophy Pusher</span>
-                <span class="hof-value">{{ top_trophies.name }} <span class="js-counter" data-target="{{ top_trophies.trophies }}">0</span></span>
+            <div id="hall-of-fame-content">
+                <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
             </div>
         </div>
 
@@ -345,9 +356,11 @@
             </div>
         </div>
 
-        <!-- Idea #102/#107: weekly MVP + rising star, computed by the harvester -->
+        <!-- Idea #102/#107 + 8 more: weekly recognition, computed by the harvester -->
         <div class="dash-card">
-            <div class="dash-card-title">🌟 Weekly Spotlights</div>
+            <div class="dash-card-title">🌟 Weekly Spotlights
+                <span class="info-tip" tabindex="0" title="10 community/improvement-flavored callouts — less 'raw leaderboard', more 'who deserves a shoutout this week'. Same last-known-result fallback as Hall of Fame when a category has nothing fresh to show.">ⓘ</span>
+            </div>
             <div id="spotlights-content">
                 <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
             </div>
@@ -355,7 +368,9 @@
 
         <!-- Idea #110: all-time legends record book, separate from the weekly Hall of Fame above -->
         <div class="dash-card">
-            <div class="dash-card-title">🏛️ All-Time Legends</div>
+            <div class="dash-card-title">🏛️ All-Time Legends
+                <span class="info-tip" tabindex="0" title="Career-spanning records rather than this week's snapshot — computed once per harvest cycle from every member's full tracked history, not just recent battles.">ⓘ</span>
+            </div>
             <div id="legends-content">
                 <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
             </div>
@@ -427,17 +442,33 @@
                     <th class="sortable" data-type="number">Trophies 🏆 ↕</th>
                     <th class="sortable" data-type="number">War Battles ⚔️ ↕</th>
                     <th class="sortable" data-type="number">Donations 🎁 ↕</th>
+                    <th class="sortable" data-type="string" title="The earliest date our tracking shows this player in the clan — not necessarily their true join date if that was before this bot started tracking them.">Member Since ⓘ ↕</th>
                 </tr>
             </thead>
+            {# Idea revisit: the active/inactive dot used to be public and could
+               label a member "Inactive / Slacking" to every visitor, which
+               (a) is not a great thing to broadcast publicly and (b) used a
+               zero-donations-and-zero-war-trophies check that couldn't tell
+               "this person is slacking" apart from "it's early in a fresh
+               week/war and literally nobody has done anything yet". Now
+               admin-only, and only actually flags someone if at least one
+               other clan member has nonzero donations or war trophies this
+               period -- if the whole clan reads zero, that's a fresh-period
+               artifact, not a signal about this specific person. #}
+            {% set clan_total_donations = clan_data.memberList | sum(attribute='donations') %}
+            {% set clan_total_war_trophies = clan_data.memberList | map(attribute='clanWarTrophies', default=0) | sum %}
+            {% set clan_period_has_any_activity = (clan_total_donations > 0) or (clan_total_war_trophies > 0) %}
             <tbody>
                 {% for member in clan_data.memberList %}
                 <tr>
                     <td>
                         <a href="/player/{{ member.tag | replace('#', '') }}" style="display: flex; align-items: center; font-weight: bold; color: var(--text-bright);">
-                            {% set is_inactive = (member.donations == 0) and (member.clanWarTrophies | default(0) == 0) %}
-                            <span class="status-dot {% if is_inactive %}status-warn{% else %}status-active{% endif %}" 
-                                  title="{% if is_inactive %}Inactive / Slacking{% else %}Active Member{% endif %}">
+                            {% if is_admin %}
+                            {% set is_inactive = clan_period_has_any_activity and (member.donations == 0) and (member.clanWarTrophies | default(0) == 0) %}
+                            <span class="status-dot {% if is_inactive %}status-warn{% else %}status-active{% endif %}"
+                                  title="{% if is_inactive %}Inactive this period (0 donations, 0 war battles -- other members do have activity, so this isn't just a fresh-period reset){% else %}Active this period{% endif %} · Admin-only indicator">
                             </span>
+                            {% endif %}
                             {{ member.name }}
                         </a>
                     </td>
@@ -449,6 +480,7 @@
                     </td>
                     
                     <td style="color: #2ecc71;">{{ member.donations }}</td>
+                    <td style="color: var(--dim); font-family: var(--font-mono); font-size:12px;">{{ member.joined_clan_at | default('—') }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -533,22 +565,73 @@ function triggerLFG() {
     }
 }
 
-// ── Section 6 (gamification) widgets: spotlights, legends, donation goal, public leaderboards ──
+// ── Section 6 (gamification) widgets: hall of fame, spotlights, legends, donation goal, public leaderboards ──
 function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Label/emoji/tooltip live here rather than in the stored Mongo doc, so wording
+// can be tweaked without needing a re-harvest -- the backend (data_harvester.py's
+// compute_weekly_hall_of_fame/compute_weekly_spotlights) only ever sends back
+// {tag, name, value, value_label, stale, as_of} keyed by these exact category ids.
+const HALL_OF_FAME_META = {
+    top_donator:             { emoji: '🎁', label: 'Highest Donator',        tip: 'Most donations given this season, per Clash Royale\'s own season-scoped donation counter (resets when the season does -- not a lifetime total).' },
+    most_donations_received: { emoji: '📥', label: 'Most Donations Received', tip: 'Most donations received this season -- the flip side of Highest Donator.' },
+    top_trophy_pusher:       { emoji: '🏆', label: 'Top Trophy Pusher',      tip: 'Highest current trophy count right now, straight from the live clan roster.' },
+    biggest_trophy_climb:    { emoji: '📈', label: 'Biggest Trophy Climb',   tip: 'Largest 7-day trophy gain, comparing today\'s trophies against a snapshot from about a week ago.' },
+    war_fame_leader:         { emoji: '⚔️', label: 'War Fame Leader',        tip: 'Most fame earned in the current River Race, from the clan\'s live war-tracking data.' },
+    perfect_war_attendance:  { emoji: '🛡️', label: 'Perfect War Attendance', tip: 'Used all 4 war-day battles this race -- full participation, no missed decks.' },
+    best_win_rate:           { emoji: '🎯', label: 'Best Win Rate',          tip: 'Highest win rate over the last 7 days, minimum 3 logged battles so one lucky game can\'t take the top spot.' },
+    most_three_crowns:       { emoji: '👑', label: 'Most 3-Crown Wins',      tip: 'Most 3-crown (perfect) wins logged in the last 7 days.' },
+    most_active:             { emoji: '🎮', label: 'Most Active',            tip: 'Most battles logged in the last 7 days, of any type.' },
+    longest_win_streak:      { emoji: '🔥', label: 'Longest Win Streak',     tip: 'Current active win streak -- consecutive wins with no loss yet, counting back through their most recent logged battles.' },
+};
+const SPOTLIGHT_META = {
+    mvp:                { emoji: '🥇', label: 'War MVP',         tip: 'This war\'s stand-out performer: a blend of fame earned and overall win rate, not fame alone.' },
+    rising_star:        { emoji: '📈', label: 'Rising Star',     tip: 'Biggest trophy climb among members who joined within the last 45 days -- new-member momentum, not overall trophies.' },
+    most_helpful:       { emoji: '🤝', label: 'Most Helpful',    tip: 'Received the most kudos (peer "thank you"s) from teammates in the last 7 days.' },
+    most_generous:      { emoji: '🎉', label: 'Most Generous',   tip: 'Sent the most kudos to teammates in the last 7 days.' },
+    most_improved:      { emoji: '🎓', label: 'Most Improved',   tip: 'Biggest win-rate jump comparing this week to the week before, minimum 3 battles logged in both weeks.' },
+    comeback_player:    { emoji: '🕊️', label: 'Comeback Player', tip: 'Bounced back with a win immediately after a loss the most times this week -- resilience over a single hot streak.' },
+    defensive_wall:     { emoji: '🧱', label: 'Defensive Wall',  tip: 'Most shutout wins (opponent scored 0 crowns) in the last 7 days.' },
+    sharpshooter:       { emoji: '🎯', label: 'Sharpshooter',    tip: 'Highest 3-crown rate this week, minimum 3 battles logged.' },
+    community_voice:    { emoji: '💬', label: 'Community Voice', tip: 'Posted the most comments on teammates\' profiles in the last 7 days.' },
+    clan_points_leader: { emoji: '🪙', label: 'Clan Points Leader', tip: 'Highest all-time Clan Points balance -- the war-participation currency earned every war day, redeemable for a custom profile badge.' },
+};
+
+// Shared renderer for both Hall of Fame and Spotlights -- same doc shape
+// ({categories: {key: {name, value_label, stale, as_of}}}), just different
+// category-id -> {emoji,label,tip} lookup tables and container element.
+function renderSuperlativeCategories(doc, metaTable, elId) {
+    const el = document.getElementById(elId);
+    const categories = (doc && doc.categories) || {};
+    const html = Object.keys(metaTable).map(function(key) {
+        const entry = categories[key];
+        const meta = metaTable[key];
+        if (!entry) return ''; // legitimately no data yet for this category -- not a zero, just nothing logged ever
+        const staleCls = entry.stale ? ' stale' : '';
+        const staleNote = entry.stale ? `<span class="hof-stale-note">last known, as of ${esc(entry.as_of || '?')}</span>` : '';
+        return `<div class="hof-item${staleCls}">`
+            + `<span class="hof-label" title="${esc(meta.tip)}">${meta.emoji} ${esc(meta.label)}</span>`
+            + `<span class="hof-value">${esc(entry.name || 'Unknown')} <span>${esc(entry.value_label || '')}</span>${staleNote}</span>`
+            + `</div>`;
+    }).join('');
+    el.innerHTML = html || '<span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Not enough data yet.</span>';
+}
+
+async function loadHallOfFame() {
+    const el = document.getElementById('hall-of-fame-content');
+    try {
+        const res = await fetch('/api/clan/hall-of-fame');
+        const d = await res.json();
+        renderSuperlativeCategories(d, HALL_OF_FAME_META, 'hall-of-fame-content');
+    } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
+}
 
 async function loadSpotlights() {
     const el = document.getElementById('spotlights-content');
     try {
         const res = await fetch('/api/clan/spotlights');
         const d = await res.json();
-        let html = '';
-        if (d.mvp_name) {
-            html += `<div class="hof-item"><span class="hof-label">🥇 War MVP</span><span class="hof-value">${esc(d.mvp_name)} <span>${d.mvp_fame || 0} fame</span></span></div>`;
-        }
-        if (d.rising_star_name) {
-            html += `<div class="hof-item"><span class="hof-label">📈 Rising Star</span><span class="hof-value">${esc(d.rising_star_name)} <span>+${d.rising_star_delta} 🏆/wk</span></span></div>`;
-        }
-        el.innerHTML = html || '<span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Not enough data yet.</span>';
+        renderSuperlativeCategories(d, SPOTLIGHT_META, 'spotlights-content');
     } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
 }
 
@@ -558,9 +641,9 @@ async function loadLegends() {
         const res = await fetch('/api/clan/legends');
         const d = await res.json();
         let html = '';
-        if (d.highest_trophies_ever) html += `<div class="hof-item"><span class="hof-label">🏆 Highest Trophies Ever</span><span class="hof-value">${esc(d.highest_trophies_ever.name)} <span>${d.highest_trophies_ever.value}</span></span></div>`;
-        if (d.most_war_mvps && d.most_war_mvps.name) html += `<div class="hof-item"><span class="hof-label">🥇 Most War MVPs</span><span class="hof-value">${esc(d.most_war_mvps.name)} <span>${d.most_war_mvps.count}x</span></span></div>`;
-        if (d.clan_veteran) html += `<div class="hof-item"><span class="hof-label">🎖️ Clan Veteran</span><span class="hof-value">${esc(d.clan_veteran.name)}</span></div>`;
+        if (d.highest_trophies_ever) html += `<div class="hof-item"><span class="hof-label" title="Highest trophy count ever recorded for this player across our full snapshot history -- not just their current-season best.">🏆 Highest Trophies Ever</span><span class="hof-value">${esc(d.highest_trophies_ever.name)} <span>${d.highest_trophies_ever.value}</span></span></div>`;
+        if (d.most_war_mvps && d.most_war_mvps.name) html += `<div class="hof-item"><span class="hof-label" title="Most times this player has topped the fame leaderboard across the last 50 completed war races.">🥇 Most War MVPs</span><span class="hof-value">${esc(d.most_war_mvps.name)} <span>${d.most_war_mvps.count}x</span></span></div>`;
+        if (d.clan_veteran) html += `<div class="hof-item"><span class="hof-label" title="Longest-tenured member still in the clan, by how long we've been tracking them -- the earliest date we saw them in the roster, which may be later than when they actually joined if that was before this bot started tracking.">🎖️ Clan Veteran</span><span class="hof-value">${esc(d.clan_veteran.name)}</span></div>`;
         el.innerHTML = html || '<span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Not enough data yet.</span>';
     } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
 }
@@ -592,6 +675,7 @@ async function loadPublicLeaderboards() {
     } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
 }
 
+loadHallOfFame();
 loadSpotlights();
 loadLegends();
 loadClanProgress();

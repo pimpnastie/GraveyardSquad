@@ -1048,6 +1048,32 @@ def index():
         # Idea #116: only nudge into the onboarding flow once per account.
         show_onboarding = not (user_doc or {}).get("onboarding_completed", False)
 
+    # "Member Since" column: joined_clan_at is stamped once, the first time our
+    # harvester ever sees a tag in the clan (see harvest_clan_and_profiles's
+    # $setOnInsert in data_harvester.py) — the closest proxy available, since
+    # neither the clan endpoint nor the player endpoint exposes a true
+    # clan-join date. For anyone who was already in the clan before this bot
+    # started tracking, this shows when tracking began for them, not their
+    # real join date — same caveat as "clan tracked since" below.
+    join_dates = {
+        p["tag"]: p.get("joined_clan_at")
+        for p in db_sync["player_profiles"].find({}, {"tag": 1, "joined_clan_at": 1})
+    }
+    for m in clan_data.get("memberList", []):
+        joined_at = _as_aware_utc(join_dates.get(m.get("tag")))
+        m["joined_clan_at"] = joined_at.strftime("%Y-%m-%d") if joined_at else None
+
+    # "Clan tracked since": the CR API doesn't expose a true clan-creation
+    # date anywhere (the /clans endpoint has no such field), so the best
+    # available answer is "the earliest point our own harvester has a record
+    # of this clan" — the first clan_snapshots document, which gets one new
+    # row every harvest cycle and is never pruned. Explicitly not the clan's
+    # real founding date; just how far back this bot's own history goes.
+    earliest_snapshot = db_sync["clan_snapshots"].find_one({}, sort=[("timestamp", 1)])
+    clan_tracked_since = None
+    if earliest_snapshot and earliest_snapshot.get("timestamp"):
+        clan_tracked_since = _as_aware_utc(earliest_snapshot["timestamp"]).strftime("%Y-%m-%d")
+
     # is_admin passed so roster.html can show an Admin Panel link (previously
     # there was no way to reach /admin from the public pages at all).
     bot_settings = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
@@ -1059,6 +1085,7 @@ def index():
         beta_features_enabled=bot_settings.get("beta_features_enabled", False),
         recruiting_banner_enabled=bot_settings.get("recruiting_banner_enabled", False),
         member_count=clan_data.get("memberCount", 0),
+        clan_tracked_since=clan_tracked_since,
     )
 
 @web_bp.route("/player/<tag>")
@@ -4171,12 +4198,20 @@ def _badge_streak_master(profile, battles):
 def _badge_century_club(profile, battles):
     return (profile.get("wins") or 0) >= 100
 
+# Each entry's description explains exactly how that badge is earned, so
+# api_player_badges can hand it straight to the frontend as tooltip text
+# instead of leaving players to guess what "Iron Wall" is supposed to mean.
 BADGE_DEFINITIONS = [
-    ("comeback_king",    "Comeback King",     "🔥", _badge_comeback_king),
-    ("iron_wall",        "Iron Wall",         "🛡️", _badge_iron_wall),
-    ("marathon_runner",  "Marathon Runner",   "🏃", _badge_marathon_runner),
-    ("streak_master",    "Streak Master",     "⚡", _badge_streak_master),
-    ("century_club",     "Century Club",      "💯", _badge_century_club),
+    ("comeback_king",    "Comeback King",     "🔥", _badge_comeback_king,
+     "Won 3+ battles where the opponent still landed 2 or more crowns — a close win, not a clean sweep."),
+    ("iron_wall",        "Iron Wall",         "🛡️", _badge_iron_wall,
+     "Won 5+ battles as a shutout — opponent finished with 0 crowns."),
+    ("marathon_runner",  "Marathon Runner",   "🏃", _badge_marathon_runner,
+     "Logged 500+ total battles since we started tracking this player."),
+    ("streak_master",    "Streak Master",     "⚡", _badge_streak_master,
+     "Currently on a 5+ week war-participation streak (used all 4 war-day battles, week after week)."),
+    ("century_club",     "Century Club",      "💯", _badge_century_club,
+     "100+ lifetime wins, per Clash Royale's own win counter."),
 ]
 
 
@@ -4191,8 +4226,8 @@ def api_player_badges(tag):
         {"player_tag": clean}, {"result": 1, "opponent_crowns": 1}
     ).limit(1000))
     earned = [
-        {"id": bid, "label": label, "emoji": emoji}
-        for bid, label, emoji, check in BADGE_DEFINITIONS
+        {"id": bid, "label": label, "emoji": emoji, "description": description}
+        for bid, label, emoji, check, description in BADGE_DEFINITIONS
         if check(profile, battles)
     ]
     return jsonify({"badges": earned})
@@ -4232,9 +4267,24 @@ def api_player_challenges(tag):
 
 @web_bp.route("/api/clan/spotlights")
 def api_clan_spotlights():
-    """Ideas #102 (weekly MVP) + #107 (rising star) — computed by
-    data_harvester.py's compute_weekly_spotlights() every harvest cycle."""
+    """10 community/improvement-flavored superlatives (War MVP, Rising Star,
+    Most Helpful, Most Improved, etc.) — computed by data_harvester.py's
+    compute_weekly_spotlights() every harvest cycle. Each category
+    independently falls back to its last known non-zero leader when nobody
+    qualifies this cycle (see _merge_leaderboard_entry) — a "stale": true flag
+    on a category means it's showing that last-known result, not this cycle's."""
     doc = db_sync["config"].find_one({"_id": "weekly_spotlights"}, {"_id": 0}) or {}
+    return jsonify(doc)
+
+
+@web_bp.route("/api/clan/hall-of-fame")
+def api_clan_hall_of_fame():
+    """10 quantitative "who's on top right now" superlatives (donations,
+    trophies, win rate, streaks, etc.) — computed by data_harvester.py's
+    compute_weekly_hall_of_fame() every harvest cycle. Same
+    {computed_at, categories: {key: {tag, name, value, value_label, stale, as_of}}}
+    shape and zero-fallback behavior as /api/clan/spotlights above."""
+    doc = db_sync["config"].find_one({"_id": "weekly_hall_of_fame"}, {"_id": 0}) or {}
     return jsonify(doc)
 
 
