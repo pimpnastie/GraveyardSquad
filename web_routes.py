@@ -245,6 +245,13 @@ DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "")
 DISCORD_API = "https://discord.com/api"
 DISCORD_OAUTH_SCOPES = "identify guilds.members.read"
 GUILD_ID = os.getenv("GUILD_ID", "")
+# Same bot token mainbot.py uses to actually log the bot in (DISCORD_TOKEN,
+# checked as a required env var at mainbot.py startup) -- reused here for a
+# plain bot-authenticated REST call (GET /guilds/{id}/roles), not a second
+# Discord connection. Distinct from DISCORD_CLIENT_ID/SECRET above, which are
+# the OAuth *application* credentials used for user login, not the bot itself.
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_TOKEN", "")
+GUILD_ROLE_NAMES_CACHE_TTL_SECONDS = 3600  # role names/colors change rarely
 
 # Database connections
 # Idea #238: connection pooling review. pymongo defaults to maxPoolSize=100 PER
@@ -280,6 +287,24 @@ _HTML_CACHE = {}
 # ---------------------------------------------------------------------------
 def clean_tag(tag: str) -> str:
     return tag.strip().upper().replace("#", "")
+
+def discord_avatar_url(discord_id: str, avatar_hash: str | None) -> str:
+    """Builds a real, loadable Discord CDN avatar URL from the two fields
+    Discord's own OAuth /users/@me response gives us (idea: "connect the
+    discord id with information like their name or picture"). If the user
+    never set a custom avatar, `avatar_hash` is None/absent -- Discord's own
+    fallback in that case is one of 6 flat-color default avatars, chosen by
+    `(discord_id >> 22) % 6` for the modern (post-username-migration)
+    numeric-ID scheme. Falls back to index 0 if discord_id isn't a clean
+    integer (shouldn't happen for a real Discord snowflake, but this must
+    never raise just to render an avatar)."""
+    if avatar_hash:
+        return f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar_hash}.png?size=64"
+    try:
+        default_index = (int(discord_id) >> 22) % 6
+    except (TypeError, ValueError):
+        default_index = 0
+    return f"https://cdn.discordapp.com/embed/avatars/{default_index}.png"
 
 def _normalize_card_names(cards) -> list:
     """Bugfix: some older battle_history records store team_cards/
@@ -495,6 +520,41 @@ def get_user_guild_roles(access_token: str) -> list:
     except Exception as e:
         log.error(f"Failed to fetch guild roles: {e}")
     return []
+
+def fetch_guild_role_names() -> dict:
+    """Resolves the server's role IDs to their display names, for showing
+    something readable ("War General") instead of a raw snowflake in the
+    admin User Access table. Every place that stores a role ID (session
+    user_roles, config.system_config.admin_role_ids) has only ever kept IDs
+    -- nothing in this codebase previously called Discord's role-list
+    endpoint at all. Uses the bot's own token (Bot-authenticated, not a
+    per-user OAuth token) since that's a server-wide read, not something
+    scoped to whoever's currently logged in. Cached in Redis since role
+    names/colors change rarely and this could otherwise fire once per admin
+    page load."""
+    if not GUILD_ID or not DISCORD_BOT_TOKEN:
+        return {}
+    cache_key = f"discord_role_names:{GUILD_ID}"
+    try:
+        cached = redis_sync_client.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception as e:
+        log.warning(f"Role-name cache read failed (non-fatal): {e}")
+    try:
+        r = requests.get(
+            f"{DISCORD_API}/guilds/{GUILD_ID}/roles",
+            headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"},
+            timeout=8,
+        )
+        if r.status_code != 200:
+            return {}
+        role_map = {str(role["id"]): role["name"] for role in r.json()}
+        redis_sync_client.setex(cache_key, GUILD_ROLE_NAMES_CACHE_TTL_SECONDS, json.dumps(role_map))
+        return role_map
+    except Exception as e:
+        log.warning(f"Failed to fetch guild role names (non-fatal, falling back to raw IDs): {e}")
+        return {}
 
 def is_admin() -> bool:
     if "discord_id" not in session: return False
@@ -940,6 +1000,30 @@ def oauth_callback():
     existing_user = db_sync["users"].find_one({"discord_id": session["discord_id"]}, {"session_version": 1})
     session["session_version"] = (existing_user or {}).get("session_version", 0)
 
+    # Persist name + avatar every login, not just at /link time. Previously
+    # session["discord_avatar"] was captured from Discord's own API response
+    # (right above) and then discarded the moment the session expired -- it
+    # was never written to Mongo, so nothing (not the roster, not the admin
+    # User Access table, not the player page) could ever show a Discord
+    # picture even though Discord handed it to us for free on every login.
+    # Upserting here (rather than only in link_account()) also means this
+    # stays fresh even for someone who's logged in but hasn't linked a CR tag
+    # yet, and picks up avatar changes on their next login.
+    db_sync["users"].update_one(
+        {"discord_id": session["discord_id"]},
+        {"$set": {
+            "discord_name": session["discord_name"],
+            "discord_avatar": session["discord_avatar"],
+            # Idea (admin panel Discord identity view): this was already being
+            # fetched every login for the is_admin() role-based-access check
+            # and held only in the session, same story as the avatar above --
+            # persisting it means the admin panel can show "what server roles
+            # does this person actually have" without a live Discord call.
+            "discord_roles": session["user_roles"],
+        }},
+        upsert=True,
+    )
+
     dest = session.pop("post_login_redirect", "/")
     return redirect(dest)
 
@@ -1086,6 +1170,16 @@ def index():
         recruiting_banner_enabled=bot_settings.get("recruiting_banner_enabled", False),
         member_count=clan_data.get("memberCount", 0),
         clan_tracked_since=clan_tracked_since,
+        # "Our Discord" card: Discord's own official embeddable widget iframe
+        # (discord.com/widget?id=...), which the server owner already has —
+        # it only renders anything if "Server Widget" is enabled in Discord's
+        # own Server Settings, same feature the old /api/discord/widget
+        # attempt depended on. GUILD_ID is the same server-wide constant used
+        # for role-based admin access elsewhere, kept as the single source of
+        # truth rather than hardcoding the guild ID into the template.
+        discord_guild_id=GUILD_ID,
+        discord_invite_url=bot_settings.get("discord_invite_url", ""),
+        discord_widget_style=bot_settings.get("discord_widget_style", "official"),
     )
 
 @web_bp.route("/player/<tag>")
@@ -1111,10 +1205,27 @@ def player_profile(tag):
     if "discord_id" in session:
         viewer = db_sync["users"].find_one({"discord_id": session["discord_id"]}, {"cr_tag": 1})
         own_profile = bool(viewer and clean_tag(viewer.get("cr_tag", "")) == clean_tag(tag))
+
+    # "Connect the Discord ID with information like their name or picture" —
+    # if this player has linked their Discord account (see link_account()),
+    # show that identity publicly on their profile the same way "Member
+    # Since" already is: name + avatar, both sourced straight from Discord's
+    # own OAuth response (captured in oauth_callback(), never surfaced until
+    # now). None if this member never linked an account.
+    linked_user = db_sync["users"].find_one(
+        {"cr_tag": f"#{clean_tag(tag)}"}, {"discord_id": 1, "discord_name": 1, "discord_avatar": 1}
+    )
+    linked_discord = None
+    if linked_user and linked_user.get("discord_id"):
+        linked_discord = {
+            "name": linked_user.get("discord_name") or "Unknown",
+            "avatar_url": discord_avatar_url(linked_user["discord_id"], linked_user.get("discord_avatar")),
+        }
+
     return render_sandboxed(
         get_template("player"), player=player_data, db_player=db_player, is_admin=is_admin(),
         csrf_token=get_csrf_token(), is_new_member=is_new_member, mentor_pair=mentor_pair,
-        own_profile=own_profile,
+        own_profile=own_profile, linked_discord=linked_discord,
     )
 
 # ---------------------------------------------------------------------------
@@ -1140,13 +1251,42 @@ def admin_panel():
         csrf_token=get_csrf_token(),
     )
 
+
+# "Spreadsheet lover" export: human-readable column labels shared across the
+# JSON preview table, the CSV, and the XLSX -- previously the raw camelCase/
+# snake_case Mongo field names (decksUsedToday, current_streak) went straight
+# into every export as-is, which is fine for code but not what someone opening
+# this in Excel/Sheets wants to see as a column header.
+EXPORT_FIELD_LABELS = {
+    "name": "Name", "tag": "Tag", "role": "Role", "trophies": "Trophies",
+    "donations": "Donations", "fame": "War Fame",
+    "decksUsedToday": "Decks Used Today", "decksRemaining": "Decks Remaining",
+    "warDayWins": "War Day Wins", "totalWins": "Total Wins", "totalLosses": "Total Losses",
+    "current_streak": "Win Streak",
+    "win_rate_pct": "Win Rate %", "war_participation_pct": "War Participation %",
+}
+# Percentage columns get a real Excel percent number format (see the xlsx
+# branch below) rather than being written as a "87.5%" text string, which
+# Excel/Sheets can't sort, sum, or average as a number.
+EXPORT_PERCENT_LABELS = {"Win Rate %", "War Participation %"}
+# Numeric columns worth a bottom TOTALS/AVERAGE row in the xlsx export --
+# something a spreadsheet-native leadership review would otherwise have to
+# add a formula for themselves every single export.
+EXPORT_SUM_LABELS = {"Donations", "War Fame", "Total Wins", "Total Losses", "War Day Wins", "Decks Used Today"}
+
 @web_bp.route("/admin/export/custom", methods=["POST"])
 def admin_export_csv():
-    """Returns JSON when export_format=json (for the JS CSV builder), raw CSV otherwise."""
+    """Returns JSON when export_format=json (for the JS preview table), a real
+    spreadsheet-native CSV for export_format=csv, or a styled .xlsx for
+    export_format=xlsx. All three share the exact same row-building and
+    field-labeling logic below, so the preview, the CSV, and the Excel file
+    can never silently drift apart from each other the way the old
+    client-side-rebuilt CSV could."""
     if not is_admin(): return "Unauthorized", 403
     from flask import Response
     export_format = request.form.get("export_format", "csv")
     requested_fields = request.form.getlist("fields") or ["name", "tag", "role", "trophies", "donations"]
+    requested_formulas = set(request.form.getlist("formulas"))
 
     # Pull latest war participant data to enrich the export
     latest_war = db_sync["war_tracking"].find_one({}, sort=[("harvest_time", -1)]) or {}
@@ -1156,11 +1296,26 @@ def admin_export_csv():
     }
 
     clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    # Default sort: highest trophies first -- a plain "whatever order the CR
+    # API happened to return" isn't a useful default for something meant to
+    # be opened and read in a spreadsheet.
+    members = sorted(clan_data.get("memberList", []), key=lambda m: m.get("trophies", 0), reverse=True)
+
+    selected_keys = list(requested_fields)
+    if "win_rate" in requested_formulas and "win_rate_pct" not in selected_keys:
+        selected_keys.append("win_rate_pct")
+    if "war_participation" in requested_formulas and "war_participation_pct" not in selected_keys:
+        selected_keys.append("war_participation_pct")
+
     records = []
-    for m in clan_data.get("memberList", []):
+    for m in members:
         tag = m.get("tag", "").replace("#", "").upper()
         wp = war_participants.get(tag, {})
         db_profile = db_sync["player_profiles"].find_one({"tag": f"#{tag}"}) or {}
+        total_wins = db_profile.get("wins", 0)
+        total_losses = db_profile.get("losses", 0)
+        decks_used = wp.get("decksUsedToday", 0)
+        decks_remaining = 4 - decks_used
         row = {
             "name": m.get("name", ""),
             "tag": m.get("tag", ""),
@@ -1168,15 +1323,26 @@ def admin_export_csv():
             "trophies": m.get("trophies", 0),
             "donations": m.get("donations", 0),
             "fame": wp.get("fame", 0),
-            "decksUsedToday": wp.get("decksUsedToday", 0),
-            "decksRemaining": 4 - wp.get("decksUsedToday", 0),
+            "decksUsedToday": decks_used,
+            "decksRemaining": decks_remaining,
             "warDayWins": db_profile.get("warDayWins", 0),
-            "totalWins": db_profile.get("wins", 0),
-            "totalLosses": db_profile.get("losses", 0),
+            "totalWins": total_wins,
+            "totalLosses": total_losses,
             "current_streak": db_profile.get("current_streak", 0),
+            # Computed server-side now (previously duplicated in admin.html's
+            # JS, and only applied to the client-rebuilt CSV -- never to the
+            # JSON preview or the Excel export, so those two never actually
+            # showed the formula columns despite the checkboxes implying they
+            # would). Stored as a plain number (e.g. 87.5, not "87.5%") so
+            # CSV/JSON keep it usable for real spreadsheet math; the xlsx
+            # branch below applies a genuine percent number format on top.
+            "win_rate_pct": round((total_wins / (total_wins + total_losses)) * 100, 1) if (total_wins + total_losses) else 0.0,
+            "war_participation_pct": round((decks_used / (decks_used + decks_remaining)) * 100, 1) if (decks_used + decks_remaining) else 0.0,
         }
-        # Only keep requested fields
-        records.append({k: row[k] for k in requested_fields if k in row})
+        # Only keep requested fields/formulas, relabeled to human-readable headers.
+        records.append({EXPORT_FIELD_LABELS.get(k, k): row[k] for k in selected_keys if k in row})
+
+    export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     if export_format == "json":
         return jsonify(records)
@@ -1187,7 +1353,8 @@ def admin_export_csv():
         # already-colored cells (red for members with decks remaining unused
         # this war day / a strike-worthy 0-donation row, green for top
         # donators) instead of leadership manually conditional-formatting a
-        # CSV import every time.
+        # CSV import every time. Extended with an autofilter, real percent
+        # number formats, and a bottom totals/average row.
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill
         from openpyxl.utils import get_column_letter
@@ -1200,27 +1367,64 @@ def admin_export_csv():
         header_font = Font(color="00E5CC", bold=True)
         slacker_fill = PatternFill(start_color="4A1F1F", end_color="4A1F1F", fill_type="solid")
         top_fill = PatternFill(start_color="1F4A2A", end_color="1F4A2A", fill_type="solid")
+        totals_font = Font(bold=True)
+        totals_fill = PatternFill(start_color="16191F", end_color="16191F", fill_type="solid")
 
-        fields = list(records[0].keys()) if records else requested_fields
+        fields = list(records[0].keys()) if records else [EXPORT_FIELD_LABELS.get(k, k) for k in selected_keys]
         for col_idx, field in enumerate(fields, start=1):
             cell = ws.cell(row=1, column=col_idx, value=field)
             cell.font = header_font
             cell.fill = header_fill
         ws.freeze_panes = "A2"
 
-        donation_values = sorted((r.get("donations", 0) for r in records), reverse=True)
+        donation_values = sorted((r.get("Donations", 0) for r in records), reverse=True)
         top_donation_cutoff = donation_values[max(0, min(2, len(donation_values) - 1))] if donation_values else 0
 
+        last_row = 1
         for row_idx, record in enumerate(records, start=2):
-            is_slacker = record.get("decksRemaining", 0) and record.get("decksRemaining", 0) > 0
-            is_top_donator = "donations" in record and donation_values and record.get("donations", 0) >= top_donation_cutoff and top_donation_cutoff > 0
+            last_row = row_idx
+            is_slacker = record.get("Decks Remaining", 0) and record.get("Decks Remaining", 0) > 0
+            is_top_donator = "Donations" in record and donation_values and record.get("Donations", 0) >= top_donation_cutoff and top_donation_cutoff > 0
             for col_idx, field in enumerate(fields, start=1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=record.get(field, ""))
+                if field in EXPORT_PERCENT_LABELS:
+                    # Value is already a plain number like 87.5 -- this format
+                    # just appends the "%" glyph for display without Excel's
+                    # usual x100 rescale (which is only correct for fractions
+                    # like 0.875), so the number keeps sorting/summing sanely.
+                    cell.number_format = '0.0"%"'
                 if is_slacker:
                     cell.fill = slacker_fill
                 elif is_top_donator:
                     cell.fill = top_fill
             ws.row_dimensions[row_idx].height = 16
+
+        # Bottom totals/average row -- sums for count-style columns, an
+        # average for percent columns, blank for identity columns (name/tag/
+        # role) rather than a meaningless sum of trophies or streaks.
+        if records:
+            totals_row = last_row + 1
+            for col_idx, field in enumerate(fields, start=1):
+                if col_idx == 1:
+                    cell = ws.cell(row=totals_row, column=col_idx, value="TOTAL / AVG")
+                elif field in EXPORT_SUM_LABELS:
+                    values = [r.get(field, 0) for r in records if isinstance(r.get(field), (int, float))]
+                    cell = ws.cell(row=totals_row, column=col_idx, value=sum(values) if values else "")
+                elif field in EXPORT_PERCENT_LABELS:
+                    values = [r.get(field, 0) for r in records if isinstance(r.get(field), (int, float))]
+                    cell = ws.cell(row=totals_row, column=col_idx, value=round(sum(values) / len(values), 1) if values else "")
+                    cell.number_format = '0.0"%"'
+                else:
+                    cell = ws.cell(row=totals_row, column=col_idx, value="")
+                cell.font = totals_font
+                cell.fill = totals_fill
+
+        # Autofilter over the header + all data rows (not the totals row --
+        # filtering that away with the rest of the data would hide it) so
+        # sorting/filtering by column works the moment the file is opened,
+        # same as any hand-built spreadsheet.
+        if records:
+            ws.auto_filter.ref = f"A1:{get_column_letter(len(fields))}{last_row}"
 
         for col_idx, field in enumerate(fields, start=1):
             width = max(12, min(30, len(field) + 4))
@@ -1232,7 +1436,7 @@ def admin_export_csv():
         return Response(
             buf.read(),
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=clan_roster.xlsx"},
+            headers={"Content-Disposition": f"attachment; filename=graveyard_roster_{export_date}.xlsx"},
         )
 
     import csv, io
@@ -1242,9 +1446,17 @@ def admin_export_csv():
         writer.writeheader()
         writer.writerows(records)
     return Response(
-        buf.getvalue(),
+        # A leading UTF-8 BOM ("﻿") so Excel (which otherwise guesses the
+        # system codepage instead of UTF-8) renders accented/non-ASCII player
+        # names correctly instead of showing mojibake -- Google Sheets/Numbers
+        # handle plain UTF-8 fine either way, so this is purely for Excel's
+        # benefit and is invisible everywhere else. No stray title line before
+        # the header row anymore either (the old client-side CSV builder
+        # prepended one) -- row 1 is always the real header, so Excel/Sheets'
+        # own "format as table"/autofilter detection works immediately.
+        "﻿" + buf.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=clan_roster.csv"},
+        headers={"Content-Disposition": f"attachment; filename=graveyard_roster_{export_date}.csv"},
     )
 
 @web_bp.route("/admin/api/player/update", methods=["POST"])
@@ -1507,6 +1719,21 @@ def admin_save_settings():
     # Idea #200: recruitment video/trailer embed.
     if "recruit_video_url" in data:
         update["recruit_video_url"] = str(data.get("recruit_video_url") or "").strip()[:500]
+    # "A little applet for the roster page showing our discord" — shown as an
+    # explicit "Join our Discord" button under the embedded server widget
+    # iframe (see index() / roster.html), since nothing in this codebase
+    # stored an invite URL anywhere before now.
+    if "discord_invite_url" in data:
+        update["discord_invite_url"] = str(data.get("discord_invite_url") or "").strip()[:300]
+    # Lets an admin pick between Discord's own official embeddable widget
+    # (Discord's UI/chrome, zero maintenance on our end) and the custom-built
+    # version that matches this site's own dark theme exactly (see
+    # /api/discord/widget). Whitelisted to the two known values rather than
+    # storing whatever string was posted, since roster.html branches on this
+    # exact value.
+    if "discord_widget_style" in data:
+        style = str(data.get("discord_widget_style") or "official").strip().lower()
+        update["discord_widget_style"] = style if style in ("official", "custom") else "official"
     # Idea #203: clan founding date, used for the auto-generated anniversary page/post.
     if "clan_founding_date" in data:
         update["clan_founding_date"] = str(data.get("clan_founding_date") or "").strip()[:10]
@@ -2566,19 +2793,38 @@ def admin_api_users():
         for p in db_sync["player_profiles"].find({}, {"tag": 1, "role": 1, "name": 1})
     }
 
+    # "Lay this info out in the admin panel" — resolves each stored server
+    # role ID to its display name via fetch_guild_role_names() (one cached
+    # Discord call for the whole table, not one per user).
+    role_names = fetch_guild_role_names()
+
     users = list(db_sync["users"].find({}, {"_id": 0}))
     result = []
     for u in users:
         cr_tag = u.get("cr_tag", "")
         profile = profiles.get(cr_tag, {})
         discord_id = u.get("discord_id", "")
+        role_ids = u.get("discord_roles") or []
         result.append({
             "discord_id": discord_id,
             "name": profile.get("name") or u.get("discord_name", "Unknown"),
+            # The raw Discord username, distinct from the above -- "name" prefers
+            # the in-clan CR player name when linked, which can differ from (or be
+            # totally unrelated to) what someone actually goes by on Discord.
+            "discord_username": u.get("discord_name") or "Unknown",
             "cr_tag": cr_tag.replace("#", "") if cr_tag else "",
             "is_linked": bool(cr_tag),
             "rank": profile.get("role", "—"),
             "status": "Admin" if (discord_id in admin_ids or discord_id == master_admin) else "Member",
+            # idea: "connect the discord id with information like their name
+            # or picture" — avatar hash was already captured off Discord's own
+            # OAuth response (see oauth_callback) but never surfaced anywhere.
+            "avatar_url": discord_avatar_url(discord_id, u.get("discord_avatar")) if discord_id else None,
+            # Falls back to the raw ID string if fetch_guild_role_names()
+            # couldn't resolve it (no bot token configured, Discord API hiccup,
+            # or a role that's since been deleted server-side) -- always shows
+            # *something* rather than silently dropping a role the user has.
+            "roles": [role_names.get(rid, rid) for rid in role_ids],
         })
 
     return jsonify(result)
@@ -3562,6 +3808,43 @@ def api_player_season_comparison(tag):
     })
 
 
+@web_bp.route("/api/clan/boat-battle")
+def api_clan_boat_battle():
+    """Surfaces the war-tracking fields that get harvested into Mongo every
+    30-minute cycle (and after every completed river race) but were never read
+    back by anything: per-participant `repairPoints`/`boatAttacks` from the
+    live `war_tracking` snapshot, and the clan-level `warTrophiesChange` from
+    the most recently completed race in `war_history`."""
+    latest = db_sync["war_tracking"].find_one({}, sort=[("harvest_time", -1)])
+    participants = []
+    if latest:
+        clan = latest.get("clan") or {}
+        for p in clan.get("participants", []):
+            boat_attacks = p.get("boatAttacks", 0) or 0
+            repair_points = p.get("repairPoints", 0) or 0
+            if boat_attacks or repair_points:
+                participants.append({
+                    "name": p.get("name", "Unknown"),
+                    "tag": p.get("tag", ""),
+                    "boat_attacks": boat_attacks,
+                    "repair_points": repair_points,
+                })
+    participants.sort(key=lambda p: (p["boat_attacks"], p["repair_points"]), reverse=True)
+
+    last_war_trophies_change = None
+    last_race = db_sync["war_history"].find_one(
+        {}, sort=[("data.seasonId", -1), ("data.sectionIndex", -1)]
+    )
+    if last_race:
+        race_clan = (last_race.get("data") or {}).get("clan") or {}
+        last_war_trophies_change = race_clan.get("warTrophiesChange")
+
+    return jsonify({
+        "leaderboard": participants[:10],
+        "last_war_trophies_change": last_war_trophies_change,
+    })
+
+
 @web_bp.route("/api/compare/<tag1>/<tag2>")
 def api_compare_players(tag1, tag2):
     """Idea #25: head-to-head comparison — pick two clan members, see key stats
@@ -3582,19 +3865,53 @@ def api_compare_players(tag1, tag2):
 def api_player_card_mastery(tag):
     """Idea #26: card mastery grouped by category (Troop/Spell/Building) instead
     of one flat "cards maxed" number. Category data isn't in the CR API, so this
-    uses the CARD_CATEGORIES lookup defined near the top of this file."""
+    uses the CARD_CATEGORIES lookup defined near the top of this file.
+
+    Also folds in rarity/count/elixirCost -- these ride along on every card in
+    the CR API's own `cards` array (same as name/level/maxLevel), but nothing
+    ever read them before now."""
     clean = clean_tag(tag)
     player = fetch_cr_api(f"players/%23{clean}")
     if not player:
         return jsonify({"error": "player not found"}), 404
     by_category = {}
+    by_rarity = {}
+    most_duplicated = None
+    total_copies = 0
+    elixir_total = 0
+    elixir_count = 0
     for c in player.get("cards", []):
+        maxed = c.get("level", 0) >= c.get("maxLevel", 999)
+
         cat = categorize_card(c.get("name", ""))
         entry = by_category.setdefault(cat, {"total": 0, "maxed": 0})
         entry["total"] += 1
-        if c.get("level", 0) >= c.get("maxLevel", 999):
+        if maxed:
             entry["maxed"] += 1
-    return jsonify({cat: v for cat, v in by_category.items()})
+
+        rarity = str(c.get("rarity") or "Unknown").title()
+        r_entry = by_rarity.setdefault(rarity, {"total": 0, "maxed": 0})
+        r_entry["total"] += 1
+        if maxed:
+            r_entry["maxed"] += 1
+
+        count = c.get("count", 0) or 0
+        total_copies += count
+        if count and (most_duplicated is None or count > most_duplicated["count"]):
+            most_duplicated = {"name": c.get("name", "Unknown"), "count": count}
+
+        elixir = c.get("elixirCost")
+        if isinstance(elixir, (int, float)):
+            elixir_total += elixir
+            elixir_count += 1
+
+    return jsonify({
+        "by_category": {cat: v for cat, v in by_category.items()},
+        "by_rarity": by_rarity,
+        "most_duplicated_card": most_duplicated,
+        "total_card_copies": total_copies,
+        "avg_elixir_cost": round(elixir_total / elixir_count, 2) if elixir_count else None,
+    })
 
 
 @web_bp.route("/api/player/<tag>/flair", methods=["GET", "POST"])
@@ -4294,6 +4611,82 @@ def api_clan_legends():
     current-week Hall of Fame — computed by data_harvester.py's compute_clan_legends()."""
     doc = db_sync["config"].find_one({"_id": "clan_legends"}, {"_id": 0}) or {}
     return jsonify(doc)
+
+
+@web_bp.route("/api/clan/members-lite")
+def api_clan_members_lite():
+    """Minimal public {tag, name} list of current clan members — backs the
+    tag-autofill/autocomplete on the "Compare With Another Member" box on
+    player.html (idea: "autofill based on our players in the text boxes").
+    Deliberately just tag+name, nothing else: this is meant to populate an
+    HTML <datalist>, not double as a stats API (that's what /api/v1/clan is
+    for). Public/no-auth since a member's tag and name are already visible
+    to any logged-out visitor on the roster page itself; relies on
+    fetch_cr_api()'s own cache rather than adding a separate rate limit."""
+    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    return jsonify([
+        {"tag": m.get("tag", "").replace("#", ""), "name": m.get("name", "")}
+        for m in clan_data.get("memberList", [])
+        if m.get("tag")
+    ])
+
+
+DISCORD_WIDGET_CACHE_TTL_SECONDS = 60  # same order of magnitude as CR_API_CACHE_TTL_SECONDS
+
+@web_bp.route("/api/discord/widget")
+def api_discord_widget():
+    """Backs the custom-built variant of the "Our Discord" roster card
+    (bot_settings.discord_widget_style == "custom") -- the alternative to
+    Discord's own official embeddable iframe, for admins who'd rather match
+    the site's own dark theme/typography exactly than use Discord's stock
+    widget chrome. Calls Discord's public, unauthenticated
+    `GET /guilds/{id}/widget.json`, which only returns data if "Server
+    Widget" is switched on in Discord's own Server Settings -- same
+    prerequisite the official iframe option depends on. Degrades gracefully
+    to {"enabled": false, "invite_url": ...} rather than erroring if that
+    setting is off or the request fails for any reason. Cached briefly in
+    Redis (same non-fatal-on-Redis-down pattern as fetch_cr_api) so this
+    doesn't hit Discord on every single roster page visit."""
+    invite_url = (db_sync["config"].find_one({"_id": "bot_settings"}) or {}).get("discord_invite_url") or None
+    if not GUILD_ID:
+        return jsonify({"enabled": False, "invite_url": invite_url})
+
+    cache_key = f"discord_widget:{GUILD_ID}"
+    try:
+        cached = redis_sync_client.get(cache_key)
+        if cached:
+            return jsonify(json.loads(cached))
+    except Exception as e:
+        log.warning(f"Discord widget cache read failed (non-fatal): {e}")
+
+    try:
+        r = requests.get(f"{DISCORD_API}/guilds/{GUILD_ID}/widget.json", timeout=8)
+        if r.status_code != 200:
+            result = {"enabled": False, "invite_url": invite_url}
+        else:
+            d = r.json()
+            result = {
+                "enabled": True,
+                "name": d.get("name"),
+                "presence_count": d.get("presence_count", 0),
+                "instant_invite": d.get("instant_invite") or invite_url,
+                # Cap the member list -- widget.json can return a large roster of
+                # everyone currently online, and this card only ever shows a
+                # handful as a "who's around" flavor, not a full member browser.
+                "members": [
+                    {"name": m.get("username"), "avatar_url": m.get("avatar_url"), "status": m.get("status")}
+                    for m in (d.get("members") or [])[:12]
+                ],
+            }
+    except Exception as e:
+        log.warning(f"Discord widget fetch failed (non-fatal, degrading to disabled state): {e}")
+        result = {"enabled": False, "invite_url": invite_url}
+
+    try:
+        redis_sync_client.setex(cache_key, DISCORD_WIDGET_CACHE_TTL_SECONDS, json.dumps(result))
+    except Exception as e:
+        log.warning(f"Discord widget cache write failed (non-fatal): {e}")
+    return jsonify(result)
 
 
 @web_bp.route("/api/clan/progress")

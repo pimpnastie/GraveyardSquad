@@ -267,6 +267,15 @@
         Member Since: {{ player.player_since }} ⓘ
     </div>
     {% endif %}
+    {% if linked_discord %}
+    <!-- idea: "connect the discord id with any information like their name
+         or picture" -- shown once a member has linked their Discord account
+         (see /link), sourced straight from Discord's own OAuth response. -->
+    <div style="margin-top:6px; font-size:12px; color:var(--dim); font-family:var(--font-mono); display:flex; align-items:center; gap:6px;">
+        <img src="{{ linked_discord.avatar_url }}" alt="" width="18" height="18" style="border-radius:50%;" loading="lazy">
+        <span>Discord: {{ linked_discord.name }}</span>
+    </div>
+    {% endif %}
 </div>
 
 <div class="container">
@@ -342,6 +351,41 @@
                     <span class="stat-val">{{ player.warDayWins | default(0) }}</span>
                 </div>
             </div>
+
+            <!-- Supercell's own season-history breakdown (leagueStatistics) -- this
+                 has ridden along in the raw CR API player object on every harvest
+                 for as long as this site has existed, but nothing ever rendered it. -->
+            {% if player.leagueStatistics %}
+            <div class="card">
+                <div class="card-title">🏆 Season Rankings
+                    <span style="cursor:help; font-size:12px; color:var(--dim); font-weight:normal;" title="Straight from Supercell's own season-history data, not something this site computes -- current season's peak, last season's final result, and your all-time best season.">ⓘ</span>
+                </div>
+                {% if player.leagueStatistics.currentSeason %}
+                <div class="stat-row">
+                    <span class="stat-label">This Season's Peak 🔝</span>
+                    <span class="stat-val" style="color: var(--warning);">{{ player.leagueStatistics.currentSeason.bestTrophies | default(player.leagueStatistics.currentSeason.trophies, true) | default('—') }}</span>
+                </div>
+                {% endif %}
+                {% if player.leagueStatistics.previousSeason %}
+                <div class="stat-row">
+                    <span class="stat-label">Last Season — Final 🏁</span>
+                    <span class="stat-val">{{ player.leagueStatistics.previousSeason.trophies | default('—') }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Last Season — Peak 🌟</span>
+                    <span class="stat-val">{{ player.leagueStatistics.previousSeason.bestTrophies | default('—') }}</span>
+                </div>
+                {% endif %}
+                {% if player.leagueStatistics.bestSeason %}
+                <div class="stat-row">
+                    <span class="stat-label">All-Time Best Season 👑</span>
+                    <span class="stat-val" style="color: var(--success);">
+                        {{ player.leagueStatistics.bestSeason.trophies | default('—') }}{% if player.leagueStatistics.bestSeason.id %} <span style="color:var(--dim); font-weight:normal; font-size:11px;">({{ player.leagueStatistics.bestSeason.id }})</span>{% endif %}
+                    </span>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
 
             <!-- ── PERSONAL BESTS + CLAN COMPARISON (ideas #23, #30, #35, #38) ── -->
             <div class="card">
@@ -531,9 +575,12 @@
             <div class="card">
                 <div class="card-title">⚖️ Compare With Another Member</div>
                 <div style="display:flex; gap:8px; margin-bottom:12px;">
-                    <input type="text" id="compareTagInput" class="db-textarea" style="min-height:auto; margin-bottom:0;" placeholder="Enter their tag, e.g. ABC123">
+                    <input type="text" id="compareTagInput" class="db-textarea" style="min-height:auto; margin-bottom:0;" placeholder="Enter their tag, e.g. ABC123" list="clan-member-datalist">
                     <button class="btn btn-save" style="flex:0 0 auto;" onclick="loadComparison('{{ player.tag | replace('#','') }}')">Compare</button>
                 </div>
+                <!-- Autofill: suggests every current clan member as you type, so you don't
+                     need to already know a teammate's tag by heart to compare against them. -->
+                <datalist id="clan-member-datalist"></datalist>
                 <div id="compareResult"></div>
             </div>
 
@@ -581,7 +628,7 @@
                 {% for a in player.achievements %}
                 <div class="achv-row">
                     <div class="achv-top">
-                        <span class="achv-name">{{ a.name }}{% if a.stars %}<span class="achv-stars">{% for _ in range(a.stars) %}★{% endfor %}</span>{% endif %}</span>
+                        <span class="achv-name">{{ a.name }}{% if a.info %} <span style="cursor:help; font-size:11px; color:var(--dim);" title="{{ a.info }}">ⓘ</span>{% endif %}{% if a.stars %}<span class="achv-stars">{% for _ in range(a.stars) %}★{% endfor %}</span>{% endif %}</span>
                         <span class="achv-progress-text">
                             {% if a.target %}{{ a.value | default(0) }} / {{ a.target }}{% else %}{{ a.value | default(0) }}{% endif %}
                         </span>
@@ -1229,6 +1276,22 @@ async function loadTrend7dChart() {
     } catch (e) { /* chart is a nice-to-have; fail silently */ }
 }
 
+// Autofill for the "Compare With Another Member" tag box: suggests every
+// current clan member (tag + name) via a native <datalist>, backed by the
+// small public /api/clan/members-lite endpoint rather than the full stats
+// API since this only needs tag/name pairs.
+async function populateCompareDatalist() {
+    var list = document.getElementById('clan-member-datalist');
+    if (!list) return;
+    try {
+        var res = await fetch('/api/clan/members-lite');
+        var members = await res.json();
+        list.innerHTML = (members || []).map(function(m) {
+            return '<option value="' + esc(m.tag || '') + '">' + esc(m.name || '') + '</option>';
+        }).join('');
+    } catch (e) { /* autofill is a nice-to-have; fail silently */ }
+}
+
 // ── Compare with another member (idea #25) ──────────────────────────────────────
 async function loadComparison(myTag) {
     var otherTag = document.getElementById('compareTagInput').value.trim().replace('#', '');
@@ -1388,10 +1451,11 @@ async function loadCardMastery(tag) {
     try {
         var res = await fetch('/api/player/' + tag.replace('#', '') + '/card-mastery');
         var d = await res.json();
-        var categories = Object.keys(d).sort();
+        var byCategory = d.by_category || {};
+        var categories = Object.keys(byCategory).sort();
         if (!categories.length) { el.innerHTML = '<span class="empty-note">No collection data available.</span>'; return; }
-        el.innerHTML = categories.map(function(cat) {
-            var c = d[cat];
+        var html = categories.map(function(cat) {
+            var c = byCategory[cat];
             var pct = c.total ? Math.round((c.maxed / c.total) * 100) : 0;
             return '<div class="usage-row">'
                 + '<span class="usage-name">' + esc(cat) + '</span>'
@@ -1399,6 +1463,37 @@ async function loadCardMastery(tag) {
                 + '<span class="usage-meta">' + esc(c.maxed) + ' / ' + esc(c.total) + ' maxed</span>'
                 + '</div>';
         }).join('');
+
+        // Rarity breakdown, most-duplicated card, total copies, avg elixir --
+        // all riding along on the CR API's own cards array (rarity/count/
+        // elixirCost), previously fetched into Mongo but never surfaced.
+        var byRarity = d.by_rarity || {};
+        var rarities = Object.keys(byRarity).sort();
+        if (rarities.length) {
+            html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid #1e2530;">'
+                + '<div style="font-size:12px; color:var(--dim); margin-bottom:6px;">By Rarity</div>'
+                + rarities.map(function(r) {
+                    var rc = byRarity[r];
+                    return '<span style="display:inline-block; background:#1e2530; border-radius:20px; padding:4px 10px; font-size:12px; margin:2px 4px 2px 0;">' + esc(r) + ': ' + rc.maxed + '/' + rc.total + '</span>';
+                }).join('')
+                + '</div>';
+        }
+
+        var extras = [];
+        if (d.most_duplicated_card && d.most_duplicated_card.name) {
+            extras.push('Most Copies Owned: <strong>' + esc(d.most_duplicated_card.name) + '</strong> (' + d.most_duplicated_card.count + ')');
+        }
+        if (d.total_card_copies) {
+            extras.push('Total Card Copies Owned: <strong>' + d.total_card_copies + '</strong>');
+        }
+        if (d.avg_elixir_cost != null) {
+            extras.push('Avg. Elixir Cost: <strong>' + d.avg_elixir_cost + '</strong>');
+        }
+        if (extras.length) {
+            html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid #1e2530; font-size:12px; color:var(--dim); line-height:1.8;">' + extras.join('<br>') + '</div>';
+        }
+
+        el.innerHTML = html;
     } catch (e) { el.innerHTML = '<span class="empty-note">Could not load card mastery.</span>'; }
 }
 
@@ -1488,6 +1583,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadRivalry({{ player.tag | tojson }});
     loadKudos({{ player.tag | tojson }});
     loadComments({{ player.tag | tojson }});
+    populateCompareDatalist();
     {% if own_profile %}
     loadNotifPrefs();
     {% endif %}

@@ -172,7 +172,7 @@ class ProfileView(discord.ui.View):
 
         e.add_field(name="⭐ Challenge Max Wins",  value=str(self.data.get("challengeMaxWins", 0)),   inline=True)
         e.add_field(name="🏟️ Tournament Cards",    value=str(self.data.get("tournamentCardsWon", 0)), inline=True)
-        e.add_field(name="🃏 Cards Found",         value=str(self.data.get("totalExpPoints", 0)),     inline=True)
+        e.add_field(name="🃏 Cards Found",         value=str(len(self.data.get("cards") or [])),      inline=True)
         return e
 
     # ── Helpers ───────────────────────────────────────────────────────────────
