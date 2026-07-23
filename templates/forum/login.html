@@ -1,0 +1,15 @@
+{% extends "_base.html" %}
+{% block title %}Log In{% endblock %}
+{% block content %}
+<h1 style="color:var(--f-bright); font-size:22px; margin:0 0 16px;">Log In</h1>
+<div class="f-card" style="max-width:360px;">
+  <form method="post" action="{{ url_for('forum_bp.forum_login', next=request.args.get('next', '')) }}">
+    <label class="f-label" for="login-username">Username</label>
+    <input class="f-input" type="text" id="login-username" name="username" value="{{ prefill_username }}" required autofocus>
+    <label class="f-label" for="login-password">Password</label>
+    <input class="f-input" type="password" id="login-password" name="password" required>
+    <div class="f-form-actions"><button type="submit" class="f-btn">Log In</button></div>
+  </form>
+  <div class="f-meta" style="margin-top:14px;">No account yet? <a href="{{ url_for('forum_bp.forum_register') }}">Register</a></div>
+</div>
+{% endblock %}

@@ -1,0 +1,17 @@
+{% extends "_base.html" %}
+{% block title %}Register{% endblock %}
+{% block content %}
+<h1 style="color:var(--f-bright); font-size:22px; margin:0 0 16px;">Register</h1>
+<div class="f-card" style="max-width:360px;">
+  <form method="post" action="{{ url_for('forum_bp.forum_register') }}">
+    <label class="f-label" for="reg-username">Username</label>
+    <input class="f-input" type="text" id="reg-username" name="username" maxlength="24" value="{{ prefill_username }}" required autofocus>
+    <label class="f-label" for="reg-password">Password</label>
+    <input class="f-input" type="password" id="reg-password" name="password" minlength="8" required>
+    <label class="f-label" for="reg-confirm">Confirm password</label>
+    <input class="f-input" type="password" id="reg-confirm" name="confirm" minlength="8" required>
+    <div class="f-form-actions"><button type="submit" class="f-btn">Create Account</button></div>
+  </form>
+  <div class="f-meta" style="margin-top:14px;">Already have an account? <a href="{{ url_for('forum_bp.forum_login') }}">Log in</a></div>
+</div>
+{% endblock %}

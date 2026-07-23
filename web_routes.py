@@ -446,6 +446,38 @@ def fetch_cr_api(endpoint: str, retries: int = 3, use_cache: bool = True) -> dic
             time.sleep(2 ** attempt)
     return None
 
+def fetch_cr_api_with_fallback(endpoint: str, retries: int = 3) -> tuple[dict | None, bool]:
+    """Like fetch_cr_api, but for endpoints that don't already have a dedicated
+    Mongo collection to fall back to (the base clan fetch, mainly -- player
+    fetches fall back to player_profiles directly, and war/river-race fetches
+    fall back to war_tracking/war_history directly, both at their own call
+    sites, since those collections already store a fuller equivalent).
+
+    Every successful live call is cached verbatim in config under
+    last_known_api::<endpoint>. On a failed live call, that cache is returned
+    instead so a page shows last-known real data instead of going blank --
+    matching the "last known" pattern already used by
+    data_harvester.py's _merge_leaderboard_entry() and the war-fame fallback
+    in api_public_leaderboards().
+
+    Returns (data, is_stale). is_stale is True only when the live call failed
+    and a cached fallback was used -- callers can surface that to the page
+    ("as of <date>") the same way stale Hall of Fame entries do.
+    """
+    data = fetch_cr_api(endpoint, retries=retries)
+    cache_id = f"last_known_api::{endpoint}"
+    if data:
+        db_sync["config"].update_one(
+            {"_id": cache_id},
+            {"$set": {"data": data, "cached_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        return data, False
+    cached = db_sync["config"].find_one({"_id": cache_id})
+    if cached and cached.get("data"):
+        return cached["data"], True
+    return None, False
+
 # Idea #236: several Analytics-tab routes (archetypes, tier-list, underused-gems,
 # hard-counters, matchup-breakdown, leaderboards) each scan/aggregate 2000-3000
 # battle_history docs in Python. Opening the Analytics tab once fires ALL of them
@@ -692,7 +724,18 @@ def render_sandboxed(template_str: str, **context) -> str:
 def get_player_analytical_data(tag):
     clean = clean_tag(tag)
     player = fetch_cr_api(f"players/%23{clean}")
-    if not player: return None
+    is_last_known_data = False
+    if not player:
+        # player_profiles already stores a near-complete copy of this exact
+        # CR API response (the harvester writes the raw {**profile_data, ...}
+        # spread on every cycle -- see data_harvester.py) -- fall back to it
+        # instead of returning None and 404ing/blanking the whole profile
+        # page over a transient live-API failure.
+        stored = db_sync["player_profiles"].find_one({"tag": f"#{clean}"})
+        if not stored:
+            return None
+        player = {k: v for k, v in stored.items() if k != "_id"}
+        is_last_known_data = True
     # Defensive: exclude _id (ObjectId isn't JSON-serializable) even though
     # this currently only reaches Jinja templates, not jsonify() directly —
     # same bug class as the config_backups crash above, cheap to prevent here
@@ -844,6 +887,7 @@ def get_player_analytical_data(tag):
         return (0, -frac)  # in-progress, closest-first
     player["achievements"] = sorted(achievements, key=_completion_key)
 
+    player["is_last_known_data"] = is_last_known_data
     return player
 
 
@@ -1103,9 +1147,13 @@ def healthz():
 
 @web_bp.route("/")
 def index():
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    # Falls back to the last successful live fetch (cached in config) instead
+    # of rendering an empty roster whenever the CR API is unreachable -- see
+    # fetch_cr_api_with_fallback(). clan_data_is_stale drives the "last known
+    # as of ..." note in roster.html rather than silently showing 0 members.
+    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
     if not clan_data:
-        log.error("Live clan fetch failed on index() — check CR_TOKEN / IP whitelist on this host.")
+        log.error("Live clan fetch failed on index() and no cached fallback exists yet — check CR_TOKEN / IP whitelist on this host.")
         clan_data = {"memberList": [], "memberCount": 0}
 
     # Idea #126: a "what changed since you were last here" banner for members
@@ -1169,6 +1217,7 @@ def index():
         beta_features_enabled=bot_settings.get("beta_features_enabled", False),
         recruiting_banner_enabled=bot_settings.get("recruiting_banner_enabled", False),
         member_count=clan_data.get("memberCount", 0),
+        clan_data_is_stale=clan_data_is_stale,
         clan_tracked_since=clan_tracked_since,
         # "Our Discord" card: Discord's own official embeddable widget iframe
         # (discord.com/widget?id=...), which the server owner already has —
@@ -1234,7 +1283,8 @@ def player_profile(tag):
 @web_bp.route("/admin")
 def admin_panel():
     if not is_admin(): return "Unauthorized", 403
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}")
+    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     db_players = {
         p["tag"].replace("#", ""): p
         for p in db_sync["player_profiles"].find({}, {"tag": 1, "admin_notes": 1, "strikes": 1})
@@ -1244,6 +1294,7 @@ def admin_panel():
     return render_sandboxed(
         get_template("admin"),
         clan_data=clan_data,
+        clan_data_is_stale=clan_data_is_stale,
         db_players=db_players,
         bot_settings=bot_settings,
         system_config=system_config,
@@ -1295,7 +1346,8 @@ def admin_export_csv():
         for p in latest_war.get("clan", {}).get("participants", [])
     }
 
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    clan_data, _ = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     # Default sort: highest trophies first -- a plain "whatever order the CR
     # API happened to return" isn't a useful default for something meant to
     # be opened and read in a spreadsheet.
@@ -1932,7 +1984,10 @@ def admin_api_roster():
     """
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
 
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    # Falls back to the last successful clan fetch instead of rendering an
+    # empty table when the CR API is briefly unreachable.
+    clan_data, _ = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     members = clan_data.get("memberList", [])
 
     # Current war participant data keyed by clean tag
@@ -1992,13 +2047,26 @@ def admin_api_roster():
     return jsonify(result)
 
 
+def _current_riverrace_with_fallback():
+    """currentriverrace already gets stored verbatim into war_tracking every
+    harvest cycle (see data_harvester.py) -- fall back to the latest stored
+    doc instead of erroring when the live call fails. Returns (data, is_stale)."""
+    data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    if data:
+        return data, False
+    stored = db_sync["war_tracking"].find_one({}, sort=[("harvest_time", -1)])
+    if stored:
+        return {k: v for k, v in stored.items() if k not in ("_id", "harvest_time")}, True
+    return None, False
+
+
 @web_bp.route("/admin/api/war")
 def admin_api_war():
     """Current River Race data."""
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    data, data_is_stale = _current_riverrace_with_fallback()
     if not data:
-        return jsonify({"error": "Could not fetch current war data from CR API."})
+        return jsonify({"error": "Could not fetch current war data from CR API, and no cached fallback exists yet."})
 
     # Idea #1: is today a War Day or a Training Day, plus decks remaining per
     # member — periodType comes straight from the CR API, decks_remaining is
@@ -2009,6 +2077,7 @@ def admin_api_war():
 
     # Idea #4: projected finish (see compute_projected_finish for the formula).
     data["projected_finish"] = compute_projected_finish(data)
+    data["is_stale"] = data_is_stale
 
     return jsonify(data)
 
@@ -2020,9 +2089,9 @@ def admin_api_war_day_breakdown():
     the current-race endpoint (one entry per completed period this race).
     """
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    data, data_is_stale = _current_riverrace_with_fallback()
     if not data:
-        return jsonify({"error": "Could not fetch current war data from CR API."})
+        return jsonify({"error": "Could not fetch current war data from CR API, and no cached fallback exists yet."})
     own_tag = f"#{CLAN_TAG}"
     logs = data.get("periodLogs", [])
     breakdown = []
@@ -2033,7 +2102,7 @@ def admin_api_war_day_breakdown():
             "day": i + 1,
             "fame": (own or {}).get("clan", {}).get("fame", 0) if own else 0,
         })
-    return jsonify({"days": breakdown, "current_period_index": data.get("periodIndex")})
+    return jsonify({"days": breakdown, "current_period_index": data.get("periodIndex"), "is_stale": data_is_stale})
 
 
 @web_bp.route("/admin/api/war/scouting")
@@ -2043,15 +2112,17 @@ def admin_api_war_scouting():
     calls (one per rival clan), so admin-gated per the project's existing rule.
     """
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
+    war_data, war_data_is_stale = _current_riverrace_with_fallback()
     if not war_data:
-        return jsonify({"error": "No active race to scout."})
+        return jsonify({"error": "No active race to scout, and no cached fallback exists yet."})
     own_tag = f"#{CLAN_TAG}"
     rival_summaries = []
     for c in war_data.get("clans", []):
         tag = c.get("tag", "")
         if tag == own_tag or not tag:
             continue
+        # Rival clans are external, unaffiliated clans with no Mongo snapshot
+        # of their own here -- appropriately live-only, unlike our own clan's data.
         detail = fetch_cr_api(f"clans/{tag.replace('#', '%23')}")
         members = (detail or {}).get("memberList", [])
         avg_trophies = round(sum(m.get("trophies", 0) for m in members) / len(members)) if members else None
@@ -2060,7 +2131,7 @@ def admin_api_war_scouting():
             "member_count": len(members), "avg_trophies": avg_trophies,
             "current_fame": c.get("fame", 0),
         })
-    return jsonify({"rivals": rival_summaries})
+    return jsonify({"rivals": rival_summaries, "is_stale": war_data_is_stale})
 
 
 @web_bp.route("/admin/api/war/calendar")
@@ -2249,7 +2320,11 @@ def admin_rival_clan_snapshot(tag):
         return jsonify({"error": "Clan not found."}), 404
     members = rival.get("memberList", []) or []
     avg_trophies = round(sum(m.get("trophies", 0) for m in members) / len(members)) if members else 0
-    our_clan = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    # Our own clan's side has a stored fallback (unlike the rival above, an
+    # external clan with nothing to fall back to) -- use it so a transient CR
+    # API hiccup doesn't make OUR side of the comparison look worse than theirs.
+    our_clan, _ = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    our_clan = our_clan or {}
     our_members = our_clan.get("memberList", []) or []
     our_avg_trophies = round(sum(m.get("trophies", 0) for m in our_members) / len(our_members)) if our_members else 0
     return jsonify({
@@ -2420,10 +2495,20 @@ def admin_api_war_previous():
     """Most recent completed River Race from the log."""
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     data = fetch_cr_api(f"clans/%23{CLAN_TAG}/riverracelog?limit=1")
-    if not data:
-        return jsonify({"standings": []})
-    items = data.get("items", [])
-    return jsonify(items[0] if items else {"standings": []})
+    items = data.get("items", []) if data else []
+    if items:
+        return jsonify(items[0])
+    # Live riverracelog call failed (or came back empty) -- war_history already
+    # stores exactly this kind of completed-race data every time backfill_missed_wars
+    # runs, so fall back to the most recent race there instead of an empty result.
+    last_race = db_sync["war_history"].find_one(
+        {}, sort=[("data.seasonId", -1), ("data.sectionIndex", -1)]
+    )
+    if last_race and last_race.get("data"):
+        result = dict(last_race["data"])
+        result["is_stale"] = True
+        return jsonify(result)
+    return jsonify({"standings": []})
 
 
 @web_bp.route("/admin/api/war/aggregate")
@@ -2860,7 +2945,8 @@ def admin_analytics_overview():
     """Clan-wide headline numbers for the Analytics tab's stat row."""
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
 
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     members = clan_data.get("memberList", [])
     member_count = len(members)
 
@@ -2905,6 +2991,7 @@ def admin_analytics_overview():
         "min_clan_size": min_clan_size,
         "boat_battles_logged": boat_total,
         "boat_battle_win_rate": boat_win_rate,
+        "is_stale": clan_data_is_stale,
     })
 
 
@@ -2923,7 +3010,8 @@ def admin_analytics_leaderboards():
             return jsonify(cached)
     _t0 = time.monotonic()
 
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    clan_data, _ = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     members = clan_data.get("memberList", [])
 
     top_donators = sorted(members, key=lambda m: m.get("donations", 0), reverse=True)[:10]
@@ -4105,7 +4193,8 @@ def clan_card_png():
     rather than crashing the app."""
     if not _PIL_AVAILABLE:
         return "Clan card image generation requires Pillow (see requirements.txt).", 501
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    clan_data, _ = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     members = clan_data.get("memberList", []) or []
     member_count = clan_data.get("memberCount", len(members))
     avg_trophies = round(sum(m.get("trophies", 0) for m in members) / len(members)) if members else 0
@@ -4372,7 +4461,8 @@ def public_api_clan():
     be called from arbitrary third-party frontends/scripts."""
     if rate_limited("public_api", max_attempts=60, window_seconds=600):
         return jsonify({"error": "Rate limit exceeded. Max 60 requests per 10 minutes."}), 429
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     members = clan_data.get("memberList", [])
     resp = jsonify({
         "name": clan_data.get("name"),
@@ -4382,6 +4472,7 @@ def public_api_clan():
         "member_count": len(members),
         "required_trophies": clan_data.get("requiredTrophies"),
         "clan_war_trophies": clan_data.get("clanWarTrophies"),
+        "is_stale": clan_data_is_stale,
         "members": [
             {
                 "name": m.get("name"),
@@ -4623,7 +4714,8 @@ def api_clan_members_lite():
     for). Public/no-auth since a member's tag and name are already visible
     to any logged-out visitor on the roster page itself; relies on
     fetch_cr_api()'s own cache rather than adding a separate rate limit."""
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    clan_data, _ = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     return jsonify([
         {"tag": m.get("tag", "").replace("#", ""), "name": m.get("name", "")}
         for m in clan_data.get("memberList", [])
@@ -4694,12 +4786,14 @@ def api_clan_progress():
     """Idea #106: clan-wide progress bar toward a shared monthly donation goal,
     for the roster page. Goal is configurable via bot_settings.monthly_donation_goal
     (default 50,000, a reasonable round number for a ~50-member clan)."""
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     total_donations = sum(m.get("donations", 0) for m in clan_data.get("memberList", []))
     goal = int((db_sync["config"].find_one({"_id": "bot_settings"}) or {}).get("monthly_donation_goal", 50000))
     return jsonify({
         "total_donations": total_donations, "goal": goal,
         "pct": round(min(total_donations / goal, 1.0) * 100, 1) if goal else 0,
+        "is_stale": clan_data_is_stale,
     })
 
 
@@ -4730,15 +4824,35 @@ def api_public_leaderboards():
     the admin-only analytics leaderboard — members who've set leaderboard_optout
     are excluded entirely rather than just anonymized."""
     optout_tags = {p["tag"] for p in db_sync["player_profiles"].find({"leaderboard_optout": True}, {"tag": 1})}
-    clan_data = fetch_cr_api(f"clans/%23{CLAN_TAG}") or {}
+    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
     members = [m for m in clan_data.get("memberList", []) if m.get("tag") not in optout_tags]
     top_trophies = sorted(members, key=lambda m: m.get("trophies", 0), reverse=True)[:10]
+
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace") or {}
     fame_rows = [p for p in war_data.get("clan", {}).get("participants", []) if p.get("tag") not in optout_tags]
+    fame_is_last_race = False
+    if not any(p.get("fame", 0) for p in fame_rows):
+        # Fame resets to 0 for everyone between war days -- most of the week,
+        # this river race response is genuinely all zeroes, not broken. Rather
+        # than show a wall of 0s, fall back to the most recently *completed*
+        # race, same data already used for the Boat Battle Leaderboard.
+        last_race = db_sync["war_history"].find_one(
+            {}, sort=[("data.seasonId", -1), ("data.sectionIndex", -1)]
+        )
+        if last_race:
+            race_clan = (last_race.get("data") or {}).get("clan") or {}
+            race_participants = [p for p in race_clan.get("participants", []) if p.get("tag") not in optout_tags]
+            if any(p.get("fame", 0) for p in race_participants):
+                fame_rows = race_participants
+                fame_is_last_race = True
+
     top_fame = sorted(fame_rows, key=lambda p: p.get("fame", 0), reverse=True)[:10]
     return jsonify({
         "top_trophies": [{"name": m.get("name"), "value": m.get("trophies", 0)} for m in top_trophies],
+        "top_trophies_is_stale": clan_data_is_stale,
         "top_fame": [{"name": p.get("name"), "value": p.get("fame", 0)} for p in top_fame],
+        "top_fame_is_last_race": fame_is_last_race,
     })
 
 
@@ -5159,11 +5273,16 @@ def family_page():
         return "The clan family page isn't enabled yet — an admin can turn it on in Settings once there's a second linked clan.", 404
     family_tags = bot_settings.get("family_clan_tags", []) or []
     clans = []
+    any_stale = False
     for t in family_tags:
-        data = fetch_cr_api(f"clans/%23{clean_tag(t)}")
+        # fetch_cr_api_with_fallback caches per-endpoint, so each family clan
+        # tag gets its own independent last-known snapshot -- one clan's live
+        # fetch failing no longer silently drops it from the page entirely.
+        data, is_stale = fetch_cr_api_with_fallback(f"clans/%23{clean_tag(t)}")
         if data:
             clans.append(data)
-    return render_sandboxed(get_template("family"), clans=clans, is_admin=is_admin())
+            any_stale = any_stale or is_stale
+    return render_sandboxed(get_template("family"), clans=clans, is_admin=is_admin(), clan_data_is_stale=any_stale)
 
 
 @web_bp.route("/alumni")

@@ -26,7 +26,12 @@
 <div class="topbar"><div class="topbar-title">☠ Squad Family</div><a href="/" class="back-link">← Back to Roster</a></div>
 <div class="container">
     <h1>Clan Family</h1>
-    <p style="color:var(--dim)">Idea #198 — a combined view across all linked clans in the family.</p>
+    <p style="color:var(--dim)">A combined view across all linked clans in the family.</p>
+    {% if clan_data_is_stale %}
+    <div style="background:rgba(241,196,15,0.1); border:1px solid rgba(241,196,15,0.4); border-radius:8px; padding:10px 16px; margin-bottom:16px; color:#f1c40f; font-size:13px;">
+        ⚠️ Couldn't reach the Clash Royale API for at least one linked clan just now — showing last known data for it instead.
+    </div>
+    {% endif %}
     <div class="clan-grid">
         {% for c in clans %}
         <div class="clan-card">

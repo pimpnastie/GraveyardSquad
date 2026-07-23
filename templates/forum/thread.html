@@ -1,0 +1,64 @@
+{% extends "_base.html" %}
+{% block title %}{{ thread.title }}{% endblock %}
+{% block content %}
+{% if category %}
+<div class="f-meta" style="margin-bottom:8px;"><a href="{{ url_for('forum_bp.forum_category', category_id=category._id) }}">← {{ category.name }}</a></div>
+{% endif %}
+<div class="f-row" style="margin-bottom:16px;">
+  <h1 style="color:var(--f-bright); font-size:22px; margin:0;">
+    {{ thread.title }}
+    {% if thread.pinned %}<span class="f-pill f-pill-pinned">pinned</span>{% endif %}
+    {% if thread.locked %}<span class="f-pill f-pill-locked">locked</span>{% endif %}
+  </h1>
+  {% if user and user.is_admin %}
+  <div style="display:flex; gap:6px;">
+    <form method="post" action="{{ url_for('forum_bp.forum_pin_thread', thread_id=thread._id) }}">
+      <input type="hidden" name="csrf_token" value="{{ forum_csrf_token() }}">
+      <button type="submit" class="f-btn f-btn-outline f-btn-sm">{{ 'Unpin' if thread.pinned else 'Pin' }}</button>
+    </form>
+    <form method="post" action="{{ url_for('forum_bp.forum_lock_thread', thread_id=thread._id) }}">
+      <input type="hidden" name="csrf_token" value="{{ forum_csrf_token() }}">
+      <button type="submit" class="f-btn f-btn-outline f-btn-sm">{{ 'Unlock' if thread.locked else 'Lock' }}</button>
+    </form>
+    <form method="post" action="{{ url_for('forum_bp.forum_delete_thread', thread_id=thread._id) }}" onsubmit="return confirm('Delete this whole thread?');">
+      <input type="hidden" name="csrf_token" value="{{ forum_csrf_token() }}">
+      <button type="submit" class="f-btn f-btn-outline f-btn-sm">Delete</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<div class="f-card">
+  {% for p in posts %}
+  <div class="f-post">
+    <div class="f-post-author">{{ p.author_username }}<div class="f-meta" style="font-weight:normal;">{{ p.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</div></div>
+    <div class="f-post-body">
+      {{ p.body }}
+      {% if user and user.is_admin %}
+      <form method="post" action="{{ url_for('forum_bp.forum_delete_post', post_id=p._id) }}" onsubmit="return confirm('Delete this post?');" style="margin-top:8px;">
+        <input type="hidden" name="csrf_token" value="{{ forum_csrf_token() }}">
+        <button type="submit" class="f-btn f-btn-outline f-btn-sm">Delete post</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if user %}
+  {% if not thread.locked or user.is_admin %}
+  <div class="f-card">
+    <div class="f-list-title" style="margin-bottom:8px;">Reply</div>
+    <form method="post" action="{{ url_for('forum_bp.forum_reply', thread_id=thread._id) }}">
+      <input type="hidden" name="csrf_token" value="{{ forum_csrf_token() }}">
+      <textarea class="f-textarea" name="body" maxlength="10000" required placeholder="Write a reply…"></textarea>
+      <div class="f-form-actions"><button type="submit" class="f-btn">Post Reply</button></div>
+    </form>
+  </div>
+  {% else %}
+  <div class="f-meta">This thread is locked — no new replies.</div>
+  {% endif %}
+{% else %}
+<div class="f-meta"><a href="{{ url_for('forum_bp.forum_login') }}">Log in</a> to reply.</div>
+{% endif %}
+{% endblock %}

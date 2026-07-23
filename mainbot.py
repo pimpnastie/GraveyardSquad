@@ -14,6 +14,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from web_routes import web_bp
 from data_harvester import start_harvester_loop
 
+# Standalone friend forum -- own blueprint, own database, own auth, own
+# templates (see forum_routes.py's module docstring). Registered separately
+# from web_bp on purpose so the two stay independent.
+from forum_routes import forum_bp
+
 # ---------------------------------------------------------------------------
 # 1. SETUP & ENV VARS
 # ---------------------------------------------------------------------------
@@ -47,6 +52,10 @@ app.config.update(
 
 # Register all web routes from web_routes.py
 app.register_blueprint(web_bp)
+
+# Register the standalone forum, mounted at /forum -- a separate blueprint
+# so it shares nothing (auth, collections, templates) with web_bp above.
+app.register_blueprint(forum_bp)
 
 # Idea #188's custom 404/500 error pages now live in web_routes.py, registered
 # on web_bp via @web_bp.app_errorhandler so they apply to this app (and any

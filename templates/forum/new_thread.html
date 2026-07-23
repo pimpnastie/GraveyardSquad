@@ -1,0 +1,17 @@
+{% extends "_base.html" %}
+{% block title %}New Thread{% endblock %}
+{% block content %}
+<div class="f-meta" style="margin-bottom:8px;"><a href="{{ url_for('forum_bp.forum_category', category_id=category._id) }}">← {{ category.name }}</a></div>
+<h1 style="color:var(--f-bright); font-size:22px; margin:0 0 16px;">New Thread</h1>
+
+<div class="f-card">
+  <form method="post" action="{{ url_for('forum_bp.forum_new_thread', category_id=category._id) }}">
+    <input type="hidden" name="csrf_token" value="{{ forum_csrf_token() }}">
+    <label class="f-label" for="thread-title">Title</label>
+    <input class="f-input" type="text" id="thread-title" name="title" maxlength="150" value="{{ prefill_title }}" required>
+    <label class="f-label" for="thread-body">First post</label>
+    <textarea class="f-textarea" id="thread-body" name="body" maxlength="10000" required>{{ prefill_body }}</textarea>
+    <div class="f-form-actions"><button type="submit" class="f-btn">Post Thread</button></div>
+  </form>
+</div>
+{% endblock %}

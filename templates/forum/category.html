@@ -1,0 +1,38 @@
+{% extends "_base.html" %}
+{% block title %}{{ category.name }}{% endblock %}
+{% block content %}
+<div class="f-meta" style="margin-bottom:8px;"><a href="{{ url_for('forum_bp.forum_index') }}">← Categories</a></div>
+<div class="f-row" style="margin-bottom:16px;">
+  <h1 style="color:var(--f-bright); font-size:22px; margin:0;">{{ category.name }}</h1>
+  {% if user %}
+  <a href="{{ url_for('forum_bp.forum_new_thread', category_id=category._id) }}" class="f-btn">New Thread</a>
+  {% endif %}
+</div>
+{% if category.description %}<div class="f-meta" style="margin-bottom:12px;">{{ category.description }}</div>{% endif %}
+
+<div class="f-card">
+  {% if threads %}
+    {% for t in threads %}
+    <div class="f-list-item">
+      <div>
+        <div class="f-list-title">
+          <a href="{{ url_for('forum_bp.forum_thread', thread_id=t._id) }}">{{ t.title }}</a>
+          {% if t.pinned %}<span class="f-pill f-pill-pinned">pinned</span>{% endif %}
+          {% if t.locked %}<span class="f-pill f-pill-locked">locked</span>{% endif %}
+        </div>
+        <div class="f-meta">Started by {{ t.author_username }}</div>
+      </div>
+      <div class="f-meta" style="text-align:right;">
+        {{ t.post_count }} post{{ 's' if t.post_count != 1 else '' }}<br>
+        last activity {{ t.last_post_at.strftime('%Y-%m-%d %H:%M') if t.last_post_at else '—' }} UTC
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="f-empty">No threads yet.{% if user %} Start the first one.{% endif %}</div>
+  {% endif %}
+</div>
+{% if not user %}
+<div class="f-meta"><a href="{{ url_for('forum_bp.forum_login') }}">Log in</a> to start a thread.</div>
+{% endif %}
+{% endblock %}

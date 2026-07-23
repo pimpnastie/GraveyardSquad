@@ -244,9 +244,17 @@
     <a href="/" class="back-link" style="margin-left:16px;">← Back to Roster</a>
 </div>
 
-<button id="backToTopBtn" class="back-to-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="Back to top" title="Back to top">↑</button>
+<button id="backToTopBtn" class="back-to-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="Back to top">↑</button>
 
 <main id="main-content">
+
+{% if player.is_last_known_data %}
+<div class="container" style="padding-top:16px;">
+    <div style="background:rgba(241,196,15,0.1); border:1px solid rgba(241,196,15,0.4); border-radius:8px; padding:12px 18px; margin-bottom:0; color:#f1c40f; font-size:13px;">
+        ⚠️ Couldn't reach the Clash Royale API just now — showing this player's last known stats instead of live data.
+    </div>
+</div>
+{% endif %}
 
 <div class="hero">
     <h1 class="hero-name">
@@ -602,7 +610,7 @@
                 {% if player.badges %}
                 <div class="badge-grid">
                     {% for b in player.badges %}
-                    <div class="badge-chip" title="{{ b.name | replace('_', ' ') | title }}">
+                    <div class="badge-chip">
                         <div class="badge-icon-wrap">
                             {% if b.iconUrls and b.iconUrls.large %}
                                 <img class="badge-icon" src="{{ b.iconUrls.large }}" alt="{{ b.name }}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
@@ -708,7 +716,7 @@
                 <div id="customBadgeDisplay" style="margin-top:8px; font-size:12px; color:var(--dim);"></div>
                 <label style="display:flex; align-items:center; gap:6px; margin-top:10px; font-size:12px; color:var(--dim); cursor:pointer;">
                     <input type="checkbox" id="leaderboardOptout" onchange="saveLeaderboardOptout('{{ player.tag }}')">
-                    Hide me from public leaderboards (idea #108)
+                    Hide me from public leaderboards
                 </label>
             </div>
 
@@ -951,7 +959,7 @@ function buildCardChip(card) {
         ? `<img class="card-img" src="${esc(url)}" alt="${esc(name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">`
           + `<span class="card-img-placeholder" style="display:none">🃏</span>`
         : `<span class="card-img-placeholder">🃏</span>`;
-    return `<div class="card-chip" title="${esc(name)}">
+    return `<div class="card-chip">
         <div class="card-img-wrap">${imgHtml}</div>
         <div class="card-chip-name">${esc(name)}</div>
     </div>`;

@@ -1,0 +1,47 @@
+{% extends "_base.html" %}
+{% block title %}Categories{% endblock %}
+{% block content %}
+<div class="f-row" style="margin-bottom:16px;">
+  <h1 style="color:var(--f-bright); font-size:22px; margin:0;">Categories</h1>
+</div>
+
+<div class="f-card">
+  {% if categories %}
+    {% for cat in categories %}
+    <div class="f-list-item">
+      <div>
+        <div class="f-list-title"><a href="{{ url_for('forum_bp.forum_category', category_id=cat._id) }}">{{ cat.name }}</a></div>
+        {% if cat.description %}<div class="f-meta">{{ cat.description }}</div>{% endif %}
+      </div>
+      <div style="text-align:right;">
+        <div class="f-meta">{{ cat.thread_count }} thread{{ 's' if cat.thread_count != 1 else '' }}</div>
+        {% if user and user.is_admin %}
+        <form method="post" action="{{ url_for('forum_bp.forum_delete_category', category_id=cat._id) }}" onsubmit="return confirm('Delete this category and every thread in it?');" style="margin-top:4px;">
+          <input type="hidden" name="csrf_token" value="{{ forum_csrf_token() }}">
+          <button type="submit" class="f-btn f-btn-outline f-btn-sm">Delete</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="f-empty">No categories yet.{% if user and user.is_admin %} Create the first one below.{% endif %}</div>
+  {% endif %}
+</div>
+
+{% if user and user.is_admin %}
+<div class="f-card">
+  <div class="f-list-title" style="margin-bottom:8px;">New Category</div>
+  <form method="post" action="{{ url_for('forum_bp.forum_new_category') }}">
+    <input type="hidden" name="csrf_token" value="{{ forum_csrf_token() }}">
+    <label class="f-label" for="cat-name">Name</label>
+    <input class="f-input" type="text" id="cat-name" name="name" maxlength="60" required>
+    <label class="f-label" for="cat-desc">Description (optional)</label>
+    <input class="f-input" type="text" id="cat-desc" name="description" maxlength="200">
+    <div class="f-form-actions"><button type="submit" class="f-btn">Create Category</button></div>
+  </form>
+</div>
+{% elif not user %}
+<div class="f-meta">Have an account? <a href="{{ url_for('forum_bp.forum_login') }}">Log in</a> to post. New here? <a href="{{ url_for('forum_bp.forum_register') }}">Register</a>.</div>
+{% endif %}
+{% endblock %}

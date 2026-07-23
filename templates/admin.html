@@ -283,6 +283,15 @@
 <!-- Idea #70: maintenance-mode-left-on warning -->
 <div id="maintenance-warning-banner" style="display:none; background:rgba(255,61,113,0.1); border-bottom:1px solid var(--err); color:var(--err); padding:10px 24px; font-size:13px; font-family:var(--font-mono);"></div>
 
+<!-- Shown when the live clan fetch failed on this page load and the clan-derived
+     cards below (roster tab, analytics headline stats) are from the last
+     successful fetch instead -- see fetch_cr_api_with_fallback() in web_routes.py. -->
+{% if clan_data_is_stale %}
+<div style="background:rgba(241,196,15,0.1); border-bottom:1px solid rgba(241,196,15,0.4); color:#f1c40f; padding:10px 24px; font-size:13px; font-family:var(--font-mono);">
+  ⚠️ Couldn't reach the Clash Royale API just now — clan-derived cards below are showing last known data.
+</div>
+{% endif %}
+
 <div class="shell">
   <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleSidebar(false)"></div>
   <nav class="sidebar" id="adminSidebar">
@@ -363,7 +372,7 @@
           <span id="diag-spin">↻</span> Refresh
         </button>
         <label style="font-size:12px; color:var(--dim); display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" id="diag-auto-refresh" onchange="toggleDiagAutoRefresh()"> Auto-refresh every 30s (idea #68)
+          <input type="checkbox" id="diag-auto-refresh" onchange="toggleDiagAutoRefresh()"> Auto-refresh every 30s
         </label>
         <span class="last-refresh" id="diag-last-refresh">Never refreshed</span>
       </div>
@@ -407,27 +416,27 @@
       <div class="section-label">Security &amp; Reliability (section 9)</div>
       <div class="diag-grid">
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">🔐 Secret Rotation (idea #160)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">🔐 Secret Rotation</div></div>
           <div class="diag-body">
             <div id="secret-rotation-list" style="font-size:12px;">Loading…</div>
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">💾 Config Backups (idea #152)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">💾 Config Backups</div></div>
           <div class="diag-body">
             <div id="config-backups-list" style="font-size:12px;">Loading…</div>
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">📡 CR API Health (idea #156/#157)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">📡 CR API Health</div></div>
           <div class="diag-body" id="cr-api-health"></div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">🐢 Slow Queries (idea #239)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">🐢 Slow Queries</div></div>
           <div class="diag-body" id="body-slow-queries"></div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">🆘 Break-Glass Recovery (idea #158)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">🆘 Break-Glass Recovery</div></div>
           <div class="diag-body" style="font-size:12px; color:var(--dim); line-height:1.6;">
             If <code>MASTER_ADMIN_ID</code> is ever lost or all admin accounts are locked out, recovery requires direct Mongo access:<br>
             <code style="display:block; background:#0b0c10; padding:8px; border-radius:6px; margin-top:6px; color:#ddd;">db.config.updateOne({_id:"system_config"}, {$addToSet:{admin_user_ids:"&lt;your-discord-id&gt;"}}, {upsert:true})</code>
@@ -535,8 +544,8 @@
         <div class="stat-card" id="ov-inactive"><div class="stat-label">Inactive Members</div><div class="stat-value">—</div><div class="stat-note">0 donations this season</div></div>
         <div class="stat-card" id="ov-battles"><div class="stat-label">Battles Logged</div><div class="stat-value">—</div><div class="stat-note">All-time harvested</div></div>
         <div class="stat-card" id="ov-winrate"><div class="stat-label">Clan Win Rate</div><div class="stat-value">—</div><div class="stat-note">Across all logged battles</div></div>
-        <div class="stat-card" id="ov-strength"><div class="stat-label">Clan Strength</div><div class="stat-value">—</div><div class="stat-note">Idea #5</div></div>
-        <div class="stat-card" id="ov-boat"><div class="stat-label">Boat Battles</div><div class="stat-value">—</div><div class="stat-note">Idea #7</div></div>
+        <div class="stat-card" id="ov-strength"><div class="stat-label">Clan Strength</div><div class="stat-value">—</div><div class="stat-note">Minimum size check</div></div>
+        <div class="stat-card" id="ov-boat"><div class="stat-label">Boat Battles</div><div class="stat-value">—</div><div class="stat-note">Boat battle activity</div></div>
       </div>
 
       <div class="section-label">Leaderboards</div>
@@ -558,12 +567,12 @@
           <div class="diag-body" id="lb-warfame"></div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">⚡ Fame-Per-Deck Efficiency (idea #10)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">⚡ Fame-Per-Deck Efficiency</div></div>
           <div class="diag-body" id="lb-fame-efficiency"></div>
         </div>
       </div>
 
-      <div class="section-label">Clan Wars 2 Weekly Score (idea #11)</div>
+      <div class="section-label">Clan Wars 2 Weekly Score</div>
       <div class="diag-card" style="padding:16px;">
         <canvas id="cw2TrendChart" height="80"></canvas>
       </div>
@@ -626,30 +635,30 @@
       <div class="section-label">Card Meta &amp; Deck Intelligence</div>
       <div class="diag-grid">
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">🎖️ In-House Tier List (idea #225)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">🎖️ In-House Tier List</div></div>
           <div class="diag-body" id="tier-list-content"><span style="color:var(--dim); font-size:12px;">Loading…</span></div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">💎 Underused Gems (idea #229)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">💎 Underused Gems</div></div>
           <div class="diag-body" id="underused-gems-content"><span style="color:var(--dim); font-size:12px;">Loading…</span></div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">😤 Cards We Struggle Against (idea #223)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">😤 Cards We Struggle Against</div></div>
           <div class="diag-body" id="hard-counters-content"><span style="color:var(--dim); font-size:12px;">Loading…</span></div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">⚔️ Win Rate by Matchup Type (idea #226)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">⚔️ Win Rate by Matchup Type</div></div>
           <div class="diag-body" id="matchup-breakdown-content"><span style="color:var(--dim); font-size:12px;">Loading…</span></div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">📸 Season Meta Snapshot (idea #228)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">📸 Season Meta Snapshot</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
             <button class="btn-refresh" onclick="takeMetaSnapshot()">📸 Snapshot Current Meta</button>
             <div id="meta-snapshot-diff"><span style="color:var(--dim); font-size:12px;">No comparison yet.</span></div>
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">🥇 Best Pilots for a Card (idea #220)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">🥇 Best Pilots for a Card</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
             <div style="display:flex; gap:8px;">
               <input type="text" id="pilot-card-input" class="form-input" placeholder="Card name, e.g. Hog Rider">
@@ -659,7 +668,7 @@
           </div>
         </div>
         <div class="diag-card" style="grid-column: 1 / -1;">
-          <div class="diag-card-header"><div class="diag-card-title">🛡️ Counter-Pick / Scrim Prep (idea #216/#219)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">🛡️ Counter-Pick / Scrim Prep</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin:0;">Enter cards the opponent is known to run (comma-separated) to get counter suggestions and the clan's best-performing decks historically against similar opponents.</p>
             <div style="display:flex; gap:8px;">
@@ -728,7 +737,7 @@
           <button class="btn-refresh" onclick="handleCustomCSVExport()" style="border-color:var(--ok); color:var(--ok); background:rgba(0,224,150,0.08);">
             📥 Generate &amp; Download CSV
           </button>
-          <button class="btn-refresh" onclick="handleCustomXLSXExport()" title="Idea #245: styled export — highlights slackers/top donators" style="border-color:#1d6f42; color:#1d6f42; background:rgba(29,111,66,0.08);">
+          <button class="btn-refresh" onclick="handleCustomXLSXExport()" title="Styled export — highlights slackers/top donators" style="border-color:#1d6f42; color:#1d6f42; background:rgba(29,111,66,0.08);">
             📊 Generate &amp; Download Excel
           </button>
         </div>
@@ -828,7 +837,7 @@
       </div>
 
       <!-- Idea #206/#211: real global scouting lookup (live CR API), not just a filter over the current roster -->
-      <div class="section-label">Scout a Player (idea #206/#211)</div>
+      <div class="section-label">Scout a Player</div>
       <div class="diag-card" style="padding:16px; margin-bottom:20px;">
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
           <input type="text" id="scout-tag-input" class="form-input" placeholder="Player tag, e.g. ABC123" style="width:200px;" list="clan-tag-datalist">
@@ -838,7 +847,7 @@
       </div>
 
       <!-- Idea #208 -->
-      <div class="section-label">Rival Clan Snapshot (idea #208)</div>
+      <div class="section-label">Rival Clan Snapshot</div>
       <div class="diag-card" style="padding:16px; margin-bottom:20px;">
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
           <input type="text" id="rival-tag-input" class="form-input" placeholder="Rival clan tag, e.g. XYZ789" style="width:200px;">
@@ -848,7 +857,7 @@
       </div>
 
       <!-- Idea #209 -->
-      <div class="section-label">Recruiting Message Templates (idea #209)</div>
+      <div class="section-label">Recruiting Message Templates</div>
       <div class="diag-card" style="padding:16px; margin-bottom:20px;">
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
           <input type="text" id="template-name" class="form-input" placeholder="Template name" style="width:160px;">
@@ -859,7 +868,7 @@
       </div>
 
       <!-- Idea #212 -->
-      <div class="section-label">Applications (idea #212)</div>
+      <div class="section-label">Applications</div>
       <div class="diag-card" style="padding:16px; margin-bottom:20px;">
         <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-top:0;">Submitted via the public <code>/apply</code> form instead of raw Discord DMs.</p>
         <div id="applications-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
@@ -889,7 +898,7 @@
       </div>
 
       <!-- Idea #125: buddy/mentor assignment for brand-new members — manual, not auto-matched -->
-      <div class="section-label">Mentor Pairings (idea #125)</div>
+      <div class="section-label">Mentor Pairings</div>
       <div class="diag-card" style="padding:16px;">
         <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-top:0;">Pair a new member with an existing one for onboarding questions. Assignment is manual — a person is a better judge of a good match than a heuristic.</p>
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
@@ -904,7 +913,7 @@
       <div class="section-label">Clan History &amp; Spotlight</div>
       <div class="diag-grid" style="margin-bottom:20px;">
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Member Spotlight (idea #193)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Member Spotlight</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
             <input type="text" id="spotlight-tag" class="form-input" placeholder="Player tag" list="clan-tag-datalist" oninput="autofillSpotlightName()">
             <input type="text" id="spotlight-name" class="form-input" placeholder="Display name" list="clan-name-datalist">
@@ -914,7 +923,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Add Milestone (idea #192/#196)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Add Milestone</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:8px;">
             <input type="text" id="milestone-title" class="form-input" placeholder="Title, e.g. Biggest War Win">
             <input type="date" id="milestone-date" class="form-input">
@@ -925,7 +934,7 @@
       </div>
 
       <!-- Idea #202: cross-clan friendly-battle results -->
-      <div class="section-label">Friendly Scrims (idea #202)</div>
+      <div class="section-label">Friendly Scrims</div>
       <div class="diag-card" style="padding:16px; margin-bottom:20px;">
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
           <input type="text" id="scrim-opponent" class="form-input" placeholder="Opponent clan name" style="width:180px;">
@@ -942,13 +951,13 @@
       </div>
 
       <!-- Idea #205: testimonial approval queue (hidden publicly until enabled in Settings) -->
-      <div class="section-label">Testimonials — Approval Queue (idea #205)</div>
+      <div class="section-label">Testimonials — Approval Queue</div>
       <div class="diag-card" style="padding:16px; margin-bottom:20px;">
         <div id="testimonials-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
       </div>
 
       <!-- Idea #201: suggest-a-feature inbox -->
-      <div class="section-label">Feature Suggestions (idea #201)</div>
+      <div class="section-label">Feature Suggestions</div>
       <div class="diag-card" style="padding:16px;">
         <div id="feature-suggestions-list"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
       </div>
@@ -963,12 +972,12 @@
       <div class="toolbar">
         <button class="btn-refresh" onclick="loadActivityLog()">↻ Refresh</button>
       </div>
-      <div class="section-label">Per-Admin Usage (idea #79)</div>
+      <div class="section-label">Per-Admin Usage</div>
       <div id="activity-by-admin" class="diag-card" style="padding:16px; margin-bottom:20px;"></div>
       <div class="section-label">Recent Actions</div>
       <div class="diag-card" style="padding:0; overflow-x:auto;">
         <table class="war-table">
-          <thead><tr><th>Time</th><th>Admin</th><th>Action</th><th>Target</th><th>Details</th><th title="Idea #150">IP</th></tr></thead>
+          <thead><tr><th>Time</th><th>Admin</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr></thead>
           <tbody id="activity-log-body"><tr><td colspan="6" style="text-align:center; padding:24px; color:var(--dim);">Loading…</td></tr></tbody>
         </table>
       </div>
@@ -1012,7 +1021,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Minimum Clan Size (idea #5)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Minimum Clan Size</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Below this member count, the Analytics overview flags the clan as under-strength ahead of matchmaking.</p>
             <input type="number" id="set-min-clan-size" class="form-input" min="0" value="{{ bot_settings.min_clan_size or 40 }}">
@@ -1021,19 +1030,19 @@
         <div class="diag-card">
           <div class="diag-card-header"><div class="diag-card-title">War Reset Hour (UTC)</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
-            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Approximate daily war-day reset hour, used to time the tiered 50%/90% war reminders (idea #13).</p>
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Approximate daily war-day reset hour, used to time the tiered 50%/90% war reminders.</p>
             <input type="number" id="set-war-reset-hour" class="form-input" min="0" max="23" value="{{ bot_settings.war_reset_hour_utc or 10 }}">
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Auto-Strike Threshold (idea #86)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Auto-Strike Threshold</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Consecutive war weeks with 0 decks used before an automatic strike + DM is issued. Set to 0 to disable (default).</p>
             <input type="number" id="set-auto-strike-threshold" class="form-input" min="0" value="{{ bot_settings.auto_strike_missed_war_threshold or 0 }}">
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Quiet Hours (UTC, idea #99)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Quiet Hours (UTC)</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Automated DMs (war nudges, warnings) are held — not dropped — during this window, and retried after it ends.</p>
             <div style="display:flex; gap:8px; align-items:center;">
@@ -1055,21 +1064,21 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Changelog Channel ID (idea #98)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Changelog Channel ID</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where auto-posted "settings/template changed" lines go. Falls back to the announcements channel, then the War Channel, if unset.</p>
             <input type="text" id="set-changelog-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.changelog_channel_id or '' }}">
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Announcements Channel ID (idea #134)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Announcements Channel ID</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Dedicated channel for all automated posts (war recaps, milestones, digests, role changes) so they don't bury real conversation in the War Channel.</p>
             <input type="text" id="set-announcements-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.announcements_channel_id or '' }}">
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Leadership Escalation Channel ID (idea #131/#139)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Leadership Escalation Channel ID</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where escalation alerts go when a member ignores every war-day nudge tier. Falls back to the announcements channel if unset.</p>
             <input type="text" id="set-leadership-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.leadership_channel_id or '' }}">
@@ -1094,7 +1103,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Beta Test Group Role ID (idea #82)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Beta Test Group Role ID</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Discord role ID used by the <code>/syncbeta</code> slash command — nickname sync is manual/on-demand only, never automatic.</p>
             <input type="text" id="set-beta-sync-role" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.beta_sync_role_id or '' }}">
@@ -1125,18 +1134,18 @@
                 <div id="welcome-dm-preview" style="color:#dcddde; font-size:13px; margin-top:2px; white-space:pre-wrap;"></div>
               </div>
             </div>
-            <button class="btn-refresh" style="align-self:flex-start;" onclick="sendTestWelcomeDM()">🧪 Send Test DM to Myself (idea #69)</button>
+            <button class="btn-refresh" style="align-self:flex-start;" onclick="sendTestWelcomeDM()">🧪 Send Test DM to Myself</button>
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Recruitment Video (idea #200)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Recruitment Video</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">YouTube URL embedded on the /link page for prospective recruits.</p>
             <input type="text" id="set-recruit-video" class="form-input" placeholder="https://youtube.com/watch?v=..." value="{{ bot_settings.recruit_video_url or '' }}">
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Public "We're Recruiting" Banner (idea #215)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Public "We're Recruiting" Banner</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Shows on the roster page only while the clan is below 50 members.</p>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
@@ -1145,7 +1154,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Auto-Decline Stale Applications (idea #214)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Auto-Decline Stale Applications</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Per your note — off by default. When on, applications with no admin response after N days get auto-marked declined to keep the pipeline tidy.</p>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
@@ -1180,14 +1189,14 @@
       <div class="section-label">Clan History &amp; Culture</div>
       <div class="diag-grid">
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Clan Founding Date (idea #203)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Clan Founding Date</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Shown on /clan-history; also drives the auto-generated annual anniversary post.</p>
             <input type="date" id="set-founding-date" class="form-input" value="{{ bot_settings.clan_founding_date or '' }}">
           </div>
         </div>
         <div class="diag-card" style="grid-column: 1 / -1;">
-          <div class="diag-card-header"><div class="diag-card-title">Clan Culture Doc (idea #204)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Clan Culture Doc</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Free-form text (tone, memes, inside jokes) shown on /clan-history, beyond the hard requirements already on /link.</p>
             <textarea id="set-culture-content" class="drawer-textarea" style="min-height:100px;" maxlength="4000">{{ bot_settings.culture_page_content or '' }}</textarea>
@@ -1205,7 +1214,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Schedule a Settings Change (idea #77)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Schedule a Settings Change</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Apply a change at a future time instead of immediately — e.g. enable maintenance mode overnight.</p>
             <input type="datetime-local" id="schedule-apply-at" class="form-input">
@@ -1230,7 +1239,7 @@
       <div class="section-label">Feature Flags (off by default)</div>
       <div class="diag-grid">
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Sub-Clan / Family Page (idea #198)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Sub-Clan / Family Page</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Hidden until the Squad actually grows into multiple linked clans — per your note, built but dark for now.</p>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
@@ -1240,7 +1249,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Testimonial Carousel (idea #205)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Testimonial Carousel</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Per your note — hidden until you turn it on. Members can still submit testimonials for approval while it's off; they just won't display publicly.</p>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
@@ -1249,7 +1258,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Twitch/YouTube Go-Live Integration (idea #243)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Twitch/YouTube Go-Live Integration</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Per your note — hidden for now. The polling logic itself is implemented (checks Twitch/YouTube for the channel below going live and posts an announcement), but stays a no-op until real TWITCH_CLIENT_ID/TWITCH_CLIENT_SECRET/YOUTUBE_API_KEY credentials are set in the environment.</p>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
@@ -1260,7 +1269,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Reddit Recruitment Auto-Poster (idea #247)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Reddit Recruitment Auto-Poster</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Same reasoning as Twitch/YouTube above — the posting logic is implemented (OAuth + submit, rate-limited to once/7d, only fires while the clan is under-strength), but stays a no-op until REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET/REDDIT_REFRESH_TOKEN are configured.</p>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
@@ -1270,7 +1279,7 @@
           </div>
         </div>
         <div class="diag-card">
-          <div class="diag-card-header"><div class="diag-card-title">Beta Features (idea #250)</div></div>
+          <div class="diag-card-header"><div class="diag-card-title">Beta Features</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
             <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Trial upcoming features before rolling them out clan-wide. Currently gates: the Clan Gallery board on the roster page.</p>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
@@ -1947,7 +1956,11 @@ async function loadAnalytics() {
 }
 
 function renderAnalyticsOverview(d) {
-  setStatCard('ov-members', d.member_count != null ? d.member_count : '—', 'Live clan size', 'ok');
+  // d.is_stale: the live clan fetch failed and these clan-derived cards
+  // (members/trophies/donations/inactive) are from the last successful
+  // fetch instead -- see fetch_cr_api_with_fallback in web_routes.py.
+  var clanNote = d.is_stale ? 'Live clan size (last known)' : 'Live clan size';
+  setStatCard('ov-members', d.member_count != null ? d.member_count : '—', clanNote, 'ok');
   setStatCard('ov-trophies', d.avg_trophies != null ? d.avg_trophies : '—', 'Clan average', 'ok');
   var warPct = d.war_participation_pct || 0;
   setStatCard('ov-war', warPct + '%', 'Decks used today', warPct >= 75 ? 'ok' : (warPct >= 40 ? 'warn' : 'err'));
@@ -2058,12 +2071,11 @@ function renderArchetypeTable(tableId, rows) {
   var trendIcon = { up: '📈', down: '📉', flat: '➡️' };
   body.innerHTML = rows.map(function(a){
     var color = a.win_rate >= 50 ? 'var(--ok)' : 'var(--err)';
-    var label = a.name ? a.name + ' (' + deckLabel(a.cards) + ')' : deckLabel(a.cards);
-    return '<tr><td style="max-width:280px; font-size:11px; color:var(--dim);" title="' + esc(label) + '"><strong style="color:var(--text-bright);">' + esc(a.name || '') + '</strong><br>' + esc(deckLabel(a.cards)) + '</td>'
+    return '<tr><td style="max-width:280px; font-size:11px; color:var(--dim);" title="Win rate and game count are from this clan\'s own logged battles, not global CR meta stats."><strong style="color:var(--text-bright);">' + esc(a.name || '') + '</strong><br>' + esc(deckLabel(a.cards)) + '</td>'
       + '<td>' + esc(a.games) + '</td>'
       + '<td style="color:' + color + '; font-weight:700;">' + esc(a.win_rate) + '%</td>'
       + '<td title="7-day usage trend">' + (trendIcon[a.trend] || '') + '</td>'
-      + '<td>' + (a.copy_deck_url ? '<a href="' + esc(a.copy_deck_url) + '" target="_blank" title="Copy this deck (idea #227)">📋</a>' : '') + '</td></tr>';
+      + '<td>' + (a.copy_deck_url ? '<a href="' + esc(a.copy_deck_url) + '" target="_blank" title="Copies this deck\'s 8 card names to your clipboard.">📋</a>' : '') + '</td></tr>';
   }).join('');
 }
 
@@ -2072,7 +2084,7 @@ function renderArchetypes(d) {
   renderArchetypeTable('tbl-archetype-usage', d.top_by_usage);
   var note = document.getElementById('deck-diversity-note');
   if (note && d.deck_diversity_score != null) {
-    note.textContent = 'Idea #230 — clan deck diversity score: ' + d.deck_diversity_score + ' (1.0 = everyone plays something different, 0 = everyone plays the same deck).';
+    note.textContent = 'Clan deck diversity score: ' + d.deck_diversity_score + ' (1.0 = everyone plays something different, 0 = everyone plays the same deck).';
   }
 }
 
@@ -2275,7 +2287,13 @@ async function loadWar() {
     // Idea #1: war-day vs training-day indicator. Idea #4: projected finish.
     var dayLabel = current.period_type_label || '—';
     var proj = current.projected_finish || {};
-    content.innerHTML =
+    // current.is_stale / prev.is_stale: the live currentriverrace/riverracelog
+    // calls failed and this is the last successful war_tracking/war_history
+    // snapshot instead (see _current_riverrace_with_fallback in web_routes.py).
+    var staleNote = (current.is_stale || prev.is_stale)
+      ? '<div style="background:rgba(241,196,15,0.1); border:1px solid rgba(241,196,15,0.4); border-radius:6px; padding:8px 12px; margin-bottom:10px; color:#f1c40f; font-size:12px;">⚠️ Couldn\'t reach the Clash Royale API just now — showing last known war data.</div>'
+      : '';
+    content.innerHTML = staleNote +
       '<div class="stat-row">'
       + '<div class="stat-card ok"><div class="stat-label">Today Is</div><div class="stat-value">' + esc(dayLabel) + '</div></div>'
       + '<div class="stat-card ok"><div class="stat-label">Current War Fame</div><div class="stat-value">⭐ ' + esc(curFame) + '</div></div>'
@@ -2475,7 +2493,7 @@ function renderUserRows(users) {
   tbody.innerHTML = users.map(function(u){
     var tierPicker = u.status === 'Admin'
       ? '<select class="form-select" style="font-size:11px; padding:2px 6px;" onchange="setUserTier(' + JSON.stringify(u.discord_id) + ', this.value)">'
-        + '<option value="full">Full Admin</option><option value="analytics_only">View-Only (idea #65)</option></select>'
+        + '<option value="full">Full Admin</option><option value="analytics_only">View-Only</option></select>'
       : '';
     // idea: "connect the discord id with any information like their name or
     // picture" -- avatar_url is computed server-side (discord_avatar_url() in
@@ -3375,26 +3393,26 @@ function renderRoster(members) {
     var roleClass = m.role || 'member';
     var deckWarn  = m.in_war && m.decksUsedToday === 0;
     var linkedBadge = m.discord_id
-      ? '<span style="color:var(--ok); font-size:12px;" title="Discord linked">🔗</span>'
-      : '<span style="color:var(--dim); font-size:12px;" title="Not linked">—</span>';
+      ? '<span style="color:var(--ok); font-size:12px;" title="Discord account linked — this member can log in and gets DM notifications.">🔗</span>'
+      : '<span style="color:var(--dim); font-size:12px;" title="No Discord account linked yet — this member can\'t log in or receive DM notifications until they link via /link.">—</span>';
     var adminBadge = m.is_site_admin ? '<span style="color:#f1c40f; font-size:11px; font-family:var(--font-mono);">ADMIN</span>' : '';
-    var trialBadge = m.trial_member ? '<span style="color:var(--accent); font-size:11px; font-family:var(--font-mono);" title="Trial member (idea #213)">TRIAL</span>' : '';
+    var trialBadge = m.trial_member ? '<span style="color:var(--accent); font-size:11px; font-family:var(--font-mono);" title="Temporary status for new recruits, set from this member\'s drawer — doesn\'t affect strikes or permissions.">TRIAL</span>' : '';
 
     return '<div class="roster-card ' + strikeClass + '" id="card-' + cleanTag + '">'
       + '<div class="roster-row" onclick="toggleDrawer(' + attrJson(cleanTag) + ')">'
       + '<input type="checkbox" class="roster-bulk-check" data-tag="' + esc(tag) + '" onclick="event.stopPropagation(); updateBulkBar();" style="margin-right:8px;">'
       + '<div class="roster-name">'
-      + '<a href="/player/' + esc(cleanTag) + '" onclick="event.stopPropagation()" title="Open player profile">'
+      + '<a href="/player/' + esc(cleanTag) + '" onclick="event.stopPropagation()">'
       + esc(m.name || 'Unknown') + '</a>'
       + (adminBadge ? ' ' + adminBadge : '') + (trialBadge ? ' ' + trialBadge : '')
       + '<div style="font-size:11px; color:var(--dim); font-family:var(--font-mono); margin-top:2px;">' + esc(tag) + '</div>'
       + '</div>'
       + '<span class="roster-role ' + esc(roleClass) + '">' + esc(roleLabel) + '</span>'
       + '<div class="roster-stat"><span>🏆</span><strong>' + esc(m.trophies || 0) + '</strong></div>'
-      + '<div class="roster-stat' + (deckWarn ? ' warn' : '') + '" title="Decks used today"><span>⚔️</span><strong>' + esc(m.decksUsedToday !== undefined ? m.decksUsedToday + '/4' : '—') + '</strong></div>'
+      + '<div class="roster-stat' + (deckWarn ? ' warn' : '') + '" title="Out of 4 max per war day; resets when the war day rolls over."><span>⚔️</span><strong>' + esc(m.decksUsedToday !== undefined ? m.decksUsedToday + '/4' : '—') + '</strong></div>'
       + '<div class="roster-stat"><span>🎁</span><strong>' + esc(m.donations || 0) + '</strong></div>'
-      + '<div class="roster-stat" title="Strikes"><span>⚡</span><strong style="' + (strikes > 0 ? 'color:var(--err)' : '') + '">' + strikes + '</strong></div>'
-      + '<div class="roster-linked" title="Discord link status">' + linkedBadge + '</div>'
+      + '<div class="roster-stat" title="Formal marks for rule violations (e.g. missed war days) — enough of these trip the clan\'s auto-strike threshold in Settings."><span>⚡</span><strong style="' + (strikes > 0 ? 'color:var(--err)' : '') + '">' + strikes + '</strong></div>'
+      + '<div class="roster-linked">' + linkedBadge + '</div>'
       + '<button class="roster-expand-btn" id="expand-btn-' + cleanTag + '" onclick="event.stopPropagation(); toggleDrawer(' + attrJson(cleanTag) + ')">▾ Actions</button>'
       + '</div>'
       + '<div class="player-drawer" id="drawer-' + cleanTag + '">'
@@ -3471,7 +3489,7 @@ function buildDrawer(m) {
     + '</div>'
 
     // Idea #213: temporary trial-member status for new recruits.
-    + '<div class="drawer-label" style="margin-top:16px;">Trial Status (idea #213)</div>'
+    + '<div class="drawer-label" style="margin-top:16px;">Trial Status</div>'
     + '<div class="drawer-btn-row">'
     + '<button class="drawer-btn drawer-btn-profile" onclick="setTrialStatus(' + attrJson(m.tag) + ', ' + (!m.trial_member) + ', this)">'
     + (m.trial_member ? '🎓 End Trial (Grant Full Member)' : '🧪 Mark as Trial Member') + '</button>'
