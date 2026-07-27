@@ -197,6 +197,10 @@
         .card-hide-btn { background: none; border: none; cursor: pointer; font-size: 12px; margin-left: 6px; padding: 2px 4px; opacity: 0.7; vertical-align: middle; }
         .card-hide-btn:hover { opacity: 1; }
         .card-hidden-badge { display: inline-block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: #e74c3c; border: 1px solid #e74c3c; border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: middle; }
+        /* Task #181: admin-editable free-text note per card, separate from
+           that card's actual data. */
+        .card-blurb-wrap { margin: -4px 0 10px; display: flex; align-items: flex-start; gap: 6px; }
+        .card-blurb-text { font-size: 12px; color: var(--dim); font-style: italic; line-height: 1.4; flex: 1; }
     </style>
 </head>
 <body>
@@ -229,6 +233,13 @@
          have a session. next=/ so they land back on the roster after Discord
          redirects back through /callback. -->
     <a href="/login?next=%2F" class="lfg-btn" style="background:#1e2530; border:1px solid var(--accent);">🔑 Login with Discord</a>
+    {% endif %}
+    <!-- Task #186: "personal drill down" -- a linked member previously had no
+         quick way to jump to their own full profile (all their history,
+         strikes, settings, deck, etc. already live on player.html) other than
+         scrolling/sorting the whole roster table to find their own row. -->
+    {% if own_linked_tag %}
+    <a href="/player/{{ own_linked_tag }}" class="lfg-btn" style="background:#1e2530; border:1px solid var(--accent);">📊 My Profile</a>
     {% endif %}
     <a href="/how-it-works" class="lfg-btn" style="background:#1e2530; border:1px solid var(--border);">📖 How It Works</a>
     <!-- Ideas #192/#196/#203/#204: consolidated wall-of-fame/timeline/culture page. -->
@@ -401,6 +412,18 @@
          card can reuse it without new plumbing. -->
     {% macro admin_info_icon(slug) %}{% if is_admin %}<button type="button" class="card-hide-btn admin-info-toggle-btn" data-admin-info-slug="{{ slug }}" onclick="toggleAdminInfoCard('{{ slug }}', this)" title="Show/hide this card's admin-only markers (e.g. the active/inactive status dot) for you -- doesn't affect what regular members see.">👁️ Admin Info</button>{% endif %}{% endmacro %}
 
+    <!-- Task #181: "add and edit text (except data) in each of the cards on
+         roster.html". card_blurb(slug) renders a free-text note (if one's
+         been set) above the card's actual data, plus an edit pencil for
+         anyone with can_edit_card_text (a real permission-matrix capability,
+         level 3/Veteran by default -- deliberately NOT the narrower
+         can_hide_roster_cards gate, since writing a quick blurb is a much
+         lower-stakes action than hiding a card from every regular member).
+         Uses a prompt() for the edit, matching this file's existing pattern
+         for other single-field quick-edits rather than introducing a new
+         inline-editing UI just for this. -->
+    {% macro card_blurb(slug) %}<div class="card-blurb-wrap" data-blurb-slug="{{ slug }}">{% if roster_card_blurbs.get(slug) %}<div class="card-blurb-text">{{ roster_card_blurbs.get(slug) }}</div>{% endif %}{% if can_edit_card_text %}<button type="button" class="card-hide-btn" onclick="editCardBlurb('{{ slug }}', this)" title="Add or edit a note for this card (not its data)">✏️ Note</button>{% endif %}</div>{% endmacro %}
+
     <div class="dashboard-grid">
 
         {% if 'hall-of-fame' not in hidden_roster_cards or is_admin %}
@@ -409,6 +432,7 @@
                 <span class="info-tip" tabindex="0" title="10 live leaderboard categories, recomputed every harvest cycle from donations, trophies, war fame, and logged battles. If a category has no fresh qualifier this cycle (e.g. nobody's donated yet since the season reset), it shows the last time someone actually led that category instead of a misleading zero — marked '(last known)'.">ⓘ</span>
                 {{ card_hide_icon('hall-of-fame') }}
             </div>
+            {{ card_blurb('hall-of-fame') }}
             <div id="hall-of-fame-content">
                 <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
             </div>
@@ -418,6 +442,7 @@
         {% if 'clan-leadership' not in hidden_roster_cards or is_admin %}
         <div class="dash-card" id="dash-card-clan-leadership">
             <div class="dash-card-title">🛡️ Clan Leadership {{ card_hide_icon('clan-leadership') }}</div>
+            {{ card_blurb('clan-leadership') }}
             <div class="leader-list">
                 {% for member in clan_data.memberList %}
                     {% if member.role == 'leader' %}
@@ -446,6 +471,7 @@
         {% if 'clan-profile' not in hidden_roster_cards or is_admin %}
         <div class="dash-card" id="dash-card-clan-profile">
             <div class="dash-card-title">🏰 Clan Profile {{ card_hide_icon('clan-profile') }}</div>
+            {{ card_blurb('clan-profile') }}
             {% if clan_data.description %}
             <p style="font-size:13px; color:var(--text); line-height:1.5; margin:0 0 10px;">{{ clan_data.description }}</p>
             {% endif %}
@@ -471,6 +497,7 @@
                 <span class="info-tip" tabindex="0" title="10 community/improvement-flavored callouts — less 'raw leaderboard', more 'who deserves a shoutout this week'. Same last-known-result fallback as Hall of Fame when a category has nothing fresh to show.">ⓘ</span>
                 {{ card_hide_icon('weekly-spotlights') }}
             </div>
+            {{ card_blurb('weekly-spotlights') }}
             <div id="spotlights-content">
                 <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
             </div>
@@ -484,6 +511,7 @@
                 <span class="info-tip" tabindex="0" title="Career-spanning records rather than this week's snapshot — computed once per harvest cycle from every member's full tracked history, not just recent battles.">ⓘ</span>
                 {{ card_hide_icon('all-time-legends') }}
             </div>
+            {{ card_blurb('all-time-legends') }}
             <div id="legends-content">
                 <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
             </div>
@@ -494,22 +522,37 @@
         {% if 'donation-goal' not in hidden_roster_cards or is_admin %}
         <div class="dash-card" id="dash-card-donation-goal">
             <div class="dash-card-title">🎯 Monthly Donation Goal {{ card_hide_icon('donation-goal') }}</div>
+            {{ card_blurb('donation-goal') }}
             <div id="clan-progress-content">
                 <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
             </div>
         </div>
         {% endif %}
 
-        <!-- repairPoints/boatAttacks/warTrophiesChange get harvested into Mongo
-             every war cycle and every time a race finishes, but nothing ever
-             read them back -- this is that leaderboard. -->
+        <!-- Task #182: was the Boat Battle Leaderboard (repair points/boat
+             attacks -- almost never had any data since most members don't use
+             the boat). Replaced with what people actually wanted: who's
+             contributed the most FAME this war, charted day by day, plus how
+             the previous war's contributions ranked. -->
         {% if 'boat-battle' not in hidden_roster_cards or is_admin %}
         <div class="dash-card" id="dash-card-boat-battle">
-            <div class="dash-card-title">⚓ Boat Battle Leaderboard
-                <span class="info-tip" tabindex="0" title="Repair points and boat attacks from the current river race -- harvested every cycle, never shown anywhere until now. Empty until this week's war is underway.">ⓘ</span>
+            <div class="dash-card-title">⚔️ War Fame Contribution
+                <span class="info-tip" tabindex="0" title="Top fame contributors this war, day by day, reconstructed from the same per-day race data the CR API tracks internally. The previous-war list only has final totals -- CR doesn't expose a day-by-day history once a race ends.">ⓘ</span>
                 {{ card_hide_icon('boat-battle') }}
             </div>
-            <div id="boat-battle-content">
+            {{ card_blurb('boat-battle') }}
+            <div style="display:flex; gap:6px; margin-bottom:10px;">
+                <button class="btn" id="wfc-tab-current" onclick="switchWarFameTab('current')" style="flex:1;">This War</button>
+                <button class="btn" id="wfc-tab-previous" onclick="switchWarFameTab('previous')" style="flex:1;">Previous War</button>
+            </div>
+            <div id="war-fame-current">
+                <canvas id="war-fame-chart" height="220" style="max-height:260px;"></canvas>
+                <div id="war-fame-current-empty" style="display:none; color:var(--dim); font-family:var(--font-mono); font-size:12px;">No war fame recorded yet this race.</div>
+            </div>
+            <!-- Task #188: this list is no longer capped to the top 8 --
+                 scrollable rather than letting a full ~50-member roster
+                 blow out the card's height. -->
+            <div id="war-fame-previous" style="display:none; max-height:320px; overflow-y:auto;">
                 <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
             </div>
         </div>
@@ -526,6 +569,7 @@
                 <span class="info-tip" tabindex="0" title="'Maxed' means level 16 -- Supercell's stated permanent ceiling, and the level at which a card becomes free to donate/request. Ranked by cards maxed (count), not percentage, so a maxed-out low-rarity collection doesn't outrank someone with far more total cards maxed.">ⓘ</span>
                 {{ card_hide_icon('card-mastery') }}
             </div>
+            {{ card_blurb('card-mastery') }}
             <!-- Task #177: two views over the same already-fetched data --
                  "by player" (who has the most maxed) vs "by card" (which
                  cards the clan is weakest/strongest on) -- so browsing the
@@ -560,6 +604,7 @@
         {% if 'our-discord' not in hidden_roster_cards or is_admin %}
         <div class="dash-card" id="dash-card-our-discord">
             <div class="dash-card-title">💬 Our Discord {{ card_hide_icon('our-discord') }}</div>
+            {{ card_blurb('our-discord') }}
             {% if discord_widget_style == 'custom' %}
             <div id="discord-widget-content">
                 <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
@@ -585,6 +630,11 @@
     {% if 'public-leaderboards' not in hidden_roster_cards or is_admin %}
     <div class="dash-card" style="margin-bottom:20px;" id="dash-card-public-leaderboards">
         <div class="dash-card-title">🏅 Public Leaderboards {{ card_hide_icon('public-leaderboards') }}</div>
+        {{ card_blurb('public-leaderboards') }}
+        <!-- Task #188: these two columns used to be capped at the top 10;
+             now show the whole opted-in roster, each column independently
+             scrollable so a big clan doesn't turn this into a page-length
+             wall of names. -->
         <div id="public-leaderboards-content" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px,1fr)); gap:16px;">
             <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
         </div>
@@ -599,10 +649,18 @@
     </div>
     {% endif %}
 
-    <!-- Idea #195: poll/voting widget for clan decisions. -->
+    <!-- Idea #195: poll/voting widget for clan decisions.
+         Task #184: creation used to be admin-only with no UI anywhere at all
+         (the backend route existed, nothing ever called it) -- now open to
+         any linked member, so the "+ New Poll" button lives here on the
+         public dashboard rather than admin.html. Every poll runs a fixed
+         1-week duration (server sets expires_at, not user-configurable). -->
     {% if 'clan-polls' not in hidden_roster_cards or is_admin %}
     <div class="dash-card" style="margin-bottom:20px;" id="polls-card">
-        <div class="dash-card-title">🗳️ Clan Polls {{ card_hide_icon('clan-polls') }}</div>
+        <div class="dash-card-title">🗳️ Clan Polls {{ card_hide_icon('clan-polls') }}
+            {% if is_logged_in %}<button class="btn" style="float:right; font-size:11px; padding:4px 10px;" onclick="createPoll()">+ New Poll</button>{% endif %}
+        </div>
+        {{ card_blurb('clan-polls') }}
         <div id="polls-content"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
     </div>
     {% endif %}
@@ -611,6 +669,7 @@
     <!-- Idea #194 gated behind idea #250's beta-features toggle, per your note pattern of "hide with an option in settings". -->
     <div class="dash-card" style="margin-bottom:20px;" id="gallery-card">
         <div class="dash-card-title">📸 Clan Gallery <span style="font-size:10px; color:var(--dim); font-weight:400; text-transform:none;">(beta)</span> {{ card_hide_icon('clan-gallery') }}</div>
+        {{ card_blurb('clan-gallery') }}
         <div id="gallery-content" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(120px,1fr)); gap:8px;">
             <span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span>
         </div>
@@ -627,6 +686,7 @@
     {% if 'suggest-feature' not in hidden_roster_cards or is_admin %}
     <div class="dash-card" style="margin-bottom:20px;" id="dash-card-suggest-feature">
         <div class="dash-card-title">💡 Suggest a Feature {{ card_hide_icon('suggest-feature') }}</div>
+        {{ card_blurb('suggest-feature') }}
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <input type="text" id="feature-suggestion-input" class="search-bar" placeholder="Got an idea for the dashboard or bot?" style="flex:1; min-width:200px;" maxlength="500">
             <button class="lfg-btn" onclick="submitFeatureSuggestion()">Send</button>
@@ -648,6 +708,8 @@
                     <th class="sortable" data-type="number">Trophies 🏆 ↕</th>
                     <th class="sortable" data-type="number" title="Lifetime War Day Wins, from this player's Clash Royale profile.">War Battles ⚔️ ↕</th>
                     <th class="sortable" data-type="number">Donations 🎁 ↕</th>
+                    <th class="sortable" data-type="number" title="Total fame contributed so far in the current river race (resets to 0 when a new race starts).">War Fame (Current) ⚔️ ⓘ ↕</th>
+                    <th class="sortable" data-type="number" title="Total fame contributed in the most recently completed river race.">War Fame (Previous) ⚔️ ⓘ ↕</th>
                     <th class="sortable" data-type="string" title="The earliest date our tracking shows this player in the clan — not necessarily their true join date if that was before this bot started tracking them.">Member Since ⓘ ↕</th>
                 </tr>
             </thead>
@@ -693,6 +755,19 @@
                     </td>
                     
                     <td style="color: #2ecc71;">{{ member.donations }}</td>
+                    <!-- Task #183: current/previous war fame, editable by
+                         superadmins only (edit_war_fame_table capability).
+                         war_fame_overridden just adds a small marker so an
+                         admin can tell at a glance which numbers are manual
+                         corrections vs. straight from the CR API. -->
+                    <td data-war-fame-cell="current" data-war-fame-tag="{{ member.tag }}" style="color: #9b59b6; font-weight: bold;">
+                        {{ member.war_fame_current }}{% if member.war_fame_current_overridden %}<span title="Manually overridden by a superadmin" style="color:var(--dim); font-weight:normal;">*</span>{% endif %}
+                        {% if can_edit_war_fame %}<button type="button" class="card-hide-btn" onclick="editWarFame('{{ member.tag }}', 'current', this)" title="Override this member's current-war fame" style="margin-left:4px;">✏️</button>{% endif %}
+                    </td>
+                    <td data-war-fame-cell="previous" data-war-fame-tag="{{ member.tag }}" style="color: #9b59b6;">
+                        {{ member.war_fame_previous }}{% if member.war_fame_previous_overridden %}<span title="Manually overridden by a superadmin" style="color:var(--dim); font-weight:normal;">*</span>{% endif %}
+                        {% if can_edit_war_fame %}<button type="button" class="card-hide-btn" onclick="editWarFame('{{ member.tag }}', 'previous', this)" title="Override this member's previous-war fame" style="margin-left:4px;">✏️</button>{% endif %}
+                    </td>
                     <!-- Bug fix: joined_clan_at is a real Python None (not
                          "undefined") when a member predates this bot's
                          tracking, so a plain `| default('—')` never actually
@@ -709,6 +784,14 @@
     </div>
 </div>
 </main>
+
+<!-- Task #182: needed for the War Fame Contribution multi-line chart that
+     replaces the old Boat Battle Leaderboard card below. Same CDN-fallback
+     pattern already used on admin.html (task #172) -- cdnjs is occasionally
+     unreachable on some networks, so this tries jsDelivr's mirror if the
+     primary script tag fails to load. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"
+        onerror="var s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'; document.head.appendChild(s);"></script>
 
 <script>
 // Idea #159 (CSRF least-privilege review): this page now makes several
@@ -809,6 +892,19 @@ function crName(name) {
   return html;
 }
 
+// Task #189: "every player name should be a hyperlink to their profile" --
+// a single shared helper so every JSON-rendered name (hall of fame,
+// spotlights, all-time legends, leaderboards, card mastery, war fame, etc.)
+// links to /player/<tag> the same way the roster table's names already did.
+// Falls back to a plain (non-linked) crName() render if no tag is available
+// -- better than a dead/broken link to nowhere.
+function playerLink(tag, name) {
+  var label = crName(name);
+  if (!tag) return label;
+  var clean = String(tag).replace('#', '');
+  return '<a href="/player/' + encodeURIComponent(clean) + '" style="color:inherit;">' + label + '</a>';
+}
+
 // Label/emoji/tooltip live here rather than in the stored Mongo doc, so wording
 // can be tweaked without needing a re-harvest -- the backend (data_harvester.py's
 // compute_weekly_hall_of_fame/compute_weekly_spotlights) only ever sends back
@@ -852,7 +948,7 @@ function renderSuperlativeCategories(doc, metaTable, elId) {
         const staleNote = entry.stale ? `<span class="hof-stale-note">last known, as of ${esc(entry.as_of || '?')}</span>` : '';
         return `<div class="hof-item${staleCls}">`
             + `<span class="hof-label" title="${esc(meta.tip)}">${meta.emoji} ${esc(meta.label)}</span>`
-            + `<span class="hof-value">${esc(entry.name || 'Unknown')} <span>${esc(entry.value_label || '')}</span>${staleNote}</span>`
+            + `<span class="hof-value">${playerLink(entry.tag, entry.name || 'Unknown')} <span>${esc(entry.value_label || '')}</span>${staleNote}</span>`
             + `</div>`;
     }).join('');
     el.innerHTML = html || '<span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Not enough data yet.</span>';
@@ -887,17 +983,17 @@ async function loadLegends() {
         // (computed server-side, never actually shown here). Each entry below
         // uses crName() rather than esc() alone so any <cN> color-code tags in
         // a player's name render (task #178) instead of showing as literal text.
-        if (d.highest_trophies_ever) html += `<div class="hof-item"><span class="hof-label" title="Highest trophy count ever recorded for this player across our full snapshot history -- not just their current-season best.">🏆 Highest Trophies Ever</span><span class="hof-value">${crName(d.highest_trophies_ever.name)} <span>${d.highest_trophies_ever.value}</span></span></div>`;
-        if (d.top_season_donator) html += `<div class="hof-item"><span class="hof-label" title="Most donations given this season (CR's API only exposes a current-season counter, not a true lifetime total).">🎁 Top Season Donator</span><span class="hof-value">${crName(d.top_season_donator.name)} <span>${d.top_season_donator.value}</span></span></div>`;
-        if (d.most_war_mvps && d.most_war_mvps.name) html += `<div class="hof-item"><span class="hof-label" title="Most times this player has topped the fame leaderboard across the last 50 completed war races.">🥇 Most War MVPs</span><span class="hof-value">${crName(d.most_war_mvps.name)} <span>${d.most_war_mvps.count}x</span></span></div>`;
-        if (d.clan_veteran) html += `<div class="hof-item"><span class="hof-label" title="Longest-tenured member still in the clan, by how long we've been tracking them -- the earliest date we saw them in the roster, which may be later than when they actually joined if that was before this bot started tracking.">🎖️ Clan Veteran</span><span class="hof-value">${crName(d.clan_veteran.name)}</span></div>`;
-        if (d.top_lifetime_donator) html += `<div class="hof-item"><span class="hof-label" title="Highest running lifetime donation total we've banked for this player across every season we've tracked them (separate from the season-only counter CR's API exposes).">🎗️ Top Lifetime Donator</span><span class="hof-value">${crName(d.top_lifetime_donator.name)} <span>${d.top_lifetime_donator.value}</span></span></div>`;
-        if (d.most_war_day_wins) html += `<div class="hof-item"><span class="hof-label" title="Most lifetime war-day battle wins on this player's Clash Royale profile -- a real cumulative stat from the CR API, not scoped to our clan or any date range.">⚔️ Most War Day Wins</span><span class="hof-value">${crName(d.most_war_day_wins.name)} <span>${d.most_war_day_wins.value}</span></span></div>`;
-        if (d.most_three_crown_wins) html += `<div class="hof-item"><span class="hof-label" title="Most lifetime three-crown wins on this player's Clash Royale profile.">👑 Most Three-Crown Wins</span><span class="hof-value">${crName(d.most_three_crown_wins.name)} <span>${d.most_three_crown_wins.value}</span></span></div>`;
-        if (d.highest_level) html += `<div class="hof-item"><span class="hof-label" title="Highest King Tower experience level in the clan.">⭐ Highest Level</span><span class="hof-value">${crName(d.highest_level.name)} <span>Lvl ${d.highest_level.value}</span></span></div>`;
-        if (d.most_cards_maxed) html += `<div class="hof-item"><span class="hof-label" title="Most cards at true max level (level 16) as of the last harvest cycle.">🃏 Most Cards Maxed</span><span class="hof-value">${crName(d.most_cards_maxed.name)} <span>${d.most_cards_maxed.value}</span></span></div>`;
-        if (d.longest_win_streak_ever) html += `<div class="hof-item"><span class="hof-label" title="Longest consecutive-win streak ever seen in our full logged battle history for this player.">🔥 Longest Win Streak Ever</span><span class="hof-value">${crName(d.longest_win_streak_ever.name)} <span>${d.longest_win_streak_ever.value}</span></span></div>`;
-        if (d.most_battles_logged) html += `<div class="hof-item"><span class="hof-label" title="Most individual battles we've ever logged for this player across our full battle history.">📜 Most Battles Logged</span><span class="hof-value">${crName(d.most_battles_logged.name)} <span>${d.most_battles_logged.value}</span></span></div>`;
+        if (d.highest_trophies_ever) html += `<div class="hof-item"><span class="hof-label" title="Highest trophy count ever recorded for this player across our full snapshot history -- not just their current-season best.">🏆 Highest Trophies Ever</span><span class="hof-value">${playerLink(d.highest_trophies_ever.tag, d.highest_trophies_ever.name)} <span>${d.highest_trophies_ever.value}</span></span></div>`;
+        if (d.top_season_donator) html += `<div class="hof-item"><span class="hof-label" title="Most donations given this season (CR's API only exposes a current-season counter, not a true lifetime total).">🎁 Top Season Donator</span><span class="hof-value">${playerLink(d.top_season_donator.tag, d.top_season_donator.name)} <span>${d.top_season_donator.value}</span></span></div>`;
+        if (d.most_war_mvps && d.most_war_mvps.name) html += `<div class="hof-item"><span class="hof-label" title="Most times this player has topped the fame leaderboard across the last 50 completed war races.">🥇 Most War MVPs</span><span class="hof-value">${playerLink(d.most_war_mvps.tag, d.most_war_mvps.name)} <span>${d.most_war_mvps.count}x</span></span></div>`;
+        if (d.clan_veteran) html += `<div class="hof-item"><span class="hof-label" title="Longest-tenured member still in the clan, by how long we've been tracking them -- the earliest date we saw them in the roster, which may be later than when they actually joined if that was before this bot started tracking.">🎖️ Clan Veteran</span><span class="hof-value">${playerLink(d.clan_veteran.tag, d.clan_veteran.name)}</span></div>`;
+        if (d.top_lifetime_donator) html += `<div class="hof-item"><span class="hof-label" title="Highest running lifetime donation total we've banked for this player across every season we've tracked them (separate from the season-only counter CR's API exposes).">🎗️ Top Lifetime Donator</span><span class="hof-value">${playerLink(d.top_lifetime_donator.tag, d.top_lifetime_donator.name)} <span>${d.top_lifetime_donator.value}</span></span></div>`;
+        if (d.most_war_day_wins) html += `<div class="hof-item"><span class="hof-label" title="Most lifetime war-day battle wins on this player's Clash Royale profile -- a real cumulative stat from the CR API, not scoped to our clan or any date range.">⚔️ Most War Day Wins</span><span class="hof-value">${playerLink(d.most_war_day_wins.tag, d.most_war_day_wins.name)} <span>${d.most_war_day_wins.value}</span></span></div>`;
+        if (d.most_three_crown_wins) html += `<div class="hof-item"><span class="hof-label" title="Most lifetime three-crown wins on this player's Clash Royale profile.">👑 Most Three-Crown Wins</span><span class="hof-value">${playerLink(d.most_three_crown_wins.tag, d.most_three_crown_wins.name)} <span>${d.most_three_crown_wins.value}</span></span></div>`;
+        if (d.highest_level) html += `<div class="hof-item"><span class="hof-label" title="Highest King Tower experience level in the clan.">⭐ Highest Level</span><span class="hof-value">${playerLink(d.highest_level.tag, d.highest_level.name)} <span>Lvl ${d.highest_level.value}</span></span></div>`;
+        if (d.most_cards_maxed) html += `<div class="hof-item"><span class="hof-label" title="Most cards at true max level (level 16) as of the last harvest cycle.">🃏 Most Cards Maxed</span><span class="hof-value">${playerLink(d.most_cards_maxed.tag, d.most_cards_maxed.name)} <span>${d.most_cards_maxed.value}</span></span></div>`;
+        if (d.longest_win_streak_ever) html += `<div class="hof-item"><span class="hof-label" title="Longest consecutive-win streak ever seen in our full logged battle history for this player.">🔥 Longest Win Streak Ever</span><span class="hof-value">${playerLink(d.longest_win_streak_ever.tag, d.longest_win_streak_ever.name)} <span>${d.longest_win_streak_ever.value}</span></span></div>`;
+        if (d.most_battles_logged) html += `<div class="hof-item"><span class="hof-label" title="Most individual battles we've ever logged for this player across our full battle history.">📜 Most Battles Logged</span><span class="hof-value">${playerLink(d.most_battles_logged.tag, d.most_battles_logged.name)} <span>${d.most_battles_logged.value}</span></span></div>`;
         el.innerHTML = html || '<span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Not enough data yet.</span>';
     } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
 }
@@ -946,26 +1042,86 @@ async function loadDiscordWidget() {
     } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
 }
 
-async function loadBoatBattle() {
-    const el = document.getElementById('boat-battle-content');
+// Task #182: multi-line "who's contributed the most fame this war" chart,
+// replacing the old boat-battle stats (which barely ever had data). Same
+// Chart.js CDN-fallback setup as admin.html's clan-trend/member-trend charts.
+var warFameChart = null;
+var _warFameData = null;
+const WAR_FAME_LINE_COLORS = ['#00e5ff', '#ffaa00', '#00e096', '#ff5c8a', '#a78bfa', '#f4d35e', '#4cc9f0', '#ff8fab'];
+
+async function loadWarFameContribution() {
+    const currentEmptyEl = document.getElementById('war-fame-current-empty');
     try {
-        const res = await fetch('/api/clan/boat-battle');
+        const res = await fetch('/api/clan/war-fame-contribution');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const d = await res.json();
-        const rows = d.leaderboard || [];
-        let html = '';
-        if (d.last_war_trophies_change !== null && d.last_war_trophies_change !== undefined) {
-            const sign = d.last_war_trophies_change > 0 ? '+' : '';
-            html += `<div style="font-size:12px; color:var(--dim); margin-bottom:10px;">Last War Trophies: <strong style="color:var(--text-bright);">${sign}${d.last_war_trophies_change}</strong></div>`;
+        _warFameData = d;
+        const series = (d.current || {}).series || [];
+        const days = (d.current || {}).days || [];
+        if (!series.length || !days.length) {
+            if (currentEmptyEl) currentEmptyEl.style.display = '';
+            const canvas = document.getElementById('war-fame-chart');
+            if (canvas) canvas.style.display = 'none';
+            return;
         }
-        if (!rows.length) {
-            html += '<span style="color:var(--dim); font-size:12px;">No boat battle activity recorded this race yet.</span>';
-        } else {
-            html += rows.map((r, i) =>
-                `<div class="hof-item"><span class="hof-label">${i + 1}. ${esc(r.name)}</span><span class="hof-value">${r.boat_attacks} attacks<span> · ${r.repair_points} repair</span></span></div>`
-            ).join('');
+        if (currentEmptyEl) currentEmptyEl.style.display = 'none';
+        if (typeof Chart === 'undefined') {
+            if (currentEmptyEl) { currentEmptyEl.style.display = ''; currentEmptyEl.textContent = 'Chart library failed to load (cdnjs unreachable?) — data exists, just can\'t render it as a graph right now.'; }
+            const canvas = document.getElementById('war-fame-chart');
+            if (canvas) canvas.style.display = 'none';
+            return;
         }
-        el.innerHTML = html;
-    } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
+        const canvas = document.getElementById('war-fame-chart');
+        canvas.style.display = '';
+        const ctx = canvas.getContext('2d');
+        if (warFameChart) { warFameChart.destroy(); warFameChart = null; }
+        warFameChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: days.map(d => 'Day ' + d),
+                datasets: series.map((m, i) => ({
+                    label: crName(m.name),
+                    data: m.fame_by_day,
+                    borderColor: WAR_FAME_LINE_COLORS[i % WAR_FAME_LINE_COLORS.length],
+                    backgroundColor: 'transparent',
+                    tension: 0.25,
+                })),
+            },
+            options: {
+                responsive: true,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    y: { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                    x: { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                },
+                plugins: { legend: { labels: { color: '#c9d1d9', boxWidth: 12, font: { size: 11 } } } },
+            }
+        });
+    } catch (e) {
+        if (currentEmptyEl) { currentEmptyEl.style.display = ''; currentEmptyEl.textContent = 'Failed to load: ' + e.message; }
+        const canvas = document.getElementById('war-fame-chart');
+        if (canvas) canvas.style.display = 'none';
+    }
+
+    // Previous-war leaderboard is a simple ranked list, rendered regardless
+    // of whether the current-war chart above succeeded.
+    const prevEl = document.getElementById('war-fame-previous');
+    try {
+        const rows = (_warFameData && _warFameData.previous && _warFameData.previous.leaderboard) || [];
+        prevEl.innerHTML = rows.length
+            ? rows.map((r, i) => `<div class="hof-item"><span class="hof-label">${i + 1}. ${playerLink(r.tag, r.name)}</span><span class="hof-value">${r.fame} fame</span></div>`).join('')
+            : '<span style="color:var(--dim); font-size:12px;">No completed war on record yet.</span>';
+    } catch (e) { prevEl.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
+}
+
+function switchWarFameTab(which) {
+    const curBtn = document.getElementById('wfc-tab-current'), prevBtn = document.getElementById('wfc-tab-previous');
+    const curEl = document.getElementById('war-fame-current'), prevEl = document.getElementById('war-fame-previous');
+    const active = which === 'previous';
+    curEl.style.display = active ? 'none' : '';
+    prevEl.style.display = active ? '' : 'none';
+    curBtn.style.opacity = active ? '0.6' : '1';
+    prevBtn.style.opacity = active ? '1' : '0.6';
 }
 
 // Task #187: client-side, per-browser, PER-CARD toggle for admin-only
@@ -1029,6 +1185,71 @@ async function toggleCardHide(slug, btn) {
     }
 }
 
+// Task #181: add/edit a per-card text note (not its data). Uses prompt(),
+// same lightweight pattern this file already uses for other single-field
+// admin quick-edits, rather than a new inline-editing UI just for this.
+async function editCardBlurb(slug, btn) {
+    var wrap = document.querySelector('.card-blurb-wrap[data-blurb-slug="' + slug + '"]');
+    var existingEl = wrap ? wrap.querySelector('.card-blurb-text') : null;
+    var current = existingEl ? existingEl.textContent : '';
+    var next = prompt('Note for this card (shown to everyone, separate from its data). Clear the box to remove it:', current);
+    if (next === null) return; // cancelled
+    next = next.trim();
+    btn.disabled = true;
+    try {
+        const res = await fetch('/admin/roster-cards/set-blurb', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ card_id: slug, text: next }),
+        });
+        const d = await res.json().catch(function(){ return {}; });
+        if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
+        if (wrap) {
+            if (existingEl) {
+                if (next) { existingEl.textContent = next; } else { existingEl.remove(); }
+            } else if (next) {
+                var div = document.createElement('div');
+                div.className = 'card-blurb-text';
+                div.textContent = next;
+                wrap.insertBefore(div, btn);
+            }
+        }
+        if (typeof toast === 'function') toast('Card note saved.', 'ok');
+    } catch (e) {
+        alert('Could not save this note: ' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// Task #183: superadmin-only manual override for a member's current/previous
+// war fame value, in case the CR API is wrong, delayed, or the member left
+// mid-race. Same prompt()-based pattern as editCardBlurb() above -- an empty
+// input clears the override and falls back to the live CR API value again.
+async function editWarFame(tag, field, btn) {
+    var cell = document.querySelector('td[data-war-fame-cell="' + field + '"][data-war-fame-tag="' + tag + '"]');
+    var label = field === 'current' ? 'current-war' : 'previous-war';
+    var next = prompt('Override this member\'s ' + label + ' fame (leave blank to clear the override and use the CR API value again):', '');
+    if (next === null) return; // cancelled
+    next = next.trim();
+    btn.disabled = true;
+    try {
+        const res = await fetch('/admin/roster/war-fame-override', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag: tag, field: field, value: next === '' ? null : next }),
+        });
+        const d = await res.json().catch(function(){ return {}; });
+        if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
+        if (typeof toast === 'function') toast('War fame override saved. Reload the page to see the new value.', 'ok');
+        else alert('Saved. Reload the page to see the new value.');
+    } catch (e) {
+        alert('Could not save this override: ' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 var _cardMasteryByCard = [];
 async function loadCardMastery() {
     const el = document.getElementById('card-mastery-leaderboard');
@@ -1041,7 +1262,7 @@ async function loadCardMastery() {
             el.innerHTML = '<span style="color:var(--dim); font-size:12px;">No card data recorded yet.</span>';
         } else {
             el.innerHTML = rows.map((r, i) =>
-                `<div class="hof-item"><span class="hof-label">${i + 1}. ${esc(r.name)}</span><span class="hof-value">${r.maxed_count}/${r.total_count} maxed<span> · ${r.maxed_pct}%</span></span></div>`
+                `<div class="hof-item"><span class="hof-label">${i + 1}. ${playerLink(r.tag, r.name)}</span><span class="hof-value">${r.maxed_count}/${r.total_count} maxed<span> · ${r.maxed_pct}%</span></span></div>`
             ).join('');
         }
         // Task #177: by-card view -- every card seen in the clan with how
@@ -1089,7 +1310,7 @@ async function lookupCardMastery() {
             el.innerHTML = `<span style="color:var(--dim); font-size:12px;">No one currently in the clan has "${esc(card)}" maxed (or that's not a recognized card name).</span>`;
         } else {
             el.innerHTML = `<div style="font-size:12px; color:var(--dim); margin-bottom:6px;">${owners.length} member${owners.length === 1 ? '' : 's'} with this maxed:</div>` +
-                owners.map(o => `<span class="hof-item" style="display:inline-block; margin:2px 6px 2px 0;">${esc(o.name)}</span>`).join('');
+                owners.map(o => `<span class="hof-item" style="display:inline-block; margin:2px 6px 2px 0;">${playerLink(o.tag, o.name)}</span>`).join('');
         }
     } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
 }
@@ -1099,10 +1320,15 @@ async function loadPublicLeaderboards() {
     try {
         const res = await fetch('/api/leaderboards/public');
         const d = await res.json();
+        // Task #188: no longer capped to the top 10 server-side, so each
+        // column gets its own scroll region instead of the whole card
+        // growing to fit an entire roster.
         const col = (title, rows, unit) => `
             <div>
                 <div style="font-weight:bold; margin-bottom:6px;">${title}</div>
-                ${(rows || []).map((r,i) => `<div class="hof-item"><span class="hof-label">${i+1}. ${esc(r.name)}</span><span class="hof-value">${r.value}${unit || ''}</span></div>`).join('') || '<span style="color:var(--dim); font-size:12px;">No data.</span>'}
+                <div style="max-height:320px; overflow-y:auto;">
+                ${(rows || []).map((r,i) => `<div class="hof-item"><span class="hof-label">${i+1}. ${playerLink(r.tag, r.name)}</span><span class="hof-value">${r.value}${unit || ''}</span></div>`).join('') || '<span style="color:var(--dim); font-size:12px;">No data.</span>'}
+                </div>
             </div>`;
         // Fame resets to 0 between war days -- when the live race has nothing
         // yet, the server substitutes the last completed race so this isn't
@@ -1128,7 +1354,7 @@ loadHallOfFame();
 loadSpotlights();
 loadLegends();
 loadClanProgress();
-loadBoatBattle();
+loadWarFameContribution();
 loadCardMastery();
 if (document.getElementById('discord-widget-content')) loadDiscordWidget();
 loadPublicLeaderboards();
@@ -1175,8 +1401,19 @@ async function loadPolls() {
                     + '<div style="background:#1e2530; border-radius:4px; height:8px; overflow:hidden; cursor:pointer;" onclick="voteInPoll(' + JSON.stringify(String(p._id)) + ',' + i + ')">'
                     + '<div style="background:var(--accent); height:100%; width:' + pct + '%;"></div></div></div>';
             }).join('');
+            // Task #184: every poll now runs a fixed 1-week duration -- show
+            // whoever's looking when it closes rather than leaving it
+            // looking like an indefinite leadership-only poll.
+            var expiryNote = '';
+            if (p.expires_at) {
+                var exp = new Date(p.expires_at);
+                if (!isNaN(exp.getTime())) {
+                    var daysLeft = Math.max(0, Math.ceil((exp.getTime() - Date.now()) / 86400000));
+                    expiryNote = '<div style="font-size:11px; color:var(--dim); margin-top:2px;">' + (daysLeft > 0 ? daysLeft + ' day' + (daysLeft === 1 ? '' : 's') + ' left' : 'Closing soon') + '</div>';
+                }
+            }
             return '<div class="hof-item" style="flex-direction:column; align-items:stretch; margin-bottom:16px;">'
-                + '<div style="font-weight:bold; margin-bottom:8px;">' + esc(p.question) + '</div>' + opts + '</div>';
+                + '<div style="font-weight:bold; margin-bottom:8px;">' + esc(p.question) + '</div>' + opts + expiryNote + '</div>';
         }).join('');
     } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Failed to load.</span>'; }
 }
@@ -1191,6 +1428,29 @@ async function voteInPoll(pollId, optionIndex) {
         toast('Vote recorded!', 'ok');
         loadPolls();
     } catch (e) { toast('Vote failed.', 'err'); }
+}
+
+// Task #184: lightweight creation flow (prompt-based, matching this page's
+// existing pattern for editCardBlurb/editWarFame rather than a full modal) --
+// open to any logged-in linked member, not just admins. Every poll the
+// server creates runs a fixed 1-week duration; there's no duration input
+// here because it's not configurable by design.
+async function createPoll() {
+    const question = (prompt('Poll question:') || '').trim();
+    if (!question) return;
+    const optionsRaw = (prompt('Options, separated by commas (at least 2):') || '').trim();
+    const options = optionsRaw.split(',').map(s => s.trim()).filter(Boolean);
+    if (options.length < 2) { toast('Need at least 2 options.', 'err'); return; }
+    try {
+        const res = await fetch('/api/polls', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ question: question, options: options }),
+        });
+        const d = await res.json();
+        if (!res.ok || d.error) { toast(d.error || 'Could not create poll.', 'err'); return; }
+        toast('Poll created — runs for 1 week.', 'ok');
+        loadPolls();
+    } catch (e) { toast('Could not create poll.', 'err'); }
 }
 
 // ── Idea #194: clan photo/meme gallery (gated behind idea #250's beta toggle) ──

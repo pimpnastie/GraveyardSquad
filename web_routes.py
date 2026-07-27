@@ -778,17 +778,36 @@ DEFAULT_ADMIN_CAPABILITIES = {
 
 def get_admin_level() -> int:
     """Resolve the current session to one of the 6 admin levels (0 = not an
-    admin at all). Migrates transparently from the older admin_tiers
-    "full"/"analytics_only" strings (idea #65) so accounts set up before this
-    feature existed keep working without a manual re-grant: "full" -> 5
-    (Leader), "analytics_only" -> 1 (View Only), and anyone admin-granted but
-    never assigned either field defaults to 5 (Leader), same as
-    has_full_admin()'s old default-full behavior."""
+    admin at all).
+
+    Resolution order:
+    1. MASTER_ADMIN_ID env var, or whoever currently holds the "Mythic"
+       identity -- HARDCODED to level 6 (Superadmin), always, regardless of
+       anything stored in admin_levels/admin_tiers. This was explicitly
+       requested after an admin_levels edit accidentally left the actual
+       account owner without Superadmin -- these two identities can no
+       longer be demoted through the normal level-editing UI.
+    2. An explicit per-user override in config.system_config.admin_levels
+       (set via the User Access tab's level picker).
+    3. The legacy admin_tiers "full"/"analytics_only" strings (idea #65),
+       for accounts set up before this feature existed: "full" -> 5
+       (Coleader), "analytics_only" -> 1 (Non-member).
+    4. Task #196: role-based auto-leveling -- the highest level among the
+       user's CURRENT Discord roles that has an entry in
+       config.system_config.role_level_map (Settings-configurable). Level 6
+       is deliberately excluded from role-assignment -- only step 1 above can
+       grant Superadmin.
+    5. If none of the above match, defaults to 1 (Non-member) rather than the
+       old blanket default-5 -- "auto assign people to non-member unless a
+       role assigns them otherwise", per your request.
+    """
     if not is_admin():
         return 0
     discord_id = str(session.get("discord_id", ""))
     master_admin = os.getenv("MASTER_ADMIN_ID", "")
     if master_admin and discord_id == master_admin:
+        return 6
+    if _is_mythic_identity(discord_id):
         return 6
     config = db_sync["config"].find_one({"_id": "system_config"}) or {}
     levels = config.get("admin_levels", {})
@@ -802,7 +821,22 @@ def get_admin_level() -> int:
     legacy = config.get("admin_tiers", {}).get(discord_id)
     if legacy == "analytics_only":
         return 1
-    return 5
+    role_level_map = config.get("role_level_map", {})
+    if role_level_map:
+        user_roles = set(str(r) for r in session.get("user_roles", []))
+        matched = []
+        for role_id, lvl in role_level_map.items():
+            if str(role_id) not in user_roles:
+                continue
+            try:
+                lvl = int(lvl)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= lvl <= 5:  # level 6 is not role-assignable, see docstring
+                matched.append(lvl)
+        if matched:
+            return max(matched)
+    return 1
 
 
 def get_permission_matrix() -> dict:
@@ -859,27 +893,15 @@ def has_full_admin() -> bool:
     return get_admin_level() >= 5
 
 
-def can_hide_roster_cards() -> bool:
-    """Task #155: a narrower permission than the general is_admin()/
-    has_full_admin() tiers, on purpose -- this controls what every OTHER
-    member sees on the public roster page (hiding a dashboard card behind
-    admin-only visibility), not just admin-only tooling, so it's restricted
-    to just the master admin (MASTER_ADMIN_ID -- the "super admin") and
-    whoever currently holds the name "Mythic", checked against both their
+def _is_mythic_identity(discord_id: str) -> bool:
+    """Shared by get_admin_level() and can_hide_roster_cards(): true if the
+    given discord_id currently goes by "Mythic", checked against both their
     Discord display name and their linked Clash Royale in-game name since
-    either could be how they're actually identified."""
-    if not is_admin():
-        return False
-    discord_id = str(session.get("discord_id", ""))
-    master_admin = os.getenv("MASTER_ADMIN_ID", "")
-    if master_admin and discord_id == master_admin:
-        return True
-    # Task #173: level 6 (Super Admin) is meant to mean "everything", so
-    # anyone explicitly granted level 6 via the new permission system passes
-    # this narrower check too, not just the env-var master admin.
-    if get_admin_level() >= 6:
-        return True
-    if (session.get("discord_name") or "").strip().lower() == "mythic":
+    either could be how they're actually identified. Factored out so both
+    functions hardcode the exact same identity check rather than two
+    independently-maintained copies drifting apart."""
+    if (session.get("discord_id") and str(session.get("discord_id")) == discord_id
+            and (session.get("discord_name") or "").strip().lower() == "mythic"):
         return True
     user_doc = db_sync["users"].find_one({"discord_id": discord_id}, {"cr_tag": 1}) or {}
     cr_tag = user_doc.get("cr_tag")
@@ -888,6 +910,23 @@ def can_hide_roster_cards() -> bool:
         if (profile.get("name") or "").strip().lower() == "mythic":
             return True
     return False
+
+
+def can_hide_roster_cards() -> bool:
+    """Task #155: a narrower permission than the general is_admin()/
+    has_full_admin() tiers, on purpose -- this controls what every OTHER
+    member sees on the public roster page (hiding a dashboard card behind
+    admin-only visibility), not just admin-only tooling, so it's restricted
+    to just the master admin (MASTER_ADMIN_ID -- the "super admin") and
+    whoever currently holds the name "Mythic"."""
+    if not is_admin():
+        return False
+    # Task #173/#193: level 6 (Superadmin) is meant to mean "everything", and
+    # get_admin_level() already hardcodes both MASTER_ADMIN_ID and the Mythic
+    # identity to level 6, so this narrower check can just defer to that
+    # single source of truth instead of duplicating the master-admin/Mythic
+    # logic a second time.
+    return get_admin_level() >= 6
 
 
 def get_template(template_name: str) -> str:
@@ -1548,6 +1587,15 @@ def index():
         )
         # Idea #116: only nudge into the onboarding flow once per account.
         show_onboarding = not (user_doc or {}).get("onboarding_completed", False)
+    else:
+        user_doc = None
+
+    # Task #186: "personal drill down" -- a linked member currently has no
+    # quick way to jump to their own full profile (all their history,
+    # strikes, settings, etc. already live on player.html, but finding
+    # yourself meant scrolling/sorting the whole roster table first). This
+    # is just the entry point; the destination page already has everything.
+    own_linked_tag = clean_tag((user_doc or {}).get("cr_tag", "")) if (user_doc or {}).get("cr_tag") else None
 
     # "Member Since" column: joined_clan_at is stamped once, the first time our
     # harvester ever sees a tag in the clan (see harvest_clan_and_profiles's
@@ -1576,6 +1624,38 @@ def index():
         joined_at = _as_aware_utc(join_dates.get(m.get("tag")))
         m["joined_clan_at"] = joined_at.strftime("%Y-%m-%d") if joined_at else None
         m["warDayWins"] = war_day_wins.get(m.get("tag"), 0)
+
+    # Task #183: current/previous war fame per member on the roster table.
+    # Current comes straight off the live currentriverrace clan.participants
+    # list (cumulative fame-to-date this race, refreshed every harvest cycle
+    # via the same fallback helper the admin war tab uses). Previous is the
+    # final participants list from the most recently completed war_history
+    # doc -- there's no "day 2 of last war" data kept around, just the total.
+    current_war_data, _cwf = _current_riverrace_with_fallback()
+    current_fame_by_tag = {}
+    if current_war_data:
+        for p in (current_war_data.get("clan") or {}).get("participants", []):
+            current_fame_by_tag[p.get("tag", "")] = p.get("fame", 0) or 0
+    previous_fame_by_tag = {}
+    last_race = db_sync["war_history"].find_one(
+        {}, sort=[("data.seasonId", -1), ("data.sectionIndex", -1)]
+    )
+    if last_race:
+        for p in ((last_race.get("data") or {}).get("clan") or {}).get("participants", []):
+            previous_fame_by_tag[p.get("tag", "")] = p.get("fame", 0) or 0
+    # Superadmin-editable overrides (task #183 explicitly asked for this table
+    # to be editable) -- same pattern as roster_card_blurbs/hidden_roster_cards,
+    # a dict on bot_settings keyed by the clean (no "#") tag.
+    bot_settings_for_fame = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
+    war_fame_overrides = bot_settings_for_fame.get("war_fame_overrides", {})
+    for m in clan_data.get("memberList", []):
+        tag = m.get("tag", "")
+        clean_tag = tag.replace("#", "").upper()
+        override = war_fame_overrides.get(clean_tag, {})
+        m["war_fame_current"] = override.get("current", current_fame_by_tag.get(tag, 0))
+        m["war_fame_previous"] = override.get("previous", previous_fame_by_tag.get(tag, 0))
+        m["war_fame_current_overridden"] = "current" in override
+        m["war_fame_previous_overridden"] = "previous" in override
 
     # "Clan tracked since": the CR API doesn't expose a true clan-creation
     # date anywhere (the /clans endpoint has no such field), so the best
@@ -1628,6 +1708,23 @@ def index():
         # icon itself, separate from the general is_admin flag above.
         hidden_roster_cards=bot_settings.get("hidden_roster_cards", []),
         can_hide_roster_cards=can_hide_roster_cards(),
+        # Task #181: "add and edit text (except data) in each of the cards on
+        # roster.html" -- a free-text blurb per card slug, separate from the
+        # actual computed data in that card. Stored the same way as
+        # hidden_roster_cards (a dict on bot_settings, keyed by the same
+        # slugs card_hide_icon() already uses) so both features share one
+        # mental model. can_edit_card_text is a real permission-matrix
+        # capability (level 3/Veteran by default, configurable in Settings),
+        # not the narrower master-admin+Mythic gate hide/unhide uses.
+        roster_card_blurbs=bot_settings.get("roster_card_blurbs", {}),
+        can_edit_card_text=has_capability("edit_roster_card_text"),
+        # Task #183: current/previous war fame columns on the roster table,
+        # editable by super admins only (a real permission-matrix capability,
+        # not the narrower master-admin+Mythic hide gate).
+        can_edit_war_fame=has_capability("edit_war_fame_table"),
+        # Task #186: personal drill-down quick link -- None if not logged in
+        # or not yet linked to a CR tag (link.html covers that case).
+        own_linked_tag=own_linked_tag,
     )
 
 def compute_onboarding_checklist(discord_id, cr_tag):
@@ -2041,6 +2138,89 @@ def api_player_best_deck(tag):
     })
 
 
+@web_bp.route("/api/player/<tag>/current-deck")
+def api_player_current_deck(tag):
+    """Task #197: deck_snapshots has recorded every member's actually-
+    equipped deck once a day since task #151, but the only place any of that
+    data ever surfaced was as a plain joined-string column in the CSV export
+    -- there was no "here's what deck this player is using right now" card
+    anywhere on the site despite the data already being harvested. Public
+    (unlike best-deck above, which reads a player's full card collection):
+    a player's currently-equipped deck is already visible in-game to any
+    opponent they battle, so showing it here isn't a new privacy exposure.
+
+    New, beyond just "show the 8 cards": average elixir cost and evolution-
+    slot usage (both already present per-card in the stored snapshot, just
+    never aggregated), support cards + favourite card (captured since task
+    #151, never displayed), how many consecutive days this exact 8-card set
+    has been used (a loyalty/stability signal, from the daily snapshot
+    history), a copy-deck link (same link format used elsewhere in this
+    file), and "deck twins" -- other current members whose own latest
+    snapshot shares 6 or more of the same 8 cards."""
+    clean = clean_tag(tag)
+    full_tag = f"#{clean}"
+    latest = db_sync["deck_snapshots"].find_one({"tag": full_tag}, sort=[("date", -1)])
+    if not latest or not latest.get("deck"):
+        return jsonify({"error": "No deck recorded for this player yet."}), 404
+
+    cards = latest.get("deck") or []
+    card_names = [c.get("name") for c in cards if c.get("name")]
+    elixir_costs = [c.get("elixirCost") for c in cards if isinstance(c.get("elixirCost"), (int, float))]
+    avg_elixir = round(sum(elixir_costs) / len(elixir_costs), 2) if elixir_costs else None
+    evo_count = sum(1 for c in cards if (c.get("evolutionLevel") or 0) > 0)
+
+    # Stability: walk backwards through this player's own snapshot history
+    # (most-recent-first, capped at 120 days for performance) counting
+    # consecutive days with this exact 8-card set, stopping at the first day
+    # it differs.
+    history = list(db_sync["deck_snapshots"].find(
+        {"tag": full_tag}, {"date": 1, "deck": 1}
+    ).sort("date", -1).limit(120))
+    today_set = frozenset(card_names)
+    days_on_current_deck = 0
+    for h in history:
+        h_names = frozenset(c.get("name") for c in (h.get("deck") or []) if c.get("name"))
+        if h_names == today_set:
+            days_on_current_deck += 1
+        else:
+            break
+
+    # Deck twins: every OTHER member's most-recent snapshot, compared for
+    # card overlap. One aggregation (latest snapshot per tag) rather than
+    # loading full history for the whole clan.
+    deck_twins = []
+    other_latest_cursor = db_sync["deck_snapshots"].aggregate([
+        {"$match": {"tag": {"$ne": full_tag}}},
+        {"$sort": {"date": -1}},
+        {"$group": {"_id": "$tag", "name": {"$first": "$name"}, "deck": {"$first": "$deck"}}},
+    ])
+    for doc in other_latest_cursor:
+        other_names = frozenset(c.get("name") for c in (doc.get("deck") or []) if c.get("name"))
+        if not other_names:
+            continue
+        overlap = len(today_set & other_names)
+        if overlap >= 6:
+            deck_twins.append({
+                "tag": (doc.get("_id") or "").replace("#", ""),
+                "name": doc.get("name"),
+                "shared_cards": overlap,
+                "identical": overlap == 8,
+            })
+    deck_twins.sort(key=lambda t: -t["shared_cards"])
+
+    return jsonify({
+        "cards": cards,
+        "average_elixir": avg_elixir,
+        "evolution_slots_used": evo_count,
+        "support_cards": latest.get("support_cards") or [],
+        "favourite_card": latest.get("favourite_card"),
+        "recorded_at": latest.get("recorded_at").isoformat() if latest.get("recorded_at") else None,
+        "days_on_current_deck": days_on_current_deck,
+        "copy_deck_url": ("https://link.clashroyale.com/en/?clashroyale://copyDeck?deck=" + ";".join(card_names)) if card_names else None,
+        "deck_twins": deck_twins[:8],
+    })
+
+
 @web_bp.route("/api/player/<tag>/strike-appeal", methods=["POST"])
 def api_player_strike_appeal(tag):
     """Rec #2: lets a member submit a short appeal note against their own
@@ -2112,6 +2292,77 @@ def admin_toggle_roster_card_hide():
     )
     log_admin_activity(f"{'Hid' if now_hidden else 'Unhid'} roster card", target=card_id)
     return jsonify({"success": True, "hidden": now_hidden})
+
+
+@web_bp.route("/admin/roster-cards/set-blurb", methods=["POST"])
+def admin_set_roster_card_blurb():
+    """Task #181: "add and edit text (except data) in each of the cards on
+    roster.html" -- a free-text note/blurb per card, stored on bot_settings
+    alongside hidden_roster_cards (same slugs, same doc), rendered by
+    roster.html's card_blurb() macro. Deliberately a real permission-matrix
+    capability (edit_roster_card_text, level 3/Veteran by default) rather
+    than can_hide_roster_cards()'s narrower master-admin+Mythic gate -- this
+    is meant to be usable by ordinary trusted officers writing a quick note,
+    not a "controls what everyone sees" structural change like hiding a card
+    outright."""
+    if not has_capability("edit_roster_card_text"):
+        return jsonify({"error": "unauthorized"}), 403
+    data = request.get_json(silent=True) or {}
+    card_id = (data.get("card_id") or "").strip()
+    text = str(data.get("text") or "").strip()[:500]
+    if not card_id:
+        return jsonify({"error": "card_id required"}), 400
+    settings_doc = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
+    blurbs = dict(settings_doc.get("roster_card_blurbs", {}))
+    if text:
+        blurbs[card_id] = text
+    else:
+        blurbs.pop(card_id, None)  # empty text clears the blurb entirely
+    db_sync["config"].update_one(
+        {"_id": "bot_settings"}, {"$set": {"roster_card_blurbs": blurbs}}, upsert=True
+    )
+    log_admin_activity("Edited roster card text", target=card_id)
+    return jsonify({"success": True, "text": text})
+
+
+@web_bp.route("/admin/roster/war-fame-override", methods=["POST"])
+def admin_set_war_fame_override():
+    """Task #183: "make that table editable by super admins" -- the
+    current/previous war fame columns on the roster table are otherwise
+    entirely CR-API-derived, but the CR API is occasionally wrong or delayed
+    (a rival clan's kick right before period-close, a stats glitch, etc.), so
+    superadmins get a manual override per member per column. Deliberately
+    gated on edit_war_fame_table (level 6/Superadmin by default, per the
+    user's explicit "super admins" wording) rather than the lower
+    edit_roster_card_text capability #181 uses -- this edits real numeric
+    data, not just a free-text note."""
+    if not has_capability("edit_war_fame_table"):
+        return jsonify({"error": "unauthorized"}), 403
+    data = request.get_json(silent=True) or {}
+    tag = clean_tag(data.get("tag") or "")
+    field = data.get("field") or ""
+    if not tag or field not in ("current", "previous"):
+        return jsonify({"error": "tag and field ('current' or 'previous') required"}), 400
+    value = data.get("value")
+    settings_doc = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
+    overrides = dict(settings_doc.get("war_fame_overrides", {}))
+    member_override = dict(overrides.get(tag, {}))
+    if value is None or value == "":
+        member_override.pop(field, None)  # blank clears just this one field
+    else:
+        try:
+            member_override[field] = max(0, int(value))
+        except (TypeError, ValueError):
+            return jsonify({"error": "value must be a number"}), 400
+    if member_override:
+        overrides[tag] = member_override
+    else:
+        overrides.pop(tag, None)  # both fields cleared -- drop the member entirely
+    db_sync["config"].update_one(
+        {"_id": "bot_settings"}, {"$set": {"war_fame_overrides": overrides}}, upsert=True
+    )
+    log_admin_activity("Edited war fame override", target=f"{tag}:{field}")
+    return jsonify({"success": True, "tag": tag, "field": field, "value": member_override.get(field)})
 
 
 @web_bp.route("/admin/api/player/admin_toggle", methods=["POST"])
@@ -4046,6 +4297,55 @@ def admin_save_permission_matrix():
     return jsonify({"success": True})
 
 
+@web_bp.route("/admin/api/role-level-map")
+def admin_get_role_level_map():
+    """Task #196: "auto assign people to non-member unless a role assigns
+    them otherwise". This is the Settings-page config that maps a Discord
+    role ID to the admin level anyone holding that role should automatically
+    get (see get_admin_level()'s resolution order) -- e.g. an "Elder" Discord
+    role could map to level 4. Level 6 (Superadmin) is intentionally not
+    role-assignable; see get_admin_level()'s docstring."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    config = db_sync["config"].find_one({"_id": "system_config"}) or {}
+    role_names = fetch_guild_role_names()
+    role_level_map = config.get("role_level_map", {})
+    return jsonify({
+        "role_level_map": role_level_map,
+        "role_names": {rid: role_names.get(rid, rid) for rid in list(role_level_map.keys()) + [str(r) for r in config.get("admin_role_ids", [])]},
+        "admin_role_ids": config.get("admin_role_ids", []),
+        "levels": [{"level": lvl, "key": key, "label": label} for lvl, key, label in ADMIN_LEVELS if lvl < 6],
+    })
+
+
+@web_bp.route("/admin/api/role-level-map", methods=["POST"])
+def admin_save_role_level_map():
+    """Task #196: save the Discord role -> admin level auto-assignment map.
+    Gated by has_capability("manage_user_access") (level 5 by default) --
+    same permission that already governs changing individual users' levels
+    on the User Access tab, since this is really the same kind of decision
+    just applied in bulk via roles instead of one account at a time."""
+    if not has_capability("manage_user_access"):
+        return jsonify({"error": "unauthorized — you don't have permission to manage user access"}), 403
+    data = request.get_json(silent=True) or {}
+    updates = data.get("role_level_map")
+    if not isinstance(updates, dict):
+        return jsonify({"error": "role_level_map must be an object of role_id -> level"}), 400
+    clean = {}
+    for role_id, lvl in updates.items():
+        role_id = str(role_id).strip()
+        if not role_id.isdigit():
+            continue
+        try:
+            lvl = int(lvl)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= lvl <= 5:  # level 6 not role-assignable -- see get_admin_level()
+            clean[role_id] = lvl
+    db_sync["config"].update_one({"_id": "system_config"}, {"$set": {"role_level_map": clean}}, upsert=True)
+    log_admin_activity("Updated role-level auto-assignment map", details=f"{len(clean)} roles mapped")
+    return jsonify({"success": True})
+
+
 @web_bp.route("/admin/api/users")
 def admin_api_users():
     """User table for the User Access tab."""
@@ -4057,13 +4357,17 @@ def admin_api_users():
     stored_levels = config.get("admin_levels", {})
     legacy_tiers = config.get("admin_tiers", {})
 
-    def _level_for(discord_id, is_admin_row):
-        """Task #173: same resolution get_admin_level() does for the current
-        session, but for an arbitrary row in this table -- reuses the config
-        doc already fetched above instead of one query per user."""
+    role_level_map = config.get("role_level_map", {})
+
+    def _level_for(discord_id, is_admin_row, role_ids=None):
+        """Task #173/#193/#196: same resolution get_admin_level() does for
+        the current session, but for an arbitrary row in this table -- reuses
+        the config doc already fetched above instead of one query per user."""
         if not is_admin_row:
             return 0
         if master_admin and discord_id == master_admin:
+            return 6
+        if _is_mythic_identity(discord_id):
             return 6
         if discord_id in stored_levels:
             try:
@@ -4072,7 +4376,23 @@ def admin_api_users():
                     return lvl
             except (TypeError, ValueError):
                 pass
-        return 1 if legacy_tiers.get(discord_id) == "analytics_only" else 5
+        if legacy_tiers.get(discord_id) == "analytics_only":
+            return 1
+        if role_level_map and role_ids:
+            user_roles = set(str(r) for r in role_ids)
+            matched = []
+            for role_id, lvl in role_level_map.items():
+                if str(role_id) not in user_roles:
+                    continue
+                try:
+                    lvl = int(lvl)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= lvl <= 5:
+                    matched.append(lvl)
+            if matched:
+                return max(matched)
+        return 1
 
     # Build a tag -> profile map for clan rank
     profiles = {
@@ -4093,7 +4413,7 @@ def admin_api_users():
         discord_id = u.get("discord_id", "")
         role_ids = u.get("discord_roles") or []
         is_admin_row = discord_id in admin_ids or discord_id == master_admin
-        level = _level_for(discord_id, is_admin_row)
+        level = _level_for(discord_id, is_admin_row, role_ids)
         result.append({
             "discord_id": discord_id,
             "admin_level": level,
@@ -5318,6 +5638,89 @@ def api_clan_boat_battle():
     })
 
 
+@web_bp.route("/api/clan/war-fame-contribution")
+def api_clan_war_fame_contribution():
+    """Task #182: replaces the old Boat Battle Leaderboard (repair
+    points/boat attacks, which barely ever had any data) with the stat people
+    actually asked for -- who has contributed the most FAME this war, and how
+    that's trended day by day, plus how the previous (completed) war shook out.
+
+    Current-war day-by-day series reuses the same periodLogs reconstruction
+    trick as /admin/api/war/day-breakdown (each periodLogs entry's
+    clan.participants[] is that member's activity for a single day, not a
+    running total) -- but this route is public and adds member names, and
+    trims to the top contributors so the chart stays readable.
+
+    Previous-war doesn't have day-by-day data in our stored schema (war_history
+    docs only keep the final per-race participant totals), so that half is
+    just a simple ranked list from the most recently completed race.
+    """
+    own_tag = f"#{CLAN_TAG}"
+
+    # --- Current war: reconstruct per-day fame per member from periodLogs ---
+    data, data_freshness = _current_riverrace_with_fallback()
+    current_days = []
+    current_series = []
+    current_period_index = None
+    if data:
+        logs = data.get("periodLogs", [])
+        member_names = {}
+        member_days = {}  # clean tag -> [fame_day1, fame_day2, ...]
+        for i, log_entry in enumerate(logs):
+            items = log_entry.get("items", [])
+            own = next((it for it in items if it.get("clan", {}).get("tag") == own_tag), None)
+            own_clan = (own or {}).get("clan", {}) if own else {}
+            current_days.append(i + 1)
+            for p in own_clan.get("participants", []):
+                clean = p.get("tag", "").replace("#", "").upper()
+                member_names[clean] = p.get("name", "Unknown")
+                member_days.setdefault(clean, []).append(p.get("fame", 0) or 0)
+        # Rank by total fame across all recorded days so far, keep top 8 --
+        # a multi-line chart with the full roster is unreadable.
+        totals = sorted(member_days.items(), key=lambda kv: sum(kv[1]), reverse=True)
+        for clean, fame_by_day in totals[:8]:
+            current_series.append({
+                "tag": f"#{clean}",
+                "name": member_names.get(clean, "Unknown"),
+                "fame_by_day": fame_by_day,
+                "total_fame": sum(fame_by_day),
+            })
+        current_period_index = data.get("periodIndex")
+
+    # --- Previous war: simple ranked total-fame leaderboard from war_history ---
+    previous_leaderboard = []
+    last_race = db_sync["war_history"].find_one(
+        {}, sort=[("data.seasonId", -1), ("data.sectionIndex", -1)]
+    )
+    if last_race:
+        race_clan = (last_race.get("data") or {}).get("clan") or {}
+        participants = sorted(
+            race_clan.get("participants", []),
+            key=lambda p: p.get("fame", 0) or 0,
+            reverse=True,
+        )
+        # Task #188: this was capped to the top 8 (matching the current-war
+        # chart's legibility cap above), but a plain ranked list isn't a
+        # chart -- there's no reason to cut most of the clan out of it, so
+        # this now returns every participant from the last race.
+        previous_leaderboard = [
+            {"tag": p.get("tag", ""), "name": p.get("name", "Unknown"), "fame": p.get("fame", 0) or 0}
+            for p in participants
+        ]
+
+    return jsonify({
+        "current": {
+            "days": current_days,
+            "series": current_series,
+            "period_index": current_period_index,
+        },
+        "previous": {
+            "leaderboard": previous_leaderboard,
+        },
+        "data_freshness": data_freshness,
+    })
+
+
 @web_bp.route("/api/compare/<tag1>/<tag2>")
 def api_compare_players(tag1, tag2):
     """Idea #25: head-to-head comparison — pick two clan members, see key stats
@@ -5495,14 +5898,32 @@ def api_player_deck_quality_benchmark(tag):
 
 @web_bp.route("/api/player/<tag>/flair", methods=["GET", "POST"])
 def api_player_flair(tag):
-    """Idea #27: a lightweight self-set "personality" field (motto + favourite
-    card note) for a more social profile page. Only the linked Discord account
-    for this tag (or an admin) may edit it — anyone can read it, since it's meant
-    to be public flair, not private data."""
+    """Idea #27: a lightweight self-set "personality" field for a more social
+    profile page. Only the linked Discord account for this tag (or an admin)
+    may edit it — anyone can read it, since it's meant to be public flair,
+    not private data.
+
+    Task #191: expanded the self-serve fields available here -- flair_note
+    ("favourite card") had a real backend field and API support already, but
+    NO input anywhere in player.html ever let a member actually set it (same
+    orphaned-field bug class as top_season_donator before task #176 fixed
+    it). Added two more genuinely new fields on top of wiring that one up:
+    a timezone note (helps teammates know when to expect you online for war)
+    and a short playstyle/favorite-mode blurb -- all still just public flair,
+    same permission model as the motto always had."""
     clean = clean_tag(tag)
     if request.method == "GET":
-        doc = db_sync["player_profiles"].find_one({"tag": f"#{clean}"}, {"flair_motto": 1, "flair_note": 1, "custom_badge": 1}) or {}
-        return jsonify({"motto": doc.get("flair_motto", ""), "note": doc.get("flair_note", ""), "custom_badge": doc.get("custom_badge", "")})
+        doc = db_sync["player_profiles"].find_one(
+            {"tag": f"#{clean}"},
+            {"flair_motto": 1, "flair_note": 1, "flair_timezone": 1, "flair_playstyle": 1, "custom_badge": 1},
+        ) or {}
+        return jsonify({
+            "motto": doc.get("flair_motto", ""),
+            "note": doc.get("flair_note", ""),
+            "timezone": doc.get("flair_timezone", ""),
+            "playstyle": doc.get("flair_playstyle", ""),
+            "custom_badge": doc.get("custom_badge", ""),
+        })
 
     if "discord_id" not in session:
         return jsonify({"error": "unauthorized"}), 403
@@ -5517,6 +5938,8 @@ def api_player_flair(tag):
         {"$set": {
             "flair_motto": str(data.get("motto", ""))[:80],
             "flair_note": str(data.get("note", ""))[:120],
+            "flair_timezone": str(data.get("timezone", ""))[:40],
+            "flair_playstyle": str(data.get("playstyle", ""))[:120],
         }},
         upsert=True,
     )
@@ -6287,39 +6710,83 @@ def _badge_streak_master(profile, battles):
 def _badge_century_club(profile, battles):
     return (profile.get("wins") or 0) >= 100
 
+# Task #190: two new badges specifically to give the "categorize badges" ask
+# something to actually categorize -- the original 5 were entirely
+# battle-log-derived (all either "Combat" or "Dedication"), so a Community
+# and a Collection badge round out categories that already exist elsewhere on
+# this page (kudos, card mastery) but never had a badge of their own.
+def _badge_fan_favorite(profile, battles):
+    # Real total, not the capped 20-row GET /api/kudos preview -- a badge
+    # check needs the true count, not just what fits in a UI list.
+    return (profile.get("_kudos_received_count") or 0) >= 10
+
+def _badge_card_collector(profile, battles):
+    cards = profile.get("cards") or []
+    return sum(1 for c in cards if (c.get("level") or 0) >= MAX_CARD_LEVEL) >= 20
+
 # Each entry's description explains exactly how that badge is earned, so
 # api_player_badges can hand it straight to the frontend as tooltip text
 # instead of leaving players to guess what "Iron Wall" is supposed to mean.
+# category groups these for display (task #190) -- purely a presentation
+# grouping, doesn't change how any badge is earned.
 BADGE_DEFINITIONS = [
-    ("comeback_king",    "Comeback King",     "🔥", _badge_comeback_king,
+    ("comeback_king",    "Comeback King",     "🔥", "Combat",
+     _badge_comeback_king,
      "Won 3+ battles where the opponent still landed 2 or more crowns — a close win, not a clean sweep."),
-    ("iron_wall",        "Iron Wall",         "🛡️", _badge_iron_wall,
+    ("iron_wall",        "Iron Wall",         "🛡️", "Combat",
+     _badge_iron_wall,
      "Won 5+ battles as a shutout — opponent finished with 0 crowns."),
-    ("marathon_runner",  "Marathon Runner",   "🏃", _badge_marathon_runner,
-     "Logged 500+ total battles since we started tracking this player."),
-    ("streak_master",    "Streak Master",     "⚡", _badge_streak_master,
-     "Currently on a 5+ week war-participation streak (used all 4 war-day battles, week after week)."),
-    ("century_club",     "Century Club",      "💯", _badge_century_club,
+    ("century_club",     "Century Club",      "💯", "Combat",
+     _badge_century_club,
      "100+ lifetime wins, per Clash Royale's own win counter."),
+    ("marathon_runner",  "Marathon Runner",   "🏃", "Dedication",
+     _badge_marathon_runner,
+     "Logged 500+ total battles since we started tracking this player."),
+    ("streak_master",    "Streak Master",     "⚡", "Dedication",
+     _badge_streak_master,
+     "Currently on a 5+ week war-participation streak (used all 4 war-day battles, week after week)."),
+    ("fan_favorite",     "Fan Favorite",      "🙌", "Community",
+     _badge_fan_favorite,
+     "Received 10+ kudos (peer \"thank you\"s) from teammates."),
+    ("card_collector",   "Card Collector",    "🃏", "Collection",
+     _badge_card_collector,
+     "Has 20+ cards at true max level (level 16)."),
 ]
+# Display order for categories -- Object.keys() on the grouped-by-category
+# dict below would otherwise follow whatever order the first badge in each
+# category happened to appear in BADGE_DEFINITIONS, which is correct here
+# incidentally but this makes the intent explicit and stays correct if
+# BADGE_DEFINITIONS gets reordered later.
+BADGE_CATEGORY_ORDER = ["Combat", "Dedication", "Community", "Collection"]
 
 
 @web_bp.route("/api/player/<tag>/badges")
 def api_player_badges(tag):
     """Idea #101 (clan-culture achievement badges) + #113 (comeback recognition,
     folded into the comeback_king badge above rather than a separate system —
-    they're the same underlying signal)."""
+    they're the same underlying signal).
+
+    Task #190: redesigned to return EVERY badge (not just earned ones), each
+    tagged earned true/false and grouped by category -- previously a member
+    had no way to see what badges existed to work toward, only the ones
+    they'd already unlocked. category_order is included so the frontend
+    doesn't have to hardcode or guess a display order."""
     clean = clean_tag(tag)
-    profile = db_sync["player_profiles"].find_one({"tag": f"#{clean}"}, {"wins": 1, "war_participation_streak": 1}) or {}
+    profile = db_sync["player_profiles"].find_one(
+        {"tag": f"#{clean}"}, {"wins": 1, "war_participation_streak": 1, "cards": 1}
+    ) or {}
     battles = list(db_sync["battle_history"].find(
         {"player_tag": clean}, {"result": 1, "opponent_crowns": 1}
     ).limit(1000))
-    earned = [
-        {"id": bid, "label": label, "emoji": emoji, "description": description}
-        for bid, label, emoji, check, description in BADGE_DEFINITIONS
-        if check(profile, battles)
+    profile["_kudos_received_count"] = db_sync["kudos"].count_documents({"to_tag": f"#{clean}"})
+    badges = [
+        {
+            "id": bid, "label": label, "emoji": emoji, "category": category,
+            "description": description, "earned": bool(check(profile, battles)),
+        }
+        for bid, label, emoji, category, check, description in BADGE_DEFINITIONS
     ]
-    return jsonify({"badges": earned})
+    return jsonify({"badges": badges, "category_order": BADGE_CATEGORY_ORDER})
 
 
 # Idea #109: seasonal challenges. Defined here as simple, code-level rules
@@ -6565,7 +7032,11 @@ def api_public_leaderboards():
     clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
     clan_data = clan_data or {}
     members = [m for m in clan_data.get("memberList", []) if m.get("tag") not in optout_tags]
-    top_trophies = sorted(members, key=lambda m: m.get("trophies", 0), reverse=True)[:10]
+    # Task #188: this used to hard-cap at the top 10, cutting off most of a
+    # 50-member clan -- now returns the whole (opted-in) roster, ranked. The
+    # frontend already just .map()s this list into a scrollable column with
+    # no cap of its own, so this is a pure backend change.
+    top_trophies = sorted(members, key=lambda m: m.get("trophies", 0), reverse=True)
 
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace") or {}
     fame_rows = [p for p in war_data.get("clan", {}).get("participants", []) if p.get("tag") not in optout_tags]
@@ -6592,11 +7063,15 @@ def api_public_leaderboards():
                 fame_rows = race_participants
                 fame_freshness = HISTORICAL
 
-    top_fame = sorted(fame_rows, key=lambda p: p.get("fame", 0), reverse=True)[:10]
+    top_fame = sorted(fame_rows, key=lambda p: p.get("fame", 0), reverse=True)  # task #188: no cap
     return jsonify({
-        "top_trophies": [{"name": m.get("name"), "value": m.get("trophies", 0)} for m in top_trophies],
+        # Task #189: "every player name should be a hyperlink to their
+        # profile" -- these rows previously carried no tag at all, so the
+        # frontend had nothing to link to. Both source lists (clan
+        # memberList and war participants) already carry "tag".
+        "top_trophies": [{"tag": m.get("tag"), "name": m.get("name"), "value": m.get("trophies", 0)} for m in top_trophies],
         "top_trophies_freshness": clan_data_freshness,
-        "top_fame": [{"name": p.get("name"), "value": p.get("fame", 0)} for p in top_fame],
+        "top_fame": [{"tag": p.get("tag"), "name": p.get("name"), "value": p.get("fame", 0)} for p in top_fame],
         "top_fame_freshness": fame_freshness,
     })
 
@@ -6779,28 +7254,44 @@ def api_gallery_delete(gallery_id):
 @web_bp.route("/api/polls", methods=["GET", "POST"])
 def api_polls():
     """Idea #195: a poll/voting widget for clan decisions embedded on the
-    dashboard. POST (create) is admin-only — this is for leadership to put a
-    decision to a vote, not an open-floor voting board; voting itself (see
-    /api/polls/<id>/vote below) is open to any linked member."""
+    dashboard.
+
+    Task #184: creation was originally admin-only ("leadership puts a decision
+    to a vote"), but the user explicitly asked to open poll creation to any
+    linked member -- an open-floor suggestion/decision board rather than a
+    leadership-only tool. Still requires a linked account (same bar voting
+    already had) so this isn't anonymous/spammable, and every poll now runs a
+    fixed 1-week duration rather than staying open indefinitely until an admin
+    manually closes it -- expires_at is set once at creation and never
+    extended. GET only returns not-yet-expired polls when active_only is set,
+    same as before but now also checking the clock, not just the active flag
+    (admin_close_poll can still force-close one early)."""
     if request.method == "GET":
         active_only = request.args.get("active_only", "1") != "0"
-        query = {"active": True} if active_only else {}
+        if active_only:
+            now = datetime.now(timezone.utc)
+            query = {"active": True, "$or": [{"expires_at": {"$gt": now}}, {"expires_at": {"$exists": False}}]}
+        else:
+            query = {}
         polls = list(db_sync["polls"].find(query, {"voters": 0}).sort("created_at", -1).limit(10))
         for p in polls:
             p["_id"] = str(p["_id"])
         return jsonify({"polls": polls})
-    if not is_admin():
-        return jsonify({"error": "unauthorized"}), 403
+    user = _current_linked_user()
+    if not user:
+        return jsonify({"error": "Log in with Discord to create a poll."}), 403
     data = request.get_json(silent=True) or {}
     question = str(data.get("question", "")).strip()[:200]
     options = [str(o).strip()[:80] for o in (data.get("options") or []) if str(o).strip()]
     if not question or len(options) < 2:
         return jsonify({"error": "A poll needs a question and at least 2 options."}), 400
+    created_at = datetime.now(timezone.utc)
     result = db_sync["polls"].insert_one({
         "question": question,
         "options": [{"text": o, "votes": 0} for o in options],
-        "created_by": session.get("discord_name", "Admin"),
-        "created_at": datetime.now(timezone.utc),
+        "created_by": session.get("discord_name", user.get("discord_name", "Member")),
+        "created_at": created_at,
+        "expires_at": created_at + timedelta(days=7),  # task #184: fixed 1-week duration
         "active": True, "voters": [],
     })
     return jsonify({"success": True, "poll_id": str(result.inserted_id)})

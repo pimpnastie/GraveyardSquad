@@ -897,6 +897,30 @@
         </div>
         <button type="submit" class="btn-refresh" style="width: 100%; justify-content: center;">Update Status</button>
       </form>
+
+      <!-- Task #195: "I want to be able to link players manually if they
+           dont link themselves in User Access" -- this reuses the exact same
+           /admin/api/player/link route the Roster tab's per-row manualLink()
+           already calls (Idea #119-adjacent), just surfaced here as a
+           standalone form so an admin doesn't have to go find the person's
+           row in the Roster tab first. Works for anyone: a clan member who
+           never went through Discord OAuth at all (no users doc exists yet)
+           or someone whose existing link needs fixing. -->
+      <div class="diag-card" style="padding:20px; max-width:400px; margin-bottom:24px;">
+        <div class="diag-card-title" style="margin-bottom:12px;">Manually Link a Member</div>
+        <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-top:0;">For clan members who haven't linked their own Discord yet -- creates (or overwrites) their site-access link directly.</p>
+        <div style="margin-bottom:12px;">
+          <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">Discord User ID</label>
+          <input type="text" id="manual-link-discord-id" placeholder="e.g. 123456789012345678" class="form-input" style="width:100%; margin-top:5px;" list="discord-user-datalist">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">Clash Royale Tag</label>
+          <input type="text" id="manual-link-cr-tag" placeholder="e.g. ABC123XYZ (no #)" class="form-input" style="width:100%; margin-top:5px;" list="clan-tag-datalist">
+        </div>
+        <button type="button" class="btn-refresh" style="width:100%; justify-content:center;" onclick="manualLinkFromUserAccess()">🔗 Link Account</button>
+        <div id="manual-link-msg" style="font-size:12px; margin-top:8px;"></div>
+      </div>
+
       <!-- Idea #71: search/filter/sort on the User Access table -->
       <div class="toolbar">
         <input class="form-input" id="users-search" placeholder="Search by name or Discord ID…" oninput="filterUsers()" style="width:220px">
@@ -1422,6 +1446,39 @@
           </div>
           <button class="btn-refresh" id="permission-matrix-save-btn" style="display:none; align-self:flex-start;" onclick="savePermissionMatrix()">💾 Save Permission Matrix</button>
           <div id="permission-matrix-msg" style="font-size:12px;"></div>
+        </div>
+      </div>
+
+      <!-- Task #196: "auto assign people to non-member unless a role
+           assigns them otherwise". Maps a Discord role ID to the admin level
+           anyone holding that role gets automatically (see get_admin_level()'s
+           resolution order in web_routes.py) -- e.g. map your "Elder" role to
+           level 4. Anyone who's admin-flagged (via Authorized Admin Role IDs
+           above, or individually promoted) but has no matching entry here
+           and no individual override defaults to level 1 (Non-member).
+           Level 6 (Superadmin) can't be granted this way -- it's hardcoded
+           to the master admin account and whoever holds the "Mythic"
+           identity only. -->
+      <div class="diag-card" style="margin-top:16px;">
+        <div class="diag-card-header">
+          <div class="diag-card-title">Auto-Assign Level by Discord Role</div>
+          <button class="btn-refresh" onclick="loadRoleLevelMap()">↻ Refresh</button>
+        </div>
+        <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+          <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Anyone with admin access and no individually-assigned level here defaults to <strong>Non-member</strong>. Map a role ID below to auto-grant a higher level instead. Superadmin isn't assignable by role — only the master admin account and whoever holds the "Mythic" identity get it.</p>
+          <div style="overflow-x:auto;">
+            <table class="war-table" id="role-level-map-table" style="min-width:480px;">
+              <thead><tr><th>Discord Role</th><th>Auto-Assigned Level</th><th></th></tr></thead>
+              <tbody id="role-level-map-body"><tr><td colspan="3" style="text-align:center; color:var(--dim);">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <input type="text" id="role-level-map-new-id" class="form-input" placeholder="Role ID (e.g. 11223344)" style="max-width:220px;">
+            <select id="role-level-map-new-level" class="form-select" style="max-width:160px;"></select>
+            <button class="btn-refresh" onclick="addRoleLevelMapRow()">+ Add Role Mapping</button>
+          </div>
+          <button class="btn-refresh" id="role-level-map-save-btn" style="align-self:flex-start;" onclick="saveRoleLevelMap()">💾 Save Role Mappings</button>
+          <div id="role-level-map-msg" style="font-size:12px;"></div>
         </div>
       </div>
       </div><!-- /settings-page-access -->
@@ -3033,7 +3090,7 @@ function renderUserRows(users) {
     // this stays in sync with the backend's ADMIN_LEVELS list instead of
     // duplicating the names here.
     var tierPicker = (u.status === 'Admin' && u.admin_level < 6)
-      ? '<select class="form-select" style="font-size:11px; padding:2px 6px;" onchange="setUserTier(' + JSON.stringify(u.discord_id) + ', this.value)">'
+      ? '<select class="form-select" style="font-size:11px; padding:2px 6px;" onchange="setUserTier(' + attrJson(u.discord_id) + ', this.value)">'
         + (ADMIN_LEVEL_OPTIONS.length ? ADMIN_LEVEL_OPTIONS : [[1,'Non-member'],[2,'Member'],[3,'Veteran'],[4,'Elder'],[5,'Coleader'],[6,'Superadmin']])
             .map(function(o){ return '<option value="' + o[0] + '"' + (o[0]===u.admin_level?' selected':'') + '>' + esc(o[1]) + '</option>'; }).join('')
         + '</select>'
@@ -3084,8 +3141,15 @@ function renderUserRows(users) {
     var deleteWarning = u.is_linked
       ? 'Delete the user entry for "' + (u.discord_username||'') + '" (linked to ' + (u.name||'') + ', ' + u.discord_id + ')? This removes their site-access record and Discord link entirely -- it does NOT touch their Clash Royale profile or clan membership, but they will need to re-link to use the site again.'
       : 'Delete the user entry for "' + (u.discord_username||'') + '" (' + u.discord_id + ')? This removes their site-access record entirely.';
-    var actionsCell = '<button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px;" onclick="editUserLink(' + JSON.stringify(u.discord_id) + ', ' + JSON.stringify(u.cr_tag) + ')">✏️ Edit</button>'
-      + ' <button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px; border-color:var(--err); color:var(--err);" onclick="deleteUserEntry(' + JSON.stringify(u.discord_id) + ', ' + JSON.stringify(deleteWarning) + ')">🗑️ Delete</button>';
+    // Bug fix: these two were built with raw JSON.stringify() instead of
+    // attrJson() -- since the onclick attribute itself is double-quoted,
+    // JSON.stringify()'s own double-quote wrapping terminates the attribute
+    // early (e.g. onclick="editUserLink("123", "ABC")"), so the browser reads
+    // everything after the first embedded quote as garbage markup and the
+    // handler never fires. This is the exact bug class attrJson() (above)
+    // exists to prevent -- these two calls just weren't using it.
+    var actionsCell = '<button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px;" onclick="editUserLink(' + attrJson(u.discord_id) + ', ' + attrJson(u.cr_tag) + ')">✏️ Edit</button>'
+      + ' <button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px; border-color:var(--err); color:var(--err);" onclick="deleteUserEntry(' + attrJson(u.discord_id) + ', ' + attrJson(deleteWarning) + ')">🗑️ Delete</button>';
     return '<tr><td><a href="/player/' + esc(u.cr_tag) + '" style="color:var(--accent); text-decoration:none;">' + esc(u.name) + '</a></td>'
       + '<td style="white-space:nowrap;">' + discordCell + '</td>'
       + '<td>' + rolesCell + '</td>'
@@ -3178,6 +3242,64 @@ function savePermissionMatrix() {
     body: JSON.stringify({ capabilities: capabilities })
   }).then(function(r){ return r.json().then(function(d){ if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status)); }); })
     .then(function(){ toast('Permission matrix saved.', 'ok'); })
+    .catch(function(e){ toast('Failed to save: ' + e.message, 'err'); });
+}
+
+// ── Role -> level auto-assignment (task #196) ───────────────────────────────
+var _roleLevelMapLevels = []; // [[level, label], ...] excluding level 6, from the backend
+function _roleLevelSelectOptions(selectedLevel) {
+  var opts = _roleLevelMapLevels.length ? _roleLevelMapLevels : [[1,'Non-member'],[2,'Member'],[3,'Veteran'],[4,'Elder'],[5,'Coleader']];
+  return opts.map(function(o){ return '<option value="' + o[0] + '"' + (o[0]===selectedLevel?' selected':'') + '>' + o[0] + ' — ' + esc(o[1]) + '</option>'; }).join('');
+}
+function _renderRoleLevelMapRow(roleId, level, roleLabel) {
+  return '<tr data-role-id="' + esc(roleId) + '">'
+    + '<td>' + esc(roleLabel || roleId) + ' <span style="color:var(--dim); font-family:var(--font-mono); font-size:11px;">(' + esc(roleId) + ')</span></td>'
+    + '<td><select class="form-select" style="font-size:12px;" data-role-level>' + _roleLevelSelectOptions(level) + '</select></td>'
+    + '<td><button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px; border-color:var(--err); color:var(--err);" onclick="this.closest(\'tr\').remove();">✕ Remove</button></td>'
+    + '</tr>';
+}
+async function loadRoleLevelMap() {
+  var body = document.getElementById('role-level-map-body');
+  var newLevelSelect = document.getElementById('role-level-map-new-level');
+  try {
+    const res = await fetch('/admin/api/role-level-map');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    _roleLevelMapLevels = (d.levels || []).map(function(l){ return [l.level, l.label]; });
+    if (newLevelSelect) newLevelSelect.innerHTML = _roleLevelSelectOptions(null);
+    var map = d.role_level_map || {};
+    var names = d.role_names || {};
+    var rows = Object.keys(map).map(function(rid){ return _renderRoleLevelMapRow(rid, map[rid], names[rid]); });
+    body.innerHTML = rows.join('') || '<tr><td colspan="3" style="text-align:center; color:var(--dim);">No role mappings yet -- everyone with admin access defaults to Non-member.</td></tr>';
+  } catch (e) {
+    if (body) body.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#e74c3c;">Failed to load.</td></tr>';
+  }
+}
+function addRoleLevelMapRow() {
+  var idInput = document.getElementById('role-level-map-new-id');
+  var levelSelect = document.getElementById('role-level-map-new-level');
+  var roleId = (idInput.value || '').trim();
+  if (!roleId || !/^\d+$/.test(roleId)) { toast('Enter a numeric Discord role ID.', 'err'); return; }
+  var body = document.getElementById('role-level-map-body');
+  if (body.querySelector('tr[data-role-id="' + roleId + '"]')) { toast('That role is already mapped -- edit its level below instead.', 'err'); return; }
+  var placeholder = body.querySelector('td[colspan]');
+  if (placeholder) body.innerHTML = '';
+  body.insertAdjacentHTML('beforeend', _renderRoleLevelMapRow(roleId, parseInt(levelSelect.value, 10)));
+  idInput.value = '';
+}
+function saveRoleLevelMap() {
+  var rows = document.querySelectorAll('#role-level-map-body tr[data-role-id]');
+  var roleLevelMap = {};
+  rows.forEach(function(tr){
+    var roleId = tr.getAttribute('data-role-id');
+    var lvl = parseInt(tr.querySelector('select[data-role-level]').value, 10);
+    roleLevelMap[roleId] = lvl;
+  });
+  fetch('/admin/api/role-level-map', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ role_level_map: roleLevelMap })
+  }).then(function(r){ return r.json().then(function(d){ if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status)); }); })
+    .then(function(){ toast('Role auto-assignment saved.', 'ok'); })
     .catch(function(e){ toast('Failed to save: ' + e.message, 'err'); });
 }
 function filterUsers() {
@@ -3916,6 +4038,7 @@ document.addEventListener('DOMContentLoaded', function(){
   // ADMIN_LEVEL_OPTIONS is already populated the first time the User Access
   // table renders its level pickers.
   loadPermissionMatrix();
+  loadRoleLevelMap();
 });
 
 async function deployTemplate() {
@@ -4610,6 +4733,37 @@ async function sendWarningDM(tag, btn) {
   }
 }
 
+// Task #195: standalone version of manualLink() below for the User Access
+// tab -- same backend route, but not tied to a specific already-loaded
+// roster row, so it works for a Discord ID + tag pair typed in directly.
+async function manualLinkFromUserAccess() {
+  var idInput = document.getElementById('manual-link-discord-id');
+  var tagInput = document.getElementById('manual-link-cr-tag');
+  var msg = document.getElementById('manual-link-msg');
+  var discordId = (idInput.value || '').trim();
+  var tag = (tagInput.value || '').trim().replace('#', '').toUpperCase();
+  if (!/^\d{17,20}$/.test(discordId)) {
+    msg.style.color = '#e74c3c'; msg.textContent = 'Enter a valid 17-20 digit Discord User ID.'; return;
+  }
+  if (!tag) {
+    msg.style.color = '#e74c3c'; msg.textContent = 'Enter a Clash Royale tag.'; return;
+  }
+  msg.style.color = 'var(--dim)'; msg.textContent = 'Linking…';
+  try {
+    var res = await fetch('/admin/api/player/link', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ tag: tag, discord_id: discordId })
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.style.color = 'var(--ok)'; msg.textContent = 'Linked ' + tag + ' → ' + discordId + '.';
+    toast('Account linked.', 'ok');
+    idInput.value = ''; tagInput.value = '';
+    loadUsers();
+  } catch (e) {
+    msg.style.color = '#e74c3c'; msg.textContent = 'Failed: ' + e.message;
+  }
+}
 async function manualLink(tag, btn) {
   var cleanTag = tag.replace('#', '');
   var discordId = (document.getElementById('link-id-' + cleanTag).value || '').trim();

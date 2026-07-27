@@ -291,6 +291,14 @@
         <span>Discord: {{ linked_discord.name }}</span>
     </div>
     {% endif %}
+    <!-- Task #191: this whole flair system (motto, favourite-card note,
+         timezone, playstyle -- all self-serve, editable from the My Settings
+         tab below) had a real backend + API since idea #27, but nothing
+         anywhere ever actually displayed it to a visitor -- it was
+         write-only. This is the missing "public" half. Hidden entirely
+         (not even an empty placeholder) when a member hasn't set anything,
+         same "don't show empty scaffolding" rule used elsewhere on this page. -->
+    <div id="publicFlairDisplay" style="display:none; margin-top:10px; max-width:420px; margin-left:auto; margin-right:auto; font-size:13px; color:var(--text-bright); font-style:italic;"></div>
 </div>
 
 <div class="container">
@@ -572,6 +580,19 @@
                 </div>
             </div>
 
+            <!-- ── CURRENT DECK (task #197) ──
+                 deck_snapshots has recorded every member's actually-equipped
+                 deck once a day since task #151, but until now that data only
+                 ever surfaced as a plain joined-string column in the CSV
+                 export -- nothing on the site actually showed "here's what
+                 they're using right now". Public (a player's equipped deck is
+                 already visible in-game to any opponent), unlike Suggested
+                 Deck below which reads their full private card collection. -->
+            <div class="card">
+                <div class="card-title">🎴 Current Deck</div>
+                <div id="currentDeckContent" style="font-size:13px;">Loading…</div>
+            </div>
+
             <!-- ── DECK USAGE BREAKDOWN + GRADE (ideas #24, #36) ── -->
             <div class="card">
                 <div class="card-title">
@@ -687,10 +708,16 @@
                 <div id="cardMasteryContent">Loading…</div>
             </div>
 
-            <!-- ── ACHIEVEMENT BADGES (idea #101/#113) ── -->
+            <!-- ── ACHIEVEMENT BADGES (idea #101/#113) ──
+                 Task #190: redesigned to group badges by category (Combat,
+                 Dedication, Community, Collection) and show locked badges
+                 (dimmed, with their earn-criteria as a tooltip) instead of
+                 only ever showing the ones already earned -- there was
+                 previously no way to see what badges even existed to work
+                 toward. -->
             <div class="card">
                 <div class="card-title">🏅 Clan Badges</div>
-                <div id="badgesContent" style="display:flex; flex-wrap:wrap; gap:8px;">Loading…</div>
+                <div id="badgesContent">Loading…</div>
             </div>
 
             <div class="section-divider">Active Goals</div>
@@ -743,17 +770,46 @@
             <div style="grid-column:1/-1; margin:8px 0 -4px; color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:1px; font-weight:bold;">⚙️ My Settings</div>
             {% endif %}
 
-            <!-- ── PROFILE FLAIR (idea #27) ── -->
+            <!-- ── PROFILE FLAIR (idea #27, expanded task #191) ── own_profile
+                 only now -- this used to render (with a live, editable
+                 textarea) on EVERY visit to this page, even a stranger's,
+                 even though the backend only ever let the owner/an admin
+                 actually save it. Gating it to own_profile matches the "My
+                 Settings" heading right above and fixes that dead-end UX;
+                 the new #publicFlairDisplay block in the hero above is what
+                 visitors see instead, read-only, only when something's set.
+
+                 Task #191: flair_note ("favourite card") already existed in
+                 the backend/API but had NO input anywhere -- pure dead
+                 field, same bug class as #176's orphaned top_season_donator.
+                 Wired it up here plus two brand-new fields (timezone,
+                 playstyle) to genuinely broaden "custom profile info" rather
+                 than just fixing the one existing gap. -->
+            {% if own_profile %}
             <div class="card">
-                <div class="card-title">💬 Motto &amp; Flair</div>
+                <div class="card-title">💬 My Profile Info</div>
+                <label style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); display:block; margin-bottom:4px;">Motto</label>
                 <textarea id="flairMotto" class="db-textarea" style="min-height:50px;" placeholder="A short motto or catchphrase…" maxlength="80"></textarea>
-                <button class="btn btn-save" onclick="saveFlair('{{ player.tag }}')">💾 Save Flair</button>
+                <label style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); display:block; margin:10px 0 4px;">Favourite Card / Fun Fact</label>
+                <input type="text" id="flairNote" class="db-textarea" style="min-height:auto;" placeholder="e.g. Main-carried by Mega Knight since 2019…" maxlength="120">
+                <div style="display:flex; gap:10px; margin-top:10px;">
+                    <div style="flex:1;">
+                        <label style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); display:block; margin-bottom:4px;">Timezone</label>
+                        <input type="text" id="flairTimezone" class="db-textarea" style="min-height:auto;" placeholder="e.g. EST, GMT+2…" maxlength="40">
+                    </div>
+                    <div style="flex:1;">
+                        <label style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); display:block; margin-bottom:4px;">Playstyle</label>
+                        <input type="text" id="flairPlaystyle" class="db-textarea" style="min-height:auto;" placeholder="e.g. Cycle decks, 2.6 hog…" maxlength="120">
+                    </div>
+                </div>
+                <button class="btn btn-save" style="margin-top:10px;" onclick="saveFlair('{{ player.tag }}')">💾 Save Profile Info</button>
                 <div id="customBadgeDisplay" style="margin-top:8px; font-size:12px; color:var(--dim);"></div>
                 <label style="display:flex; align-items:center; gap:6px; margin-top:10px; font-size:12px; color:var(--dim); cursor:pointer;">
                     <input type="checkbox" id="leaderboardOptout" onchange="saveLeaderboardOptout('{{ player.tag }}')">
                     Hide me from public leaderboards
                 </label>
             </div>
+            {% endif %}
 
             <!-- ── MY STRIKES (Rec #2) — own profile only ── -->
             {% if own_profile %}
@@ -1263,9 +1319,16 @@ async function loadInsights() {
             });
         }
         if (d.rival) {
+            // Task #189: every player name links to their profile -- works
+            // even for an opponent who's never been in this clan, since
+            // /player/<tag> falls back to a live CR API lookup by tag for
+            // anyone, not just current/past roster members.
+            var rivalLabel = d.rival.tag
+                ? '<a href="/player/' + esc(String(d.rival.tag).replace('#', '')) + '" style="color:inherit;">' + esc(d.rival.name) + '</a>'
+                : esc(d.rival.name);
             superlatives.push({
                 label: 'Most Frequent Opponent',
-                value: esc(d.rival.name),
+                value: rivalLabel,
                 sub: 'Record: ' + d.rival.wins + 'W - ' + d.rival.losses + 'L - ' + d.rival.draws + 'D',
             });
         }
@@ -1406,24 +1469,54 @@ async function loadComparison(myTag) {
     }
 }
 
-// ── Profile flair (idea #27) ────────────────────────────────────────────────────
+// ── Profile flair (idea #27, expanded task #191) ────────────────────────────
 async function loadFlair(tag) {
     try {
         var res = await fetch('/api/player/' + tag.replace('#', '') + '/flair');
         var d = await res.json();
-        document.getElementById('flairMotto').value = d.motto || '';
-        if (d.custom_badge) document.getElementById('customBadgeDisplay').textContent = '🏷️ ' + d.custom_badge;
+        // These inputs only exist in the DOM on your own profile (the edit
+        // card is now own_profile-gated) -- null-check each one so this
+        // doesn't throw when a visitor's page loads without them.
+        var mottoEl = document.getElementById('flairMotto');
+        if (mottoEl) mottoEl.value = d.motto || '';
+        var noteEl = document.getElementById('flairNote');
+        if (noteEl) noteEl.value = d.note || '';
+        var tzEl = document.getElementById('flairTimezone');
+        if (tzEl) tzEl.value = d.timezone || '';
+        var styleEl = document.getElementById('flairPlaystyle');
+        if (styleEl) styleEl.value = d.playstyle || '';
+        var badgeEl = document.getElementById('customBadgeDisplay');
+        if (badgeEl && d.custom_badge) badgeEl.textContent = '🏷️ ' + d.custom_badge;
+
+        // Task #191: the actual public-facing half -- this is what makes the
+        // whole flair feature visible to anyone visiting the page (own
+        // profile or not) instead of being write-only. Hidden entirely if
+        // nothing's been set, same as other optional sections on this page.
+        var publicEl = document.getElementById('publicFlairDisplay');
+        if (publicEl) {
+            var lines = [];
+            if (d.motto) lines.push('“' + esc(d.motto) + '”');
+            var meta = [];
+            if (d.note) meta.push('🃏 ' + esc(d.note));
+            if (d.playstyle) meta.push('🎮 ' + esc(d.playstyle));
+            if (d.timezone) meta.push('🕒 ' + esc(d.timezone));
+            if (meta.length) lines.push('<div style="font-size:11px; color:var(--dim); font-style:normal; margin-top:4px;">' + meta.join(' &nbsp;·&nbsp; ') + '</div>');
+            if (lines.length) { publicEl.innerHTML = lines.join(''); publicEl.style.display = ''; }
+        }
     } catch (e) { /* non-critical */ }
 }
 
 function saveFlair(tag) {
     var motto = document.getElementById('flairMotto').value;
+    var note = document.getElementById('flairNote').value;
+    var timezone = document.getElementById('flairTimezone').value;
+    var playstyle = document.getElementById('flairPlaystyle').value;
     fetch('/api/player/' + tag.replace('#', '') + '/flair', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ motto: motto })
+        body: JSON.stringify({ motto: motto, note: note, timezone: timezone, playstyle: playstyle })
     })
-    .then(function(r) { if (!r.ok) throw new Error(); alert('✅ Flair saved!'); })
-    .catch(function() { alert('❌ Could not save flair (you may need to be the linked owner or an admin).'); });
+    .then(function(r) { if (!r.ok) throw new Error(); alert('✅ Profile info saved!'); loadFlair(tag); })
+    .catch(function() { alert('❌ Could not save profile info (you may need to be the linked owner or an admin).'); });
 }
 
 // ── Leaderboard opt-out (idea #108) ─────────────────────────────────────────────
@@ -1521,18 +1614,45 @@ async function postComment(tag) {
     } catch (e) { alert('❌ Failed to post.'); }
 }
 
-// ── Achievement badges (idea #101/#113) ─────────────────────────────────────────
+// ── Achievement badges (idea #101/#113, redesigned task #190) ──────────────
 async function loadBadges(tag) {
     var el = document.getElementById('badgesContent');
     try {
         var res = await fetch('/api/player/' + tag.replace('#', '') + '/badges');
         var d = await res.json();
-        // title="" carries the exact earn-criteria text the backend sends
-        // (BADGE_DEFINITIONS' description field) — hover/focus to see how a
-        // badge is actually calculated instead of guessing from its name.
-        el.innerHTML = (d.badges || []).map(function(b) {
-            return '<span style="background:#1e2530; border-radius:20px; padding:6px 12px; font-size:12px; cursor:help;" title="' + esc(b.description || '') + '">' + b.emoji + ' ' + esc(b.label) + ' <span style="opacity:0.5;">ⓘ</span></span>';
-        }).join('') || '<span class="empty-note">No badges earned yet — keep battling!</span>';
+        var badges = d.badges || [];
+        if (!badges.length) { el.innerHTML = '<span class="empty-note">No badge data available.</span>'; return; }
+        var categoryOrder = d.category_order || [];
+        var byCategory = {};
+        badges.forEach(function(b) {
+            (byCategory[b.category] = byCategory[b.category] || []).push(b);
+        });
+        // Any category not in category_order (shouldn't normally happen,
+        // but don't silently drop badges if the backend ever adds one
+        // without updating the order list) gets appended at the end.
+        var orderedCategories = categoryOrder.concat(Object.keys(byCategory).filter(function(c) { return categoryOrder.indexOf(c) === -1; }));
+        var earnedCount = badges.filter(function(b) { return b.earned; }).length;
+        var html = '<div style="font-size:11px; color:var(--dim); margin-bottom:10px;">' + earnedCount + ' / ' + badges.length + ' earned</div>';
+        html += orderedCategories.map(function(cat) {
+            var group = byCategory[cat];
+            if (!group || !group.length) return '';
+            var chips = group.map(function(b) {
+                // title="" carries the exact earn-criteria text the backend
+                // sends (BADGE_DEFINITIONS' description field) -- hover/focus
+                // to see how a badge is actually calculated instead of
+                // guessing from its name. Locked badges are dimmed and show
+                // a 🔒 instead of the badge's own emoji, same tooltip either way.
+                var chipStyle = b.earned
+                    ? 'background:#1e2530; border-radius:20px; padding:6px 12px; font-size:12px; cursor:help;'
+                    : 'background:#1e2530; border-radius:20px; padding:6px 12px; font-size:12px; cursor:help; opacity:0.4;';
+                return '<span style="' + chipStyle + '" title="' + esc(b.description || '') + '">' + (b.earned ? b.emoji : '🔒') + ' ' + esc(b.label) + ' <span style="opacity:0.5;">ⓘ</span></span>';
+            }).join('');
+            return '<div style="margin-bottom:10px;">'
+                + '<div style="font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">' + esc(cat) + '</div>'
+                + '<div style="display:flex; flex-wrap:wrap; gap:8px;">' + chips + '</div>'
+                + '</div>';
+        }).join('');
+        el.innerHTML = html;
     } catch (e) { el.innerHTML = '<span class="empty-note">Could not load badges.</span>'; }
 }
 
@@ -1718,6 +1838,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadRivalry({{ player.tag | tojson }});
     loadKudos({{ player.tag | tojson }});
     loadComments({{ player.tag | tojson }});
+    loadCurrentDeck({{ player.tag | tojson }});
     populateCompareDatalist();
     {% if own_profile %}
     loadNotifPrefs();
@@ -1726,6 +1847,36 @@ document.addEventListener('DOMContentLoaded', function() {
     {% endif %}
     if (document.getElementById('lastSyncedText')) { updateSyncedAgoText(); setInterval(updateSyncedAgoText, 30000); }
 });
+
+// ── Current Deck (task #197) ────────────────────────────────────────────────
+async function loadCurrentDeck(tag) {
+    var el = document.getElementById('currentDeckContent');
+    if (!el) return;
+    try {
+        var res = await fetch('/api/player/' + tag + '/current-deck');
+        var d = await res.json();
+        if (d.error) { el.innerHTML = '<span style="color:var(--dim);">' + esc(d.error) + '</span>'; return; }
+        var meta = [];
+        if (d.average_elixir != null) meta.push('avg elixir ' + esc(d.average_elixir));
+        if (d.evolution_slots_used) meta.push(d.evolution_slots_used + '/2 evolution slot' + (d.evolution_slots_used === 1 ? '' : 's'));
+        if (d.days_on_current_deck) meta.push(d.days_on_current_deck + ' day' + (d.days_on_current_deck === 1 ? '' : 's') + ' on this deck');
+        var html = buildDeckGrid(d.cards);
+        if (meta.length) html += '<div style="color:var(--dim); font-size:11px; margin-top:8px;">' + meta.map(esc).join(' · ') + '</div>';
+        if (d.favourite_card) html += '<div style="color:var(--dim); font-size:11px; margin-top:2px;">⭐ Favourite card: ' + esc(d.favourite_card) + '</div>';
+        if (d.support_cards && d.support_cards.length) html += '<div style="color:var(--dim); font-size:11px; margin-top:2px;">🛠️ Support cards: ' + d.support_cards.map(esc).join(', ') + '</div>';
+        if (d.copy_deck_url) html += '<div style="margin-top:8px;"><a href="' + esc(d.copy_deck_url) + '" target="_blank" style="font-size:11px;">📋 Copy Deck</a></div>';
+        if (d.deck_twins && d.deck_twins.length) {
+            html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.06);">'
+                + '<div style="font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Deck Twins</div>'
+                + d.deck_twins.map(function(t) {
+                    return '<div style="font-size:12px; margin-bottom:2px;"><a href="/player/' + esc(t.tag) + '" style="color:var(--accent); text-decoration:none;">' + esc(t.name || t.tag) + '</a>'
+                        + ' <span style="color:var(--dim); font-size:11px;">' + (t.identical ? 'identical deck' : t.shared_cards + '/8 cards shared') + '</span></div>';
+                }).join('')
+                + '</div>';
+        }
+        el.innerHTML = html;
+    } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Could not load current deck.</span>'; }
+}
 
 // ── Suggested Deck (Rec #11) ────────────────────────────────────────────────
 async function loadSuggestedDeck(tag) {
