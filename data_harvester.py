@@ -257,10 +257,16 @@ class DataHarvester:
         else:
             lines.append("Every participant used at least one deck. Nice work, squad.")
 
+        # Rec #12: shareable image version, generated on-demand by the Flask
+        # app (war_recap_png in web_routes.py) from this same war_history doc
+        # -- clash_cog.py just points a Discord embed's image at this public
+        # URL rather than us trying to render Pillow from the harvester
+        # process, which has no web server of its own.
         self.col_config.database["pending_actions"].insert_one({
             "kind": "war_summary_post",
             "message": "\n".join(lines),
             "unique_war_id": unique_war_id,
+            "image_url": f"https://graveyardbot.onrender.com/war/{unique_war_id}/recap.png",
             "created_at": datetime.now(timezone.utc),
             "processed": False,
         })
@@ -561,7 +567,15 @@ class DataHarvester:
 
         # Shared lookups for the community-flavored categories below.
         week_ago_dt = now - timedelta(days=WEEKLY_LOOKBACK_DAYS)
-        users_by_discord_id = {u["discord_id"]: u for u in self.col_config.database["users"].find({}, {"discord_id": 1, "cr_tag": 1})}
+        # Not every `users` doc necessarily has a discord_id (e.g. a manually-
+        # inserted or partially-cleaned-up record) -- indexing with a direct
+        # u["discord_id"] blew up the whole weekly-spotlight computation with
+        # a bare KeyError: 'discord_id' in production logs. Skip docs missing it.
+        users_by_discord_id = {
+            u["discord_id"]: u
+            for u in self.col_config.database["users"].find({}, {"discord_id": 1, "cr_tag": 1})
+            if u.get("discord_id")
+        }
 
         def _profile_for_discord_id(discord_id):
             u = users_by_discord_id.get(discord_id)
@@ -1106,7 +1120,13 @@ class DataHarvester:
                         {"$push": {"audit_log": {
                             "date": today,
                             "action": f"Role changed: {prior['role']} → {new_role}",
-                        }}}
+                        }},
+                        # Rec #3: officer/co-leader term tracking. role_since
+                        # resets every time the role actually changes, so
+                        # "how long has this person been Co-Leader" is a
+                        # simple date-diff against this field rather than
+                        # scanning the whole audit_log every time it's asked.
+                        "$set": {"role_since": today}}
                     )
                     # Idea #111: an actual announcement instead of a silent DB update.
                     self.col_config.database["pending_actions"].insert_one({
@@ -1135,6 +1155,11 @@ class DataHarvester:
                             "clan_points": 0,
                             "war_participation_streak": 0,
                             "streak_shields": 1,
+                            # Rec #3: seeds role_since for a brand-new profile so it's
+                            # never missing -- the role-change block elsewhere in this
+                            # loop overwrites it going forward whenever the role
+                            # actually changes.
+                            "role_since": today,
                         },
                     },
                     upsert=True
@@ -1489,6 +1514,61 @@ class DataHarvester:
             "created_at": now, "processed": False,
         })
 
+    def send_weekly_meta_report(self):
+        """Rec #16: a regular Monday "what's everyone playing" report to the
+        whole server -- deliberately different from check_meta_shifts above,
+        which is a leadership-only ALERT that only fires when something looks
+        wrong. This one fires every week regardless, same de-dup pattern as
+        send_weekly_digest, and goes to the normal announcements channel
+        (clash_cog.py's generic simple-announcement branch already covers
+        this kind, no admin login needed to see it -- it's just a Discord
+        message)."""
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 0:  # Monday only, same cadence as the weekly digest
+            return
+        iso_year, iso_week, _ = now.isocalendar()
+        marker_id = f"weekly_meta_report_{iso_year}_{iso_week}"
+        if self.col_config.find_one({"_id": marker_id}):
+            return
+        self.col_config.update_one({"_id": marker_id}, {"$set": {"sent_at": now}}, upsert=True)
+
+        week_ago = (now - timedelta(days=7)).strftime("%Y%m%dT%H%M%S")
+        battles = list(self.col_battles.find(
+            {"battle_time": {"$gte": week_ago}}, {"team_cards": 1, "result": 1},
+        ))
+        archetypes = {}
+        for b in battles:
+            result = b.get("result")
+            if result not in ("win", "loss"):
+                continue
+            cards = [c for c in (b.get("team_cards") or []) if c]
+            if len(cards) < 8:
+                continue
+            sig = tuple(sorted(cards[:8]))
+            entry = archetypes.setdefault(sig, {"wins": 0, "games": 0})
+            entry["games"] += 1
+            if result == "win":
+                entry["wins"] += 1
+        qualifying = {sig: v for sig, v in archetypes.items() if v["games"] >= 3}
+        if not qualifying:
+            return  # not enough logged battles this week for a meaningful report
+
+        by_usage = sorted(qualifying.items(), key=lambda kv: -kv[1]["games"])[:5]
+        total_games = sum(v["games"] for v in qualifying.values())
+        top_share = max(v["games"] for v in qualifying.values()) / total_games if total_games else 0
+        diversity_score = round(1 - top_share, 2)
+
+        lines = ["🧠 **Weekly Meta Report** — what the clan's been playing this week:"]
+        for sig, v in by_usage:
+            win_rate = round(v["wins"] / v["games"] * 100)
+            deck_desc = ", ".join(sig[:3]) + "..."
+            lines.append(f"- {deck_desc} — {v['games']} games, {win_rate}% win rate")
+        lines.append(f"Clan deck diversity score: {diversity_score} (1.0 = everyone plays something different, 0 = everyone plays the same deck).")
+        self.col_config.database["pending_actions"].insert_one({
+            "kind": "weekly_meta_report_post", "message": "\n".join(lines),
+            "created_at": now, "processed": False,
+        })
+
     def send_weekly_digest(self):
         """Idea #135: a Monday digest — top chatters (most logged battles this
         week), top war contributors (fame in the most recent completed race),
@@ -1697,6 +1777,12 @@ class DataHarvester:
             self.check_meta_shifts()
         except Exception as e:
             log.error(f"Meta-shift check failed (non-fatal): {e}")
+
+        # Rec #16: weekly, non-fatal, same pattern as the rest of this cycle.
+        try:
+            self.send_weekly_meta_report()
+        except Exception as e:
+            log.error(f"Weekly meta report failed (non-fatal): {e}")
 
         # Section 8 (notifications, ideas #135/#136/#137): all independently
         # non-fatal, same pattern as the rest of this cycle.

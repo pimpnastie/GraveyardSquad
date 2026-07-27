@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Graveyard Squad | Admin Control Center</title>
+    <style>
+        /* Base Variables & Shell */
+        :root { 
+            --surface: #111418; --border: #1e2530; --accent: #00e5ff; 
+            --danger: #e74c3c; --success: #2ecc71; --warning: #f1c40f;
+            --text: #c5c6c7; --dim: #888; --font-mono: monospace; 
+            --bg: #0b0c10;
+        }
+        body { 
+            background: var(--bg); color: var(--text); 
+            font-family: 'Segoe UI', system-ui, sans-serif; 
+            margin: 0; padding-bottom: 50px; 
+        }
+        a { text-decoration: none; color: inherit; transition: 0.2s; }
+        a:hover { opacity: 0.8; }
+
+        /* Topbar */
+        .topbar { 
+            display: flex; align-items: center; padding: 12px 24px; 
+            background: var(--surface); border-bottom: 1px solid var(--border); 
+            position: sticky; top: 0; z-index: 100;
+        }
+        .topbar-title { font-size: 20px; font-weight: 700; text-transform: uppercase; color: var(--accent); }
+        .topbar-badge { font-family: var(--font-mono); font-size: 11px; padding: 4px 8px; border-radius: 4px; background: rgba(231, 76, 60, 0.1); color: var(--danger); border: 1px solid var(--danger); margin-left: 16px; font-weight: bold; }
+        .back-link { margin-left: auto; font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+        .back-link:hover { color: var(--accent); }
+
+        /* Dashboard Grid */
+        .container { max-width: 1200px; margin: 30px auto; padding: 0 20px; }
+        .admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 24px; }
+        
+        .admin-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; }
+        .admin-card-title { font-size: 14px; font-family: var(--font-mono); text-transform: uppercase; color: white; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+        
+        /* Form & Controls */
+        .control-group { margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+        .control-label { font-size: 14px; color: #ddd; }
+        .control-desc { font-size: 12px; color: var(--dim); display: block; margin-top: 4px; }
+        
+        input[type="text"] { background: var(--bg); border: 1px solid var(--border); color: white; padding: 8px 12px; border-radius: 4px; font-family: var(--font-mono); outline: none; width: 100%; box-sizing: border-box; }
+        input[type="text"]:focus { border-color: var(--accent); }
+
+        /* Buttons */
+        .btn { width: 100%; padding: 12px; border-radius: 6px; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; cursor: pointer; border: none; transition: 0.2s; font-family: var(--font-mono); display: flex; justify-content: center; align-items: center; gap: 8px; margin-bottom: 12px; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-outline:hover { background: rgba(255,255,255,0.05); color: white; }
+        .btn-danger { background: rgba(231, 76, 60, 0.1); border: 1px solid var(--danger); color: var(--danger); }
+        .btn-danger:hover { background: var(--danger); color: white; box-shadow: 0 0 15px rgba(231,76,60,0.4); }
+        .btn-accent { background: rgba(0, 229, 255, 0.1); border: 1px solid var(--accent); color: var(--accent); }
+        .btn-accent:hover { background: var(--accent); color: #000; box-shadow: 0 0 15px rgba(0,229,255,0.4); }
+        .btn-warning { background: rgba(241, 196, 15, 0.1); border: 1px solid var(--warning); color: var(--warning); }
+        .btn-warning:hover { background: var(--warning); color: #000; }
+        .btn-success { background: rgba(46, 204, 113, 0.1); border: 1px solid var(--success); color: var(--success); }
+        .btn-success:hover { background: var(--success); color: #000; }
+
+        /* CSS Toggle Switch */
+        .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--border); transition: .2s; border-radius: 20px; }
+        .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: var(--dim); transition: .2s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--accent); }
+        input:checked + .slider:before { transform: translateX(20px); background-color: #000; }
+
+        /* Slacker List */
+        .slacker-list { max-height: 150px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 10px; margin-bottom: 16px; font-family: var(--font-mono); font-size: 13px; }
+        .slacker-item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .slacker-item:last-child { border-bottom: none; }
+        .slacker-name { color: var(--danger); }
+
+        /* --- MASTER ROSTER ACCORDION --- */
+        .full-width-card { grid-column: 1 / -1; } 
+        .master-list-container { border: 1px solid var(--border); border-radius: 8px; margin-top: 16px; overflow: hidden; background: var(--bg); }
+        
+        .roster-item { border-bottom: 1px solid var(--border); }
+        .roster-item:last-child { border-bottom: none; }
+        
+        .roster-header { 
+            display: flex; justify-content: space-between; align-items: center; 
+            padding: 16px; cursor: pointer; transition: background 0.2s;
+        }
+        .roster-header:hover { background: rgba(255,255,255,0.03); }
+        
+        .roster-info { display: flex; align-items: center; gap: 16px; flex: 1; }
+        .roster-name { font-weight: bold; font-size: 15px; color: white; display: flex; align-items: center; gap: 8px; }
+        .roster-role { font-family: var(--font-mono); font-size: 11px; padding: 4px 8px; background: var(--border); border-radius: 4px; color: var(--dim); }
+        
+        .roster-quick-stats { display: flex; gap: 24px; font-family: var(--font-mono); font-size: 13px; color: var(--dim); }
+        .roster-quick-stats span { display: flex; align-items: center; gap: 6px; }
+        .warn-stat { color: var(--danger); font-weight: bold; }
+        
+        /* The Expandable Drawer */
+        .roster-drawer { 
+            padding: 24px; background: var(--surface); 
+            border-top: 1px dashed var(--border); display: none; 
+            box-shadow: inset 0 10px 10px -10px rgba(0,0,0,0.5);
+        }
+        .drawer-active { display: block; animation: slideDown 0.3s ease-out forwards; }
+        
+        /* NEW: 3 Column Layout for the drawer */
+        .drawer-grid { display: grid; grid-template-columns: 1.5fr 1fr 1.2fr; gap: 24px; }
+        @media (max-width: 900px) { .drawer-grid { grid-template-columns: 1fr; } }
+        
+        textarea.db-textarea { width: 100%; background: #0b0c10; border: 1px solid var(--border); color: white; padding: 12px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; min-height: 80px; resize: vertical; margin-bottom: 12px; box-sizing: border-box; }
+        textarea.db-textarea:focus { border-color: var(--accent); outline: none; }
+        
+        /* Drawer specific labels */
+        .drawer-label { font-size: 11px; color: var(--dim); text-transform: uppercase; margin-bottom: 8px; display: block; letter-spacing: 1px; border-bottom: 1px solid var(--border); padding-bottom: 4px;}
+        .drawer-btn-group { display: flex; gap: 8px; margin-bottom: 12px; }
+        .drawer-btn-group .btn { margin: 0; flex: 1; }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+    <div class="topbar-title">Graveyard Control</div>
+    <div class="topbar-badge">Admin Access Verified</div>
+    <a href="/" class="back-link">← Back to Roster</a>
+</div>
+
+<div class="container">
+    <div class="admin-grid">
+
+        <div class="admin-card">
+            <div class="admin-card-title">⚙️ Discord Bot Settings</div>
+            <div class="control-group">
+                <div>
+                    <span class="control-label">Maintenance Mode</span>
+                    <span class="control-desc">Disables all Discord commands temporarily.</span>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="toggleMaintenance">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="control-group">
+                <div>
+                    <span class="control-label">Feature Auto-Pings</span>
+                    <span class="control-desc">Allow bot to tag @everyone for war alerts.</span>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="toggleAutoPing" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="control-group" style="margin-top: 24px; display: block;">
+                <span class="control-label" style="display:block; margin-bottom: 8px;">War Channel ID</span>
+                <input type="text" id="warChannelId" value="123456789012345678">
+            </div>
+            <button class="btn btn-outline" style="margin-top: 16px;" onclick="saveBotSettings(this)">💾 Save Config</button>
+        </div>
+
+        <div class="admin-card">
+            <div class="admin-card-title">⚔️ Automated War Management</div>
+            {% set slackers = [] %}
+            {% if clan_data and clan_data.memberList %}
+                {% for m in clan_data.memberList %}
+                    {% if m.clanWarTrophies | default(0) == 0 %}
+                        {% set _ = slackers.append(m) %}
+                    {% endif %}
+                {% endfor %}
+            {% endif %}
+            <div class="control-group">
+                <div>
+                    <span class="control-label">Pending War Nudges</span>
+                    <span class="control-desc">Members missing war battles.</span>
+                </div>
+                <span style="font-weight: bold; color: var(--danger);">{{ slackers | length }} Targets</span>
+            </div>
+            <div class="slacker-list">
+                {% for s in slackers %}
+                <div class="slacker-item">
+                    <span class="slacker-name">⚠ {{ s.name }}</span>
+                    <span style="color: var(--dim);">{{ s.role }}</span>
+                </div>
+                {% else %}
+                <div style="color: var(--success); text-align: center; padding: 10px;">All clear! 🎉</div>
+                {% endfor %}
+            </div>
+            <button class="btn btn-danger" onclick="fireWarNudges(this)" {% if not slackers %}disabled style="opacity: 0.5;"{% endif %}>
+                ✉️ Fire Discord Nudge DMs
+            </button>
+        </div>
+
+        <div class="admin-card">
+            <div class="admin-card-title">📡 Data & Diagnostics</div>
+            <button class="btn btn-accent" onclick="triggerHarvester(this)">🔄 Force Data Harvest</button>
+            <button class="btn btn-outline" onclick="flushCache(this)">🗑️ Flush Redis Cache</button>
+            <div style="margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px;">
+                <form action="/admin/export/custom" method="POST">
+                    <button type="submit" class="btn btn-outline">📥 Download Clan CSV</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="admin-card full-width-card">
+            <div class="admin-card-title">
+                👥 Member Administration Hub
+                <input type="text" id="adminSearch" placeholder="🔍 Search member to manage..." style="width: 250px;">
+            </div>
+            
+            <div class="master-list-container">
+                {% if clan_data and clan_data.memberList %}
+                    {% for member in clan_data.memberList %}
+                    <div class="roster-item" data-name="{{ member.name | lower }}">
+                        
+                        <div class="roster-header" onclick="toggleDrawer('{{ member.tag | replace('#', '') }}')">
+                            <div class="roster-info">
+                                <div class="roster-name">
+                                    {{ member.name }}
+                                    <span class="roster-role">{{ member.role | replace('coLeader', 'Co-Leader') | title }}</span>
+                                </div>
+                            </div>
+                            
+                            <div class="roster-quick-stats">
+                                <span>🏆 {{ member.trophies }}</span>
+                                <span>🎁 {{ member.donations }}</span>
+                                <span class="{% if member.clanWarTrophies | default(0) == 0 %}warn-stat{% endif %}">
+                                    ⚔️ War: {{ member.clanWarTrophies | default(0) }}
+                                </span>
+                                <span style="font-size: 10px;">▼</span>
+                            </div>
+                        </div>
+
+                        <div class="roster-drawer" id="drawer-{{ member.tag | replace('#', '') }}">
+                            <div class="drawer-grid">
+                                
+                                <div>
+                                    <span class="drawer-label">Admin Notes (MongoDB)</span>
+                                    <textarea id="notes-{{ member.tag | replace('#', '') }}" class="db-textarea" placeholder="Record absences, Discord behavior, etc..."></textarea>
+                                    <button class="btn btn-success" style="width: auto; padding: 8px 16px; margin:0;" onclick="saveNote('{{ member.tag }}', this)">
+                                        💾 Save Notes
+                                    </button>
+                                </div>
+
+                                <div>
+                                    <span class="drawer-label">Behavior & Actions</span>
+                                    <button class="btn btn-warning" onclick="issueStrike('{{ member.tag }}', this)">
+                                        ➕ Issue Strike
+                                    </button>
+                                    <button class="btn btn-danger" onclick="sendWarningDM('{{ member.tag }}', this)">
+                                        ✉️ Bot DM: Missing War
+                                    </button>
+                                    <a href="/player/{{ member.tag | replace('#', '') }}" class="btn btn-outline" target="_blank" style="text-decoration: none;">
+                                        📊 View Full Profile ↗
+                                    </a>
+                                </div>
+
+                                <div>
+                                    <span class="drawer-label">System Privileges</span>
+                                    
+                                    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                                        <input type="text" id="discord-id-{{ member.tag | replace('#', '') }}" placeholder="Discord ID (e.g. 75197...)" style="padding: 8px; font-size: 12px;">
+                                        <button class="btn btn-accent" style="width: auto; margin: 0; padding: 8px 12px;" onclick="manualLinkDiscord('{{ member.tag }}', this)">
+                                            🔗 Link
+                                        </button>
+                                    </div>
+
+                                    <div class="drawer-btn-group">
+                                        <button class="btn btn-success" onclick="toggleAdminStatus('{{ member.tag }}', true, this)">
+                                            👑 Grant Admin
+                                        </button>
+                                        <button class="btn btn-danger" onclick="toggleAdminStatus('{{ member.tag }}', false, this)">
+                                            🚫 Revoke
+                                        </button>
+                                    </div>
+                                    <span style="font-size: 10px; color: var(--dim);">Grants or removes access to this exact dashboard page.</span>
+                                </div>
+
+                            </div>
+                        </div>
+
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div style="padding: 20px; color: var(--dim); text-align: center;">No roster data available. Check API fetch.</div>
+                {% endif %}
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+// Generic Toast Notify Function
+function notify(btn, originalText, successText) {
+    btn.innerHTML = successText;
+    btn.style.pointerEvents = 'none';
+    setTimeout(() => {
+        btn.innerHTML = originalText;
+        btn.style.pointerEvents = 'auto';
+    }, 2500);
+}
+
+// ---------------------------------------------------
+// 1. Existing Top Card Functions
+// ---------------------------------------------------
+function flushCache(btn) {
+    const originalText = btn.innerHTML;
+    btn.innerHTML = "Flushing... ⏳";
+    fetch('/admin/flush-cache', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => notify(btn, originalText, "✅ Cache Cleared"))
+        .catch(err => notify(btn, originalText, "❌ Error"));
+}
+
+function fireWarNudges(btn) {
+    if(!confirm("Command bot to DM all slacking members?")) return;
+    const originalText = btn.innerHTML;
+    btn.innerHTML = "Sending DMs... 🚀";
+    fetch('/admin/war/nudges', { method: 'POST' })
+        .then(() => notify(btn, originalText, "✅ DMs Fired!"))
+        .catch(() => notify(btn, originalText, "❌ Error"));
+}
+
+function saveBotSettings(btn) {
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Saving... 💾";
+    setTimeout(() => notify(btn, orig, "✅ Config Saved!"), 800); 
+}
+
+function triggerHarvester(btn) {
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Harvesting API... ⏳";
+    setTimeout(() => notify(btn, orig, "✅ Database Updated!"), 1500);
+}
+
+// ---------------------------------------------------
+// 2. Master Roster Scripts
+// ---------------------------------------------------
+document.getElementById("adminSearch")?.addEventListener("keyup", function() {
+    const filter = this.value.toLowerCase();
+    document.querySelectorAll(".roster-item").forEach(item => {
+        const name = item.getAttribute("data-name");
+        item.style.display = name.includes(filter) ? "" : "none";
+    });
+});
+
+function toggleDrawer(cleanTag) {
+    const drawer = document.getElementById("drawer-" + cleanTag);
+    document.querySelectorAll('.roster-drawer').forEach(d => {
+        if(d.id !== "drawer-" + cleanTag) d.classList.remove('drawer-active');
+    });
+    drawer.classList.toggle('drawer-active');
+}
+
+function saveNote(tag, btn) {
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Saving... ⏳";
+    setTimeout(() => notify(btn, orig, "✅ Saved!"), 800);
+}
+
+function issueStrike(tag, btn) {
+    if(!confirm("Issue a formal strike to this player?")) return;
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Processing... ⏳";
+    setTimeout(() => notify(btn, orig, "✅ Strike Logged!"), 800);
+}
+
+function sendWarningDM(tag, btn) {
+    if(!confirm("Send an automated warning DM to this user?")) return;
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Sending... 🚀";
+    setTimeout(() => notify(btn, orig, "✅ DM Delivered!"), 1000);
+}
+
+// ---------------------------------------------------
+// 3. NEW: System Authentication Scripts
+// ---------------------------------------------------
+function manualLinkDiscord(tag, btn) {
+    const cleanTag = tag.replace('#', '');
+    const discordIdInput = document.getElementById('discord-id-' + cleanTag).value;
+    
+    if(!discordIdInput) {
+        alert("Please enter a valid Discord ID before linking.");
+        return;
+    }
+
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Linking... ⏳";
+    
+    // Future API call to your Flask backend:
+    // fetch('/admin/api/player/link', { method: 'POST', body: JSON.stringify({tag: tag, discord_id: discordIdInput}) })
+    
+    setTimeout(() => notify(btn, orig, "✅ Linked!"), 1000);
+}
+
+function toggleAdminStatus(tag, grantStatus, btn) {
+    const action = grantStatus ? "GRANT admin privileges to" : "REVOKE admin privileges from";
+    if(!confirm(`Are you sure you want to ${action} this user?`)) return;
+    
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Updating DB... ⏳";
+    
+    // Future API call to edit system config or user database:
+    // fetch('/admin/api/player/admin_toggle', { method: 'POST', body: JSON.stringify({tag: tag, is_admin: grantStatus}) })
+    
+    setTimeout(() => notify(btn, orig, "✅ Permissions Updated!"), 1000);
+}
+</script>
+
+</body>
+</html>

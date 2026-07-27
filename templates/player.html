@@ -248,7 +248,7 @@
 
 <main id="main-content">
 
-{% if player.is_last_known_data %}
+{% if player.data_freshness != DATA_CURRENT %}
 <div class="container" style="padding-top:16px;">
     <div style="background:rgba(241,196,15,0.1); border:1px solid rgba(241,196,15,0.4); border-radius:8px; padding:12px 18px; margin-bottom:0; color:#f1c40f; font-size:13px;">
         ⚠️ Couldn't reach the Clash Royale API just now — showing this player's last known stats instead of live data.
@@ -273,6 +273,11 @@
     <div style="margin-top:10px; font-size:12px; color:var(--dim); font-family:var(--font-mono); cursor:help;"
          title="The earliest date we have data on this player -- either the day our harvester first recorded them, or the day they linked their Discord account, whichever comes first. Not necessarily their true Clash Royale account creation date, which isn't exposed by Supercell's API.">
         Member Since: {{ player.player_since }} ⓘ
+    </div>
+    {% endif %}
+    {% if last_synced %}
+    <div style="margin-top:4px; font-size:12px; color:var(--dim); font-family:var(--font-mono);" title="The dashboard refreshes from Clash Royale every 30 minutes — this is when that last happened.">
+        🔄 Synced <span id="lastSyncedText" data-synced-at="{{ last_synced }}">just now</span>
     </div>
     {% endif %}
     {% if linked_discord %}
@@ -708,6 +713,15 @@
     <!-- ══════════════════════════════ SOCIAL ══════════════════════════════ -->
     <div class="tab-pane" id="tab-social" role="tabpanel">
 
+            {% if own_profile %}
+            <!-- Rec #4: visually groups everything on this page that's
+                 actually a personal setting (previously scattered as
+                 unrelated-looking cards) under one heading, without moving
+                 any of it to a separate route -- each card below stays
+                 exactly where its own JS/endpoints already expect it. -->
+            <div style="grid-column:1/-1; margin:8px 0 -4px; color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:1px; font-weight:bold;">⚙️ My Settings</div>
+            {% endif %}
+
             <!-- ── PROFILE FLAIR (idea #27) ── -->
             <div class="card">
                 <div class="card-title">💬 Motto &amp; Flair</div>
@@ -720,13 +734,59 @@
                 </label>
             </div>
 
+            <!-- ── MY STRIKES (Rec #2) — own profile only ── -->
+            {% if own_profile %}
+            <div class="card">
+                <div class="card-title">⚠️ My Strikes
+                    <span class="info-tip" tabindex="0" title="A strike is a formal mark for a rule violation (e.g. a missed war day). Enough of these trip the clan's configurable auto-strike threshold. You can see the full history here and appeal any one of them below.">ⓘ</span>
+                </div>
+                <div id="myStrikesContent" style="font-size:13px; margin-bottom:10px;">Loading…</div>
+                <textarea id="strikeAppealNote" class="db-textarea" style="min-height:50px;" placeholder="Explain why a strike should be reconsidered…" maxlength="500"></textarea>
+                <button class="btn btn-save" onclick="submitStrikeAppeal('{{ player.tag }}')">Submit Appeal</button>
+                <div id="strikeAppealStatus" style="font-size:12px; color:var(--dim); margin-top:6px;"></div>
+            </div>
+            {% endif %}
+
+            <!-- ── SUGGESTED DECK (Rec #11) — own profile only ── -->
+            {% if own_profile %}
+            <div class="card">
+                <div class="card-title">🃏 Suggested Deck
+                    <span class="info-tip" tabindex="0" title="Of this clan's own known-winning archetypes (from logged battles), which ones can you actually build right now with cards you've already unlocked? Ranked by this clan's own win rate, not a global tier list.">ⓘ</span>
+                </div>
+                <div id="suggestedDeckContent" style="font-size:13px;">Loading…</div>
+            </div>
+            {% endif %}
+
+            <!-- ── ONBOARDING CHECKLIST (Rec #1) — own profile only ── -->
+            {% if own_profile and onboarding_checklist %}
+            <div class="card">
+                <div class="card-title">🎓 Getting Set Up
+                    <span class="info-tip" tabindex="0" title="A standing record of the handful of things that make you a fully set-up member -- unlike the one-time welcome wizard, this stays visible any time you want to check.">ⓘ</span>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:6px; font-size:13px;">
+                    <div style="color:{{ '#2ecc71' if onboarding_checklist.discord_linked else 'var(--dim)' }};">{{ '✅' if onboarding_checklist.discord_linked else '⬜' }} Discord account linked</div>
+                    <div style="color:{{ '#2ecc71' if onboarding_checklist.read_how_it_works else 'var(--dim)' }};">{{ '✅' if onboarding_checklist.read_how_it_works else '⬜' }} Read <a href="/how-it-works" style="color:inherit;">How It Works</a></div>
+                    <div style="color:{{ '#2ecc71' if onboarding_checklist.mentor_paired else 'var(--dim)' }};">{{ '✅' if onboarding_checklist.mentor_paired else '⬜' }} Mentor paired</div>
+                    <div style="color:{{ '#2ecc71' if onboarding_checklist.first_war_day_completed else 'var(--dim)' }};">{{ '✅' if onboarding_checklist.first_war_day_completed else '⬜' }} First war day completed</div>
+                </div>
+            </div>
+            {% endif %}
+
             <!-- ── NOTIFICATION PREFERENCES (idea #132/#138) — own profile only ── -->
             {% if own_profile %}
             <div class="card">
                 <div class="card-title">🔔 Notification Preferences</div>
-                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#ddd; cursor:pointer; margin-bottom:10px;">
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#ddd; cursor:pointer; margin-bottom:6px;">
                     <input type="checkbox" id="notifWarReminders" checked onchange="saveNotifPrefs()">
                     Send me war reminder DMs
+                </label>
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#ddd; cursor:pointer; margin-bottom:6px;">
+                    <input type="checkbox" id="notifStrikeAlerts" checked onchange="saveNotifPrefs()">
+                    Notify me about strikes
+                </label>
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#ddd; cursor:pointer; margin-bottom:10px;">
+                    <input type="checkbox" id="notifSpotlightAlerts" checked onchange="saveNotifPrefs()">
+                    Notify me when I win a Spotlight
                 </label>
                 <label style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); display:block; margin-bottom:6px;">Email (optional, for digest)</label>
                 <div style="display:flex; gap:8px;">
@@ -1366,16 +1426,21 @@ async function loadNotifPrefs() {
     try {
         var res = await fetch('/api/onboarding');
         var d = await res.json();
-        document.getElementById('notifWarReminders').checked = !!(d.notif_prefs || {}).war_reminders;
+        var prefs = d.notif_prefs || {};
+        document.getElementById('notifWarReminders').checked = prefs.war_reminders !== false;
+        document.getElementById('notifStrikeAlerts').checked = prefs.strike_alerts !== false;
+        document.getElementById('notifSpotlightAlerts').checked = prefs.spotlight_alerts !== false;
         document.getElementById('notifEmail').value = d.email || '';
     } catch (e) { /* non-critical */ }
 }
 function saveNotifPrefs() {
     var warReminders = document.getElementById('notifWarReminders').checked;
+    var strikeAlerts = document.getElementById('notifStrikeAlerts').checked;
+    var spotlightAlerts = document.getElementById('notifSpotlightAlerts').checked;
     var email = document.getElementById('notifEmail').value.trim();
     fetch('/api/onboarding', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ notif_prefs: { war_reminders: warReminders }, email: email })
+        body: JSON.stringify({ notif_prefs: { war_reminders: warReminders, strike_alerts: strikeAlerts, spotlight_alerts: spotlightAlerts }, email: email })
     }).catch(function() { alert('❌ Could not save notification preferences.'); });
 }
 
@@ -1487,6 +1552,26 @@ async function loadCardMastery(tag) {
                 + '</div>';
         }
 
+        // Rec #15: card evolution progress -- only meaningful for the subset
+        // of cards that can evolve at all (maxEvolutionLevel > 0 in the CR
+        // API's /cards catalog), so this section just doesn't render if none
+        // of this player's owned cards are evolution-eligible.
+        var evolutions = d.evolutions || [];
+        if (evolutions.length) {
+            html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid #1e2530;">'
+                + '<div style="font-size:12px; color:var(--dim); margin-bottom:6px;">Card Evolutions (' + (d.evolutions_unlocked_count || 0) + ' / ' + (d.evolution_eligible_count || 0) + ' unlocked)</div>'
+                + evolutions.map(function(ev) {
+                    var pct = ev.max_evolution_level ? Math.round((ev.evolution_level / ev.max_evolution_level) * 100) : 0;
+                    var color = ev.maxed_evolution ? 'var(--ok)' : (ev.evolution_level > 0 ? 'var(--accent)' : 'var(--dim)');
+                    return '<div class="usage-row">'
+                        + '<span class="usage-name">' + esc(ev.name) + '</span>'
+                        + '<div class="usage-bar-track"><div class="usage-bar-fill" style="width:' + pct + '%; background:' + color + ';"></div></div>'
+                        + '<span class="usage-meta">' + esc(ev.evolution_level) + ' / ' + esc(ev.max_evolution_level) + '</span>'
+                        + '</div>';
+                }).join('')
+                + '</div>';
+        }
+
         var extras = [];
         if (d.most_duplicated_card && d.most_duplicated_card.name) {
             extras.push('Most Copies Owned: <strong>' + esc(d.most_duplicated_card.name) + '</strong> (' + d.most_duplicated_card.count + ')');
@@ -1503,6 +1588,27 @@ async function loadCardMastery(tag) {
 
         el.innerHTML = html;
     } catch (e) { el.innerHTML = '<span class="empty-note">Could not load card mastery.</span>'; }
+    loadDeckQualityBenchmark(tag);
+}
+
+// ── Rec #17: per-role deck-quality benchmarking ─────────────────────────────────
+async function loadDeckQualityBenchmark(tag) {
+    var el = document.getElementById('cardMasteryContent');
+    if (!el) return;
+    try {
+        var res = await fetch('/api/player/' + tag.replace('#', '') + '/deck-quality-benchmark');
+        var d = await res.json();
+        if (d.error || d.own_quality_pct == null) return;
+        var roleLabel = { leader: 'Leader', coLeader: 'Co-Leader', elder: 'Elder', member: 'Member' }[d.role] || d.role;
+        var diffFromRole = d.role_average_pct != null ? Math.round((d.own_quality_pct - d.role_average_pct) * 10) / 10 : null;
+        var diffColor = diffFromRole == null ? 'var(--dim)' : (diffFromRole >= 0 ? 'var(--ok)' : 'var(--err)');
+        var diffText = diffFromRole == null ? '' : (diffFromRole >= 0 ? '+' : '') + diffFromRole + ' pts vs ' + esc(roleLabel) + ' average';
+        el.innerHTML += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid #1e2530; font-size:12px;">'
+            + '<div style="color:var(--dim); margin-bottom:4px;">Collection Quality vs Role Average</div>'
+            + '<strong>' + esc(d.own_quality_pct) + '%</strong> <span style="color:' + diffColor + ';">' + esc(diffText) + '</span>'
+            + (d.percentile_in_role != null ? '<br><span style="color:var(--dim);">Better than ' + esc(d.percentile_in_role) + '% of ' + esc(roleLabel) + 's in the clan (n=' + esc(d.role_sample_size) + ')</span>' : '')
+            + '</div>';
+    } catch (e) { /* non-critical, silently skip */ }
 }
 
 // ── Seasonal challenges (idea #109) ─────────────────────────────────────────────
@@ -1594,8 +1700,85 @@ document.addEventListener('DOMContentLoaded', function() {
     populateCompareDatalist();
     {% if own_profile %}
     loadNotifPrefs();
+    loadMyStrikes({{ player.tag | tojson }});
+    loadSuggestedDeck({{ player.tag | tojson }});
     {% endif %}
+    if (document.getElementById('lastSyncedText')) { updateSyncedAgoText(); setInterval(updateSyncedAgoText, 30000); }
 });
+
+// ── Suggested Deck (Rec #11) ────────────────────────────────────────────────
+async function loadSuggestedDeck(tag) {
+    var el = document.getElementById('suggestedDeckContent');
+    if (!el) return;
+    try {
+        var res = await fetch('/api/player/' + tag + '/best-deck');
+        var d = await res.json();
+        if (d.error) { el.innerHTML = '<span style="color:#e74c3c;">' + esc(d.error) + '</span>'; return; }
+        var suggestions = d.suggestions || [];
+        if (!suggestions.length) {
+            el.innerHTML = '<span style="color:var(--dim);">' + esc(d.note || 'No buildable suggestions yet.') + '</span>';
+            return;
+        }
+        el.innerHTML = suggestions.map(function(s, i) {
+            return '<div style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.06);">'
+                + '<strong>' + (i === 0 ? '⭐ ' : '') + esc(s.name) + '</strong> '
+                + '<span style="color:var(--dim); font-size:11px;">' + esc(s.win_rate) + '% win rate over ' + esc(s.games) + ' logged games · avg elixir ' + esc((s.elixir_curve || {}).average || '—') + '</span><br>'
+                + '<span style="color:var(--dim); font-size:11px;">' + s.cards.map(esc).join(', ') + '</span> '
+                + (s.copy_deck_url ? '<a href="' + esc(s.copy_deck_url) + '" target="_blank" style="font-size:11px;">📋 Copy Deck</a>' : '')
+                + '</div>';
+        }).join('') + '<div style="font-size:11px; color:var(--dim); margin-top:6px;">' + esc(d.note || '') + '</div>';
+    } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Could not load deck suggestions.</span>'; }
+}
+
+// ── My Strikes + appeal (Rec #2) ────────────────────────────────────────────
+async function loadMyStrikes(tag) {
+    var el = document.getElementById('myStrikesContent');
+    if (!el) return;
+    try {
+        var res = await fetch('/api/player/' + tag + '/strikes');
+        var d = await res.json();
+        var strikes = d.strikes || [];
+        el.innerHTML = strikes.length
+            ? strikes.map(function(s) {
+                return '<div style="padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">'
+                    + '<span style="color:var(--dim); font-family:var(--font-mono); font-size:11px;">' + (s.date || 'Unknown date') + '</span> — '
+                    + (s.details ? esc(s.details) : '<span style="color:var(--dim);">No reason given.</span>') + '</div>';
+              }).join('')
+            : '<span style="color:var(--dim);">No strikes on record. 🎉</span>';
+    } catch (e) { el.innerHTML = '<span style="color:#e74c3c;">Could not load strike history.</span>'; }
+}
+function submitStrikeAppeal(tag) {
+    var note = document.getElementById('strikeAppealNote').value.trim();
+    var status = document.getElementById('strikeAppealStatus');
+    if (!note) { status.textContent = 'Write a short note first.'; return; }
+    fetch('/api/player/' + tag + '/strike-appeal', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ note: note })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.error) { status.textContent = '❌ ' + d.error; return; }
+        status.textContent = '✅ Appeal submitted — an admin will review it.';
+        document.getElementById('strikeAppealNote').value = '';
+    }).catch(function() { status.textContent = '❌ Could not submit appeal.'; });
+}
+
+// Backlog item: "last synced X minutes ago" -- same helper as roster.html;
+// duplicated rather than shared since this project keeps each template
+// self-contained with no separate JS file.
+function updateSyncedAgoText() {
+    var el = document.getElementById('lastSyncedText');
+    if (!el) return;
+    var iso = el.getAttribute('data-synced-at');
+    if (!iso) return;
+    var then = new Date(iso);
+    if (isNaN(then.getTime())) return;
+    var seconds = Math.max(0, Math.round((Date.now() - then.getTime()) / 1000));
+    var text;
+    if (seconds < 60) text = 'just now';
+    else if (seconds < 3600) text = Math.floor(seconds / 60) + ' minute' + (Math.floor(seconds / 60) === 1 ? '' : 's') + ' ago';
+    else if (seconds < 86400) text = Math.floor(seconds / 3600) + ' hour' + (Math.floor(seconds / 3600) === 1 ? '' : 's') + ' ago';
+    else text = Math.floor(seconds / 86400) + ' day' + (Math.floor(seconds / 86400) === 1 ? '' : 's') + ' ago';
+    el.textContent = text;
+}
 </script>
 </body>
 </html>

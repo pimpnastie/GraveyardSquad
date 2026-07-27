@@ -27,7 +27,7 @@
 <div class="container">
     <h1>Clan Family</h1>
     <p style="color:var(--dim)">A combined view across all linked clans in the family.</p>
-    {% if clan_data_is_stale %}
+    {% if clan_data_freshness != DATA_CURRENT %}
     <div style="background:rgba(241,196,15,0.1); border:1px solid rgba(241,196,15,0.4); border-radius:8px; padding:10px 16px; margin-bottom:16px; color:#f1c40f; font-size:13px;">
         ⚠️ Couldn't reach the Clash Royale API for at least one linked clan just now — showing last known data for it instead.
     </div>

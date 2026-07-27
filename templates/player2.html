@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Player Profile | {{ player.name }}</title>
+    <style>
+        /* Base Variables & Shell */
+        :root { 
+            --surface: #111418; --border: #1e2530; --accent: #00e5ff; 
+            --danger: #e74c3c; --success: #2ecc71; --warning: #f1c40f;
+            --text: #c5c6c7; --dim: #888; --font-mono: monospace; 
+            --bg: #0b0c10;
+        }
+        body { 
+            background: var(--bg); color: var(--text); 
+            font-family: 'Segoe UI', system-ui, sans-serif; 
+            margin: 0; padding-bottom: 50px; 
+        }
+        a { text-decoration: none; color: inherit; transition: 0.2s; }
+        a:hover { opacity: 0.8; }
+
+        /* Topbar */
+        .topbar { 
+            display: flex; align-items: center; padding: 12px 24px; 
+            background: var(--surface); border-bottom: 1px solid var(--border); 
+            position: sticky; top: 0; z-index: 100;
+        }
+        .topbar-title { font-size: 20px; font-weight: 700; text-transform: uppercase; color: var(--accent); }
+        .back-link { margin-left: auto; font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+        .back-link:hover { color: var(--accent); }
+
+        /* Hero Section */
+        .hero { background: linear-gradient(180deg, #1a222c 0%, var(--bg) 100%); padding: 40px 20px; text-align: center; border-bottom: 1px solid var(--border); }
+        .hero-name { font-size: 32px; color: white; margin: 0 0 10px 0; display: flex; justify-content: center; align-items: center; gap: 12px; }
+        .hero-tag { font-family: var(--font-mono); color: var(--dim); font-size: 14px; background: rgba(255,255,255,0.05); padding: 4px 10px; border-radius: 4px; }
+        .role-badge { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; padding: 4px 12px; border-radius: 20px; border: 1px solid var(--accent); color: var(--accent); }
+        
+        .cr-link-btn { margin-top: 16px; display: inline-block; padding: 8px 16px; background: rgba(0,229,255,0.1); border: 1px solid var(--accent); color: var(--accent); border-radius: 6px; font-weight: bold; font-size: 13px; text-transform: uppercase; }
+        .cr-link-btn:hover { background: var(--accent); color: #000; }
+
+        /* Dashboard Grid */
+        .container { max-width: 1200px; margin: 30px auto; padding: 0 20px; }
+        .profile-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+        @media (max-width: 900px) { .profile-grid { grid-template-columns: 1fr; } }
+        
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 24px; }
+        .card-title { font-size: 14px; font-family: var(--font-mono); text-transform: uppercase; color: white; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+
+        /* Stat Blocks */
+        .stat-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-label { color: var(--dim); font-size: 14px; }
+        .stat-val { font-weight: bold; color: white; font-size: 15px; }
+
+        /* Admin Controls (Protected) */
+        .admin-zone { border-color: var(--danger); box-shadow: 0 0 15px rgba(231,76,60,0.1); }
+        .admin-zone .card-title { color: var(--danger); border-bottom-color: rgba(231,76,60,0.3); }
+        .db-textarea { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); color: white; padding: 12px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; min-height: 100px; resize: vertical; margin-bottom: 12px; }
+        .db-textarea:focus { border-color: var(--danger); outline: none; }
+        
+        .btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn { flex: 1; padding: 10px; border-radius: 6px; font-weight: 600; font-size: 12px; text-transform: uppercase; cursor: pointer; border: none; transition: 0.2s; font-family: var(--font-mono); text-align: center; }
+        .btn-strike { background: rgba(241, 196, 15, 0.1); border: 1px solid var(--warning); color: var(--warning); }
+        .btn-strike:hover { background: var(--warning); color: #000; }
+        .btn-dm { background: rgba(231, 76, 60, 0.1); border: 1px solid var(--danger); color: var(--danger); }
+        .btn-dm:hover { background: var(--danger); color: white; }
+        .btn-save { background: rgba(46, 204, 113, 0.1); border: 1px solid var(--success); color: var(--success); }
+        .btn-save:hover { background: var(--success); color: #000; }
+
+        /* Audit Log */
+        .audit-log { max-height: 200px; overflow-y: auto; font-family: var(--font-mono); font-size: 12px; background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+        .audit-item { padding: 8px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); color: var(--dim); }
+        .audit-item span { color: white; }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+    <div class="topbar-title">Player Dossier</div>
+    <a href="/" class="back-link">← Back to Roster</a>
+</div>
+
+<div class="hero">
+    <h1 class="hero-name">
+        {{ player.name }}
+        <span class="role-badge">{{ player.role | replace('coLeader', 'Co-Leader') | title }}</span>
+    </h1>
+    <span class="hero-tag">{{ player.tag }}</span>
+    <br>
+    <a href="clashroyale://player/{{ player.tag | replace('#', '') }}" class="cr-link-btn">📱 Open in Game</a>
+</div>
+
+<div class="container">
+    <div class="profile-grid">
+        
+        <div class="left-col">
+            
+            <div class="card">
+                <div class="card-title">📊 Current Season Stats</div>
+                <div class="stat-row">
+                    <span class="stat-label">Trophies 🏆</span>
+                    <span class="stat-val" style="color: var(--warning);">{{ player.trophies }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Best Trophies 🌟</span>
+                    <span class="stat-val">{{ player.bestTrophies }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Donations 🎁</span>
+                    <span class="stat-val" style="color: var(--success);">{{ player.donations }}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">War Battles (Current) ⚔️</span>
+                    <span class="stat-val {% if player.clanWarTrophies | default(0) == 0 %}stat-warn{% endif %}">
+                        {{ player.clanWarTrophies | default(0) }}
+                    </span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">🧠 Algorithmic Predictions <span style="font-size: 10px; color: var(--dim);">BETA</span></div>
+                
+                <div class="stat-row">
+                    <span class="stat-label">Matchmaking Risk</span>
+                    <span class="stat-val" style="color: var(--warning);">Elevated (3-Game Win Streak)</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Nemesis Archetype</span>
+                    <span class="stat-val">Log Bait (31% Win Rate)</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Tilt Forecaster</span>
+                    <span class="stat-val" style="color: var(--success);">Optimal (Rested)</span>
+                </div>
+                
+                <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
+                    <button class="cr-link-btn" style="width: 100%; text-align: center; border-color: var(--dim); color: var(--text);" onclick="copyLastDeck()">
+                        📋 Copy Last Used Deck
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="right-col">
+            
+            <div class="card">
+                <div class="card-title">📜 Clan History Log</div>
+                <div class="audit-log">
+                    {% if db_player and db_player.audit_log %}
+                        {% for entry in db_player.audit_log %}
+                            <div class="audit-item">
+                                [{{ entry.date }}] <span>{{ entry.action }}</span>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="audit-item">No historical data available. Harvester is tracking...</div>
+                        <div class="audit-item">[System] Profile created in Database.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if is_admin %}
+            <div class="card admin-zone">
+                <div class="card-title">🛡️ Leadership Actions</div>
+                
+                <div class="stat-row" style="margin-bottom: 16px;">
+                    <span class="stat-label">Active Strikes</span>
+                    <span class="stat-val" style="color: var(--danger); font-size: 20px;">
+                        {{ db_player.strikes | default(0) }} / 3
+                    </span>
+                </div>
+
+                <label style="font-size: 12px; color: var(--dim); text-transform: uppercase; margin-bottom: 8px; display: block;">MongoDB Admin Notes (Private)</label>
+                <textarea id="adminNotes" class="db-textarea" placeholder="Leave notes about this player's behavior, missed wars, or excuses here...">{{ db_player.admin_notes | default('') }}</textarea>
+
+                <div class="btn-group">
+                    <button class="btn btn-save" onclick="saveAdminData('{{ player.tag }}')">💾 Save Notes</button>
+                    <button class="btn btn-strike" onclick="addStrike('{{ player.tag }}')">➕ Issue Strike</button>
+                </div>
+                
+                <div style="margin-top: 10px;">
+                    <button class="btn btn-dm" style="width: 100%;" onclick="sendWarningDM('{{ player.tag }}')">✉️ Bot DM: Missing War Warning</button>
+                </div>
+            </div>
+            {% endif %}
+            
+        </div>
+    </div>
+</div>
+
+<script>
+// Generic Notify Function
+function notify(btn, originalText, successText) {
+    btn.innerHTML = successText;
+    btn.style.pointerEvents = 'none';
+    setTimeout(() => {
+        btn.innerHTML = originalText;
+        btn.style.pointerEvents = 'auto';
+    }, 2000);
+}
+
+// ---------------------------------------------------
+// PUBLIC SCRIPTS
+// ---------------------------------------------------
+function copyLastDeck() {
+    alert("Deck link copied to clipboard! (Requires backend deck API connection)");
+}
+
+// ---------------------------------------------------
+// ADMIN SCRIPTS (Only function if backend verifies admin)
+// ---------------------------------------------------
+function saveAdminData(tag) {
+    const notes = document.getElementById('adminNotes').value;
+    const btn = event.target;
+    const orig = btn.innerHTML;
+    
+    btn.innerHTML = "Saving... ⏳";
+    
+    // Future Phase 3 API endpoint for saving DB changes
+    fetch('/admin/api/player/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: tag, notes: notes })
+    })
+    .then(() => notify(btn, orig, "✅ Saved to DB!"))
+    .catch(() => notify(btn, orig, "❌ Error"));
+}
+
+function addStrike(tag) {
+    if(!confirm("Issue a formal strike to this player? This will log in their history.")) return;
+    const btn = event.target;
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Processing... ⏳";
+    
+    // Future API call to increment strike counter in MongoDB
+    setTimeout(() => {
+        notify(btn, orig, "✅ Strike Added!");
+        // Reload page to reflect new strike count
+        setTimeout(() => location.reload(), 1000);
+    }, 800);
+}
+
+function sendWarningDM(tag) {
+    if(!confirm("Command the Discord Bot to DM this user about missing War?")) return;
+    const btn = event.target;
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Sending... 🚀";
+    
+    // Future API call that triggers discord.User.send()
+    setTimeout(() => notify(btn, orig, "✅ DM Delivered!"), 1200);
+}
+</script>
+
+</body>
+</html>

@@ -4,6 +4,7 @@ import json
 import time
 import math
 import secrets
+import hashlib
 import threading
 import logging
 import requests
@@ -14,6 +15,7 @@ import redis as sync_redis
 from jinja2.sandbox import SandboxedEnvironment
 
 from data_harvester import get_harvester, RIVER_RACE_TOTAL_PERIODS, RIVER_RACE_MAX_FAME
+from data_freshness import CURRENT, MOST_RECENT, HISTORICAL, is_current
 
 # Idea #29/#40: shareable player-card PNG + profile QR code. Both are optional at
 # import time — if Pillow/qrcode aren't installed yet (see requirements.txt),
@@ -111,6 +113,10 @@ CARD_ELIXIR_COST = {
 }
 DEFAULT_ELIXIR_COST = 4  # neutral fallback for any card missing above
 
+# Rec #10: how many distinct members logging the same archetype counts as a
+# clan-wide "too many people run this" warning, not just a popular pick.
+DECK_DIVERSITY_WARN_MEMBER_THRESHOLD = 5
+
 # Idea #222 (lightweight version — not full ML-style deck clustering, which
 # 250_IDEAS.md itself flags as needing a much bigger card-role tagging
 # system): identify a deck's likely "win condition" card and name the
@@ -171,6 +177,61 @@ def _elixir_curve(cards: list) -> dict:
     for c in costs:
         histogram[c] = histogram.get(c, 0) + 1
     return {"average": round(sum(costs) / len(costs), 2), "histogram": histogram}
+
+
+def _clan_archetype_leaderboard(min_games: int = 3) -> list:
+    """Rec #11: a lighter, standalone version of the scoring loop in
+    admin_analytics_archetypes (idea #230's endpoint) -- deliberately kept
+    separate rather than importing that endpoint's cached, admin-gated
+    response, since this needs to run for any member looking at their own
+    profile, not just from the admin Analytics tab. Same signature/scoring
+    logic (sorted 8-card tuple, win/loss from battle_history), just without
+    the trend/usage-share extras that endpoint also computes.
+    """
+    recent = list(
+        db_sync["battle_history"]
+        .find({}, {"_id": 0, "team_cards": 1, "result": 1})
+        .sort("battle_time", -1)
+        .limit(3000)
+    )
+    archetypes = {}
+    for b in recent:
+        result = b.get("result")
+        if result not in ("win", "loss"):
+            continue
+        cards = _normalize_card_names(b.get("team_cards"))
+        if len(cards) < 8:
+            continue
+        signature = tuple(sorted(cards[:8]))
+        entry = archetypes.setdefault(signature, {"wins": 0, "games": 0})
+        entry["games"] += 1
+        if result == "win":
+            entry["wins"] += 1
+    return [
+        {"cards": list(sig), "name": _archetype_name(list(sig)), "games": v["games"],
+         "win_rate": round((v["wins"] / v["games"]) * 100, 1)}
+        for sig, v in archetypes.items() if v["games"] >= min_games
+    ]
+
+
+def compute_best_buildable_deck(owned_card_names: set, top_n: int = 3) -> list:
+    """Rec #11: of the clan's own known-winning archetypes (see
+    _clan_archetype_leaderboard), which ones can this specific player
+    actually build right now with cards they've already unlocked? Ranked by
+    this clan's own logged win rate, not a global tier list -- consistent
+    with how the rest of the archetype analytics is scoped to this clan's
+    own battle history rather than the wider CR meta.
+    """
+    buildable = [
+        a for a in _clan_archetype_leaderboard()
+        if owned_card_names.issuperset(a["cards"])
+    ]
+    buildable.sort(key=lambda a: (-a["win_rate"], -a["games"]))
+    for a in buildable[:top_n]:
+        a["elixir_curve"] = _elixir_curve(a["cards"])
+        a["copy_deck_url"] = ("https://link.clashroyale.com/en/?clashroyale://copyDeck?deck="
+                              + ";".join(a["cards"]))
+    return buildable[:top_n]
 
 # ---------------------------------------------------------------------------
 # 1. WEB SETUP & DATABASE SYNC CONNECTIONS
@@ -282,6 +343,13 @@ sandbox_env = SandboxedEnvironment(autoescape=True)
 _cache_lock = threading.Lock()
 _HTML_CACHE = {}
 
+# Expose the current/most_recent/historical vocabulary (see data_freshness.py)
+# to every template so `{% if x_freshness != DATA_CURRENT %}` reads clearly
+# instead of templates hardcoding the raw "current"/"most_recent" strings.
+sandbox_env.globals["DATA_CURRENT"] = CURRENT
+sandbox_env.globals["DATA_MOST_RECENT"] = MOST_RECENT
+sandbox_env.globals["DATA_HISTORICAL"] = HISTORICAL
+
 # ---------------------------------------------------------------------------
 # 2. LEGACY HELPERS & DATA BRIDGES
 # ---------------------------------------------------------------------------
@@ -358,13 +426,13 @@ def require_recent_login() -> bool:
 def _client_ip() -> str:
     return request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
 
-def rate_limited(bucket: str, max_attempts: int, window_seconds: int) -> bool:
-    """Idea #147: lightweight rate limiting for /login and /link POST, since
-    neither route had any before. Implemented against Mongo (not an in-memory
-    dict) so it holds up correctly even if this app is ever run with multiple
-    worker processes. Returns True if the caller is OVER the limit (i.e.
-    should be blocked) — check-and-record in one call to keep call sites simple."""
-    key = f"ratelimit_{bucket}_{_client_ip()}"
+def rate_limited_identity(bucket: str, identity: str, max_attempts: int, window_seconds: int) -> bool:
+    """Rec #18: same Mongo-backed check-and-record logic as rate_limited()
+    below, generalized to rate-limit by an arbitrary identity string instead
+    of always the caller's IP -- used so an issued API key gets its own
+    bucket (keyed by the key itself) rather than sharing a bucket with every
+    other visitor behind the same IP/NAT."""
+    key = f"ratelimit_{bucket}_{identity}"
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(seconds=window_seconds)
     doc = db_sync["config"].find_one({"_id": key}) or {}
@@ -375,6 +443,14 @@ def rate_limited(bucket: str, max_attempts: int, window_seconds: int) -> bool:
     attempts.append(now)
     db_sync["config"].update_one({"_id": key}, {"$set": {"attempts": attempts}}, upsert=True)
     return False
+
+def rate_limited(bucket: str, max_attempts: int, window_seconds: int) -> bool:
+    """Idea #147: lightweight rate limiting for /login and /link POST, since
+    neither route had any before. Implemented against Mongo (not an in-memory
+    dict) so it holds up correctly even if this app is ever run with multiple
+    worker processes. Returns True if the caller is OVER the limit (i.e.
+    should be blocked) — check-and-record in one call to keep call sites simple."""
+    return rate_limited_identity(bucket, _client_ip(), max_attempts, window_seconds)
 
 def _as_aware_utc(dt):
     """PyMongo returns naive datetimes by default (tz_aware isn't set on this
@@ -446,7 +522,7 @@ def fetch_cr_api(endpoint: str, retries: int = 3, use_cache: bool = True) -> dic
             time.sleep(2 ** attempt)
     return None
 
-def fetch_cr_api_with_fallback(endpoint: str, retries: int = 3) -> tuple[dict | None, bool]:
+def fetch_cr_api_with_fallback(endpoint: str, retries: int = 3) -> tuple[dict | None, str]:
     """Like fetch_cr_api, but for endpoints that don't already have a dedicated
     Mongo collection to fall back to (the base clan fetch, mainly -- player
     fetches fall back to player_profiles directly, and war/river-race fetches
@@ -460,9 +536,12 @@ def fetch_cr_api_with_fallback(endpoint: str, retries: int = 3) -> tuple[dict | 
     data_harvester.py's _merge_leaderboard_entry() and the war-fame fallback
     in api_public_leaderboards().
 
-    Returns (data, is_stale). is_stale is True only when the live call failed
-    and a cached fallback was used -- callers can surface that to the page
-    ("as of <date>") the same way stale Hall of Fame entries do.
+    Returns (data, freshness) where freshness is one of the CURRENT/MOST_RECENT
+    constants from data_freshness.py -- see that module for the full
+    current/most-recent/historical vocabulary this app uses. This function
+    only ever produces CURRENT or MOST_RECENT (never HISTORICAL, since it
+    always returns the same endpoint's own value, never a different one from
+    a different time period).
     """
     data = fetch_cr_api(endpoint, retries=retries)
     cache_id = f"last_known_api::{endpoint}"
@@ -472,11 +551,11 @@ def fetch_cr_api_with_fallback(endpoint: str, retries: int = 3) -> tuple[dict | 
             {"$set": {"data": data, "cached_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
-        return data, False
+        return data, CURRENT
     cached = db_sync["config"].find_one({"_id": cache_id})
     if cached and cached.get("data"):
-        return cached["data"], True
-    return None, False
+        return cached["data"], MOST_RECENT
+    return None, CURRENT
 
 # Idea #236: several Analytics-tab routes (archetypes, tier-list, underused-gems,
 # hard-counters, matchup-breakdown, leaderboards) each scan/aggregate 2000-3000
@@ -724,18 +803,20 @@ def render_sandboxed(template_str: str, **context) -> str:
 def get_player_analytical_data(tag):
     clean = clean_tag(tag)
     player = fetch_cr_api(f"players/%23{clean}")
-    is_last_known_data = False
+    player_freshness = CURRENT
     if not player:
         # player_profiles already stores a near-complete copy of this exact
         # CR API response (the harvester writes the raw {**profile_data, ...}
         # spread on every cycle -- see data_harvester.py) -- fall back to it
         # instead of returning None and 404ing/blanking the whole profile
-        # page over a transient live-API failure.
+        # page over a transient live-API failure. Same-value fallback for a
+        # failed live call, so MOST_RECENT (see data_freshness.py), never
+        # HISTORICAL.
         stored = db_sync["player_profiles"].find_one({"tag": f"#{clean}"})
         if not stored:
             return None
         player = {k: v for k, v in stored.items() if k != "_id"}
-        is_last_known_data = True
+        player_freshness = MOST_RECENT
     # Defensive: exclude _id (ObjectId isn't JSON-serializable) even though
     # this currently only reaches Jinja templates, not jsonify() directly —
     # same bug class as the config_backups crash above, cheap to prevent here
@@ -887,7 +968,7 @@ def get_player_analytical_data(tag):
         return (0, -frac)  # in-progress, closest-first
     player["achievements"] = sorted(achievements, key=_completion_key)
 
-    player["is_last_known_data"] = is_last_known_data
+    player["data_freshness"] = player_freshness
     return player
 
 
@@ -975,6 +1056,65 @@ def compute_projected_finish(war_data: dict) -> dict | None:
         "projected_pct": round(projected_fame / RIVER_RACE_MAX_FAME * 100, 1),
         "periods_elapsed": time_elapsed,
         "periods_total": RIVER_RACE_TOTAL_PERIODS,
+    }
+
+
+def compute_war_win_probability(war_data: dict) -> dict | None:
+    """Rec #7: rough on-pace-to-win/lose estimate. Reuses the same
+    fame-per-period-elapsed extrapolation as compute_projected_finish, but
+    applies it to every clan in the race (war_data["clans"], which the CR API
+    already returns alongside "clan") so we can rank projected finishing fame
+    instead of only ever looking at our own clan in isolation.
+
+    This is deliberately labeled a rough estimate, not a real probability
+    model: it's a straight-line extrapolation of current pace with no
+    accounting for opponents historically sandbagging early or surging late.
+    """
+    if not war_data:
+        return None
+    clans = war_data.get("clans") or []
+    period_index = war_data.get("periodIndex")
+    if not clans or period_index is None:
+        return None
+    periods_elapsed = period_index + 1
+    if periods_elapsed <= 0:
+        return None
+
+    projections = []
+    for c in clans:
+        fame = c.get("fame", 0) or 0
+        rate = fame / periods_elapsed
+        projected = min(round(rate * RIVER_RACE_TOTAL_PERIODS), RIVER_RACE_MAX_FAME)
+        projections.append({"tag": c.get("tag", ""), "name": c.get("name", ""),
+                             "current_fame": fame, "projected_fame": projected})
+    projections.sort(key=lambda p: -p["projected_fame"])
+
+    own_tag = f"#{CLAN_TAG}"
+    own_rank = next((i + 1 for i, p in enumerate(projections) if p["tag"] == own_tag), None)
+    own = next((p for p in projections if p["tag"] == own_tag), None)
+    if own_rank is None or own is None:
+        return None
+
+    leader = projections[0]
+    if own_rank == 1:
+        # In front — how big is the cushion over 2nd place, as a share of max fame.
+        second = projections[1] if len(projections) > 1 else None
+        gap_pct = ((own["projected_fame"] - second["projected_fame"]) / RIVER_RACE_MAX_FAME * 100) if second else 100
+        win_probability_pct = min(95, round(55 + gap_pct * 4))
+    elif leader["projected_fame"] <= 0:
+        win_probability_pct = 50
+    else:
+        # Behind — scale down from a 45% ceiling by how close we are to the leader's pace.
+        win_probability_pct = max(3, round((own["projected_fame"] / leader["projected_fame"]) * 45))
+
+    return {
+        "rankings": projections,
+        "own_rank": own_rank,
+        "total_clans": len(projections),
+        "win_probability_pct": win_probability_pct,
+        "periods_elapsed": periods_elapsed,
+        "periods_total": RIVER_RACE_TOTAL_PERIODS,
+        "methodology_note": "Rough estimate from current fame-per-period pace — not a statistical model.",
     }
 
 # ---------------------------------------------------------------------------
@@ -1089,13 +1229,26 @@ def link_account():
     # verification), so the honest UI is a binary state, not a fake "pending" one.
     existing_link = db_sync["users"].find_one({"discord_id": session["discord_id"]}, {"cr_tag": 1})
     # Idea #200: recruitment video/trailer embed, admin-configured.
-    recruit_video_url = (db_sync["config"].find_one({"_id": "bot_settings"}) or {}).get("recruit_video_url", "")
+    bot_settings_link = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
+    recruit_video_url = bot_settings_link.get("recruit_video_url", "")
     link_ctx = {
         "name": session.get("discord_name", "Warrior"),
         "already_linked": bool(existing_link and existing_link.get("cr_tag")),
         "linked_tag": (existing_link or {}).get("cr_tag", "").replace("#", ""),
         "csrf_token": get_csrf_token(),
         "recruit_video_url": recruit_video_url,
+        # Backlog item: these two used to be literal strings baked into the
+        # template -- an admin changing the real trophy requirement or war
+        # schedule had to edit HTML to keep this page honest. Now editable in
+        # Settings (see admin_update_settings()), same pattern as every other
+        # bot_settings field, with the same defaults the hardcoded text used.
+        # min_trophies already existed in bot_settings ("Minimum Recruitment
+        # Trophies" in Settings, explicitly documented there as "shown on the
+        # link/join page") -- but link.html never actually read it, it had a
+        # literal "6,000" hardcoded instead. That's the real bug this fixes:
+        # the setting existed and did nothing.
+        "min_trophies_requirement_display": f"{int(bot_settings_link.get('min_trophies', 6500)):,}",
+        "war_days_text": bot_settings_link.get("war_days_text", "Thursday-Sunday"),
     }
 
     if request.method == "GET":
@@ -1149,9 +1302,10 @@ def healthz():
 def index():
     # Falls back to the last successful live fetch (cached in config) instead
     # of rendering an empty roster whenever the CR API is unreachable -- see
-    # fetch_cr_api_with_fallback(). clan_data_is_stale drives the "last known
-    # as of ..." note in roster.html rather than silently showing 0 members.
-    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    # fetch_cr_api_with_fallback(). clan_data_freshness (CURRENT/MOST_RECENT,
+    # see data_freshness.py) drives the "last known as of ..." note in
+    # roster.html rather than silently showing 0 members.
+    clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
     if not clan_data:
         log.error("Live clan fetch failed on index() and no cached fallback exists yet — check CR_TOKEN / IP whitelist on this host.")
         clan_data = {"memberList": [], "memberCount": 0}
@@ -1206,6 +1360,14 @@ def index():
     if earliest_snapshot and earliest_snapshot.get("timestamp"):
         clan_tracked_since = _as_aware_utc(earliest_snapshot["timestamp"]).strftime("%Y-%m-%d")
 
+    # Backlog item: "last synced X minutes ago" -- distinct from the
+    # current/most_recent/historical banner (that's about a *failed* live
+    # fetch; this is just normal harvester cadence so a member right after a
+    # battle knows whether they're looking at this cycle's numbers or one
+    # from 29 minutes ago). Reads the same in-process harvester singleton
+    # admin diagnostics already uses, no extra Mongo round-trip.
+    last_synced = get_harvester()._harvest_meta.get("last_run")
+
     # is_admin passed so roster.html can show an Admin Panel link (previously
     # there was no way to reach /admin from the public pages at all).
     bot_settings = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
@@ -1217,8 +1379,9 @@ def index():
         beta_features_enabled=bot_settings.get("beta_features_enabled", False),
         recruiting_banner_enabled=bot_settings.get("recruiting_banner_enabled", False),
         member_count=clan_data.get("memberCount", 0),
-        clan_data_is_stale=clan_data_is_stale,
+        clan_data_freshness=clan_data_freshness,
         clan_tracked_since=clan_tracked_since,
+        last_synced=last_synced,
         # "Our Discord" card: Discord's own official embeddable widget iframe
         # (discord.com/widget?id=...), which the server owner already has —
         # it only renders anything if "Server Widget" is enabled in Discord's
@@ -1230,6 +1393,33 @@ def index():
         discord_invite_url=bot_settings.get("discord_invite_url", ""),
         discord_widget_style=bot_settings.get("discord_widget_style", "official"),
     )
+
+def compute_onboarding_checklist(discord_id, cr_tag):
+    """Rec #1: a persistent onboarding checklist, distinct from the one-time
+    3-step wizard on roster.html (link -> interests -> done). That wizard is
+    a first-visit flow; this is a standing record of whether a member has
+    actually done the handful of things that make them a "fully onboarded"
+    member, visible on their own profile (and to admins) at any point, not
+    just during their first session.
+
+    All four steps are derived from data this app already has -- nothing new
+    to track except read_how_it_works, which how_it_works() stamps."""
+    clean = clean_tag(cr_tag)
+    user_doc = db_sync["users"].find_one({"discord_id": discord_id}, {"read_how_it_works": 1}) or {}
+    mentor_paired = db_sync["mentor_pairs"].find_one({
+        "active": True,
+        "$or": [{"mentee_tag": f"#{clean}"}, {"mentor_tag": f"#{clean}"}],
+    }) is not None
+    first_war_day_completed = db_sync["battle_history"].find_one({
+        "player_tag": clean, "battle_type": {"$regex": "^riverRace"},
+    }) is not None
+    return {
+        "discord_linked": True,  # this function is only ever called once a link exists
+        "read_how_it_works": bool(user_doc.get("read_how_it_works")),
+        "mentor_paired": mentor_paired,
+        "first_war_day_completed": first_war_day_completed,
+    }
+
 
 @web_bp.route("/player/<tag>")
 def player_profile(tag):
@@ -1251,9 +1441,12 @@ def player_profile(tag):
     # Idea #132/#138: the notification-preferences card only makes sense on your
     # OWN profile — viewing a teammate's page shouldn't edit your own prefs.
     own_profile = False
+    onboarding_checklist = None
     if "discord_id" in session:
         viewer = db_sync["users"].find_one({"discord_id": session["discord_id"]}, {"cr_tag": 1})
         own_profile = bool(viewer and clean_tag(viewer.get("cr_tag", "")) == clean_tag(tag))
+        if own_profile:
+            onboarding_checklist = compute_onboarding_checklist(session["discord_id"], tag)
 
     # "Connect the Discord ID with information like their name or picture" —
     # if this player has linked their Discord account (see link_account()),
@@ -1275,6 +1468,8 @@ def player_profile(tag):
         get_template("player"), player=player_data, db_player=db_player, is_admin=is_admin(),
         csrf_token=get_csrf_token(), is_new_member=is_new_member, mentor_pair=mentor_pair,
         own_profile=own_profile, linked_discord=linked_discord,
+        last_synced=get_harvester()._harvest_meta.get("last_run"),
+        onboarding_checklist=onboarding_checklist,
     )
 
 # ---------------------------------------------------------------------------
@@ -1283,7 +1478,7 @@ def player_profile(tag):
 @web_bp.route("/admin")
 def admin_panel():
     if not is_admin(): return "Unauthorized", 403
-    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
     clan_data = clan_data or {}
     db_players = {
         p["tag"].replace("#", ""): p
@@ -1294,7 +1489,7 @@ def admin_panel():
     return render_sandboxed(
         get_template("admin"),
         clan_data=clan_data,
-        clan_data_is_stale=clan_data_is_stale,
+        clan_data_freshness=clan_data_freshness,
         db_players=db_players,
         bot_settings=bot_settings,
         system_config=system_config,
@@ -1527,9 +1722,104 @@ def admin_add_strike():
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Expected a JSON body."}), 400
+    reason = str(data.get("reason") or "").strip()[:300]
     db_sync["player_profiles"].update_one({"tag": f"#{clean_tag(data.get('tag'))}"}, {"$inc": {"strikes": 1}}, upsert=True)
-    log_admin_activity("Issued strike", target=clean_tag(data.get("tag")))
-    notify_user_by_tag(data.get("tag"), "⚠️ A strike was added to your record.", kind="strike")
+    # Rec #2: the reason (if any) is stored in admin_activity_log's existing
+    # `details` field rather than a brand-new collection -- that log already
+    # has exactly the shape a strike history needs (who, what, when, target),
+    # it just wasn't surfaced to the member it was about until now.
+    log_admin_activity("Issued strike", target=clean_tag(data.get("tag")), details=reason)
+    notify_user_by_tag(data.get("tag"), "⚠️ A strike was added to your record." + (f" Reason: {reason}" if reason else ""), kind="strike")
+    return jsonify({"success": True})
+
+
+@web_bp.route("/api/player/<tag>/strikes")
+def api_player_strikes(tag):
+    """Rec #2: member-visible strike history. Own-profile-only (or admin) --
+    a member should be able to see their own record without having to ask an
+    admin, but this isn't a public leaderboard-style stat."""
+    clean = clean_tag(tag)
+    if not is_admin():
+        if "discord_id" not in session:
+            return jsonify({"error": "unauthorized"}), 403
+        viewer = db_sync["users"].find_one({"discord_id": session["discord_id"]}, {"cr_tag": 1})
+        if not viewer or clean_tag(viewer.get("cr_tag", "")) != clean:
+            return jsonify({"error": "unauthorized"}), 403
+    entries = list(db_sync["admin_activity_log"].find(
+        {"action": "Issued strike", "target": clean}, {"_id": 0, "created_at": 1, "details": 1, "admin_name": 1}
+    ).sort("created_at", -1))
+    for e in entries:
+        e["date"] = _as_aware_utc(e.pop("created_at", None)).strftime("%Y-%m-%d") if e.get("created_at") else None
+    return jsonify({"strikes": entries, "total": len(entries)})
+
+
+@web_bp.route("/api/player/<tag>/best-deck")
+def api_player_best_deck(tag):
+    """Rec #11: suggest the best deck this specific player can build right
+    now from cards they've actually unlocked, ranked by this clan's own
+    logged win rate (see compute_best_buildable_deck). Same own-profile-or-
+    admin gate as the strike history above -- this reads a player's full
+    card collection, which isn't shown publicly elsewhere on this site."""
+    clean = clean_tag(tag)
+    if not is_admin():
+        if "discord_id" not in session:
+            return jsonify({"error": "unauthorized"}), 403
+        viewer = db_sync["users"].find_one({"discord_id": session["discord_id"]}, {"cr_tag": 1})
+        if not viewer or clean_tag(viewer.get("cr_tag", "")) != clean:
+            return jsonify({"error": "unauthorized"}), 403
+    player_data = get_player_analytical_data(clean)
+    if not player_data:
+        return jsonify({"error": "Could not load this player's card collection."}), 404
+    owned = {c.get("name") for c in (player_data.get("cards") or []) if c.get("name")}
+    suggestions = compute_best_buildable_deck(owned)
+    return jsonify({
+        "suggestions": suggestions,
+        "collection_size": len(owned),
+        "note": "Ranked by this clan's own logged battle win rate, not a global tier list." if suggestions
+                else "None of this clan's known-winning archetypes are fully buildable yet with this collection.",
+    })
+
+
+@web_bp.route("/api/player/<tag>/strike-appeal", methods=["POST"])
+def api_player_strike_appeal(tag):
+    """Rec #2: lets a member submit a short appeal note against their own
+    strike record, reviewable by an admin -- previously there was no path
+    for a member to contest a strike at all short of DMing an officer."""
+    if "discord_id" not in session:
+        return jsonify({"error": "unauthorized"}), 403
+    clean = clean_tag(tag)
+    viewer = db_sync["users"].find_one({"discord_id": session["discord_id"]}, {"cr_tag": 1})
+    if not viewer or clean_tag(viewer.get("cr_tag", "")) != clean:
+        return jsonify({"error": "unauthorized"}), 403
+    data = request.get_json(silent=True) or {}
+    note = str(data.get("note") or "").strip()[:500]
+    if not note:
+        return jsonify({"error": "An appeal needs a short note."}), 400
+    db_sync["strike_appeals"].insert_one({
+        "tag": f"#{clean}", "discord_id": session["discord_id"],
+        "note": note, "created_at": datetime.now(timezone.utc), "resolved": False,
+    })
+    return jsonify({"success": True})
+
+
+@web_bp.route("/admin/api/strike-appeals")
+def admin_strike_appeals():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    appeals = list(db_sync["strike_appeals"].find({"resolved": False}, {"_id": 0}).sort("created_at", -1))
+    for a in appeals:
+        a["created_at"] = a["created_at"].isoformat() if a.get("created_at") else None
+    return jsonify({"appeals": appeals})
+
+
+@web_bp.route("/admin/api/strike-appeals/resolve", methods=["POST"])
+def admin_resolve_strike_appeal():
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    data = request.get_json(silent=True) or {}
+    tag = clean_tag(data.get("tag", ""))
+    db_sync["strike_appeals"].update_many(
+        {"tag": f"#{tag}", "resolved": False}, {"$set": {"resolved": True}}
+    )
+    log_admin_activity("Resolved strike appeal", target=tag)
     return jsonify({"success": True})
 
 @web_bp.route("/admin/api/player/admin_toggle", methods=["POST"])
@@ -1771,6 +2061,13 @@ def admin_save_settings():
     # Idea #200: recruitment video/trailer embed.
     if "recruit_video_url" in data:
         update["recruit_video_url"] = str(data.get("recruit_video_url") or "").strip()[:500]
+    # Backlog item: the war-day schedule text ("Thursday-Sunday") was a
+    # literal string baked into link.html and how_it_works.html. Now
+    # editable here, same pattern as min_trophies just above (which already
+    # existed but, it turns out, was never actually read by those two
+    # templates either -- both fixed together).
+    if "war_days_text" in data:
+        update["war_days_text"] = str(data.get("war_days_text") or "").strip()[:60]
     # "A little applet for the roster page showing our discord" — shown as an
     # explicit "Join our Discord" button under the embedded server widget
     # iframe (see index() / roster.html), since nothing in this codebase
@@ -2018,6 +2315,33 @@ def admin_api_roster():
     admin_ids = set(config.get("admin_user_ids", []))
     master_admin = os.getenv("MASTER_ADMIN_ID", "")
 
+    # Rec #5: auto-flag members below the recruitment trophy minimum for
+    # several consecutive days -- a blip after one bad day isn't worth
+    # nagging over, but a real, sustained slide is exactly the kind of thing
+    # a leader would otherwise only notice by accident. Uses player_snapshots
+    # (one row/day already written by the harvester) rather than counting
+    # raw 30-minute harvest cycles, which would fire on a single bad hour.
+    min_trophies_threshold = int((db_sync["config"].find_one({"_id": "bot_settings"}) or {}).get("min_trophies", 6500))
+    recent_dates = sorted(db_sync["player_snapshots"].distinct("date"), reverse=True)[:7]
+    snaps_by_tag = {}
+    if recent_dates:
+        for s in db_sync["player_snapshots"].find({"date": {"$in": recent_dates}}, {"tag": 1, "date": 1, "trophies": 1}):
+            norm_tag = s.get("tag", "").replace("#", "").upper()
+            snaps_by_tag.setdefault(norm_tag, {})[s.get("date")] = s.get("trophies")
+
+    def _below_threshold_streak(norm_tag):
+        history = snaps_by_tag.get(norm_tag, {})
+        streak = 0
+        for d in recent_dates:  # already sorted most-recent-first
+            trophies = history.get(d)
+            if trophies is None:
+                break  # no data that far back yet -- don't guess
+            if trophies < min_trophies_threshold:
+                streak += 1
+            else:
+                break
+        return streak
+
     result = []
     for m in members:
         tag = m.get("tag", "").replace("#", "").upper()
@@ -2042,6 +2366,8 @@ def admin_api_roster():
             "discord_name":  usr.get("discord_name", ""),
             "is_site_admin": bool(discord_id and (discord_id in admin_ids or discord_id == master_admin)),
             "trial_member":  bool(db.get("trial_member")),  # idea #213
+            "below_min_trophies_streak_days": _below_threshold_streak(tag),  # Rec #5
+            "min_trophies_threshold": min_trophies_threshold,
         })
 
     return jsonify(result)
@@ -2050,21 +2376,24 @@ def admin_api_roster():
 def _current_riverrace_with_fallback():
     """currentriverrace already gets stored verbatim into war_tracking every
     harvest cycle (see data_harvester.py) -- fall back to the latest stored
-    doc instead of erroring when the live call fails. Returns (data, is_stale)."""
+    doc instead of erroring when the live call fails. Returns (data, freshness)
+    -- freshness is CURRENT or MOST_RECENT, see data_freshness.py. This is a
+    same-value fallback (the live call failing) never a cross-time-period
+    substitution, so it's never HISTORICAL."""
     data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace")
     if data:
-        return data, False
+        return data, CURRENT
     stored = db_sync["war_tracking"].find_one({}, sort=[("harvest_time", -1)])
     if stored:
-        return {k: v for k, v in stored.items() if k not in ("_id", "harvest_time")}, True
-    return None, False
+        return {k: v for k, v in stored.items() if k not in ("_id", "harvest_time")}, MOST_RECENT
+    return None, CURRENT
 
 
 @web_bp.route("/admin/api/war")
 def admin_api_war():
     """Current River Race data."""
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    data, data_is_stale = _current_riverrace_with_fallback()
+    data, data_freshness = _current_riverrace_with_fallback()
     if not data:
         return jsonify({"error": "Could not fetch current war data from CR API, and no cached fallback exists yet."})
 
@@ -2077,7 +2406,9 @@ def admin_api_war():
 
     # Idea #4: projected finish (see compute_projected_finish for the formula).
     data["projected_finish"] = compute_projected_finish(data)
-    data["is_stale"] = data_is_stale
+    # Rec #7: rough win-probability estimate vs the rest of the race field.
+    data["win_probability"] = compute_war_win_probability(data)
+    data["data_freshness"] = data_freshness
 
     return jsonify(data)
 
@@ -2089,7 +2420,7 @@ def admin_api_war_day_breakdown():
     the current-race endpoint (one entry per completed period this race).
     """
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    data, data_is_stale = _current_riverrace_with_fallback()
+    data, data_freshness = _current_riverrace_with_fallback()
     if not data:
         return jsonify({"error": "Could not fetch current war data from CR API, and no cached fallback exists yet."})
     own_tag = f"#{CLAN_TAG}"
@@ -2102,7 +2433,7 @@ def admin_api_war_day_breakdown():
             "day": i + 1,
             "fame": (own or {}).get("clan", {}).get("fame", 0) if own else 0,
         })
-    return jsonify({"days": breakdown, "current_period_index": data.get("periodIndex"), "is_stale": data_is_stale})
+    return jsonify({"days": breakdown, "current_period_index": data.get("periodIndex"), "data_freshness": data_freshness})
 
 
 @web_bp.route("/admin/api/war/scouting")
@@ -2112,7 +2443,7 @@ def admin_api_war_scouting():
     calls (one per rival clan), so admin-gated per the project's existing rule.
     """
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
-    war_data, war_data_is_stale = _current_riverrace_with_fallback()
+    war_data, war_data_freshness = _current_riverrace_with_fallback()
     if not war_data:
         return jsonify({"error": "No active race to scout, and no cached fallback exists yet."})
     own_tag = f"#{CLAN_TAG}"
@@ -2131,7 +2462,122 @@ def admin_api_war_scouting():
             "member_count": len(members), "avg_trophies": avg_trophies,
             "current_fame": c.get("fame", 0),
         })
-    return jsonify({"rivals": rival_summaries, "is_stale": war_data_is_stale})
+    return jsonify({"rivals": rival_summaries, "data_freshness": war_data_freshness})
+
+
+def _strength_tier(rival_avg_trophies, own_avg_trophies, band=250):
+    """Rec #9: crude relative-strength bucket, +/-band trophies counts as
+    'similar' — same idea as a matchmaking band, just applied after the fact
+    since CR doesn't expose true MMR for clans."""
+    if rival_avg_trophies is None or own_avg_trophies is None:
+        return "unknown"
+    diff = rival_avg_trophies - own_avg_trophies
+    if diff > band:
+        return "stronger"
+    if diff < -band:
+        return "weaker"
+    return "similar"
+
+
+@web_bp.route("/admin/api/war/matchup-dossier")
+def admin_api_war_matchup_dossier():
+    """Rec #9: pre-war matchup dossier. Combines the same live rival-scouting
+    pull as /admin/api/war/scouting with a rough historical-performance
+    comparison against past opponents of similar strength.
+
+    Honesty note (this clan's own scope pattern): we don't retain rival
+    trophy data for past races on its own -- the CR API only exposes another
+    clan's roster live, not historically. So every time this dossier is
+    generated it stamps a snapshot into war_matchup_dossiers (keyed by
+    season/section, idempotent per race), and the "similar-ranked opponents"
+    comparison below only covers races where THIS app previously generated a
+    dossier. It starts empty and gets more useful over time -- it does not
+    retroactively know about races before this feature existed.
+    """
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    war_data, war_data_freshness = _current_riverrace_with_fallback()
+    if not war_data:
+        return jsonify({"error": "No active race to build a dossier for, and no cached fallback exists yet."})
+    own_tag = f"#{CLAN_TAG}"
+    season_id = war_data.get("seasonId")
+    section_index = war_data.get("sectionIndex")
+
+    own_clan_data, _ = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    own_members = (own_clan_data or {}).get("memberList", [])
+    own_avg_trophies = round(sum(m.get("trophies", 0) for m in own_members) / len(own_members)) if own_members else None
+
+    rivals = []
+    for c in war_data.get("clans", []):
+        tag = c.get("tag", "")
+        if tag == own_tag or not tag:
+            continue
+        detail = fetch_cr_api(f"clans/{tag.replace('#', '%23')}")
+        members = (detail or {}).get("memberList", [])
+        avg_trophies = round(sum(m.get("trophies", 0) for m in members) / len(members)) if members else None
+        rivals.append({
+            "tag": tag, "name": c.get("name", (detail or {}).get("name", "Unknown")),
+            "member_count": len(members), "avg_trophies": avg_trophies,
+            "current_fame": c.get("fame", 0),
+            "strength_tier": _strength_tier(avg_trophies, own_avg_trophies),
+        })
+    rivals.sort(key=lambda r: -(r.get("avg_trophies") or 0))
+    toughest = rivals[0] if rivals else None
+    toughest_tier = toughest["strength_tier"] if toughest else "unknown"
+
+    dossier_doc = {
+        "season_id": season_id, "section_index": section_index,
+        "generated_at": datetime.now(timezone.utc),
+        "own_avg_trophies": own_avg_trophies,
+        "toughest_rival_tag": toughest.get("tag") if toughest else None,
+        "toughest_rival_tier": toughest_tier,
+        "rivals": rivals,
+    }
+    if season_id is not None and section_index is not None:
+        db_sync["war_matchup_dossiers"].update_one(
+            {"season_id": season_id, "section_index": section_index},
+            {"$set": dossier_doc}, upsert=True,
+        )
+
+    # Historical performance vs similarly-tiered past opponents, built from
+    # this app's own accumulated dossier snapshots (see honesty note above).
+    history_note = None
+    wins = losses = 0
+    if toughest_tier != "unknown":
+        past_dossiers = list(db_sync["war_matchup_dossiers"].find(
+            {"toughest_rival_tier": toughest_tier},
+            {"season_id": 1, "section_index": 1},
+        ))
+        for pd in past_dossiers:
+            if pd.get("season_id") == season_id and pd.get("section_index") == section_index:
+                continue  # skip the race we just stamped -- it has no outcome yet
+            war_id = f"season_{pd.get('season_id')}_section_{pd.get('section_index')}"
+            race = db_sync["war_history"].find_one({"unique_war_id": war_id})
+            if not race:
+                continue
+            standings = sorted((race.get("data", {}).get("standings") or []), key=lambda s: s.get("rank", 99))
+            own_rank = next((s.get("rank") for s in standings if (s.get("clan") or {}).get("tag") == own_tag), None)
+            if own_rank == 1:
+                wins += 1
+            elif own_rank:
+                losses += 1
+        decided = wins + losses
+        if decided == 0:
+            history_note = "No completed races yet against similarly-ranked opponents -- this builds up as more races finish."
+    else:
+        history_note = "Couldn't determine relative strength for this race's toughest opponent (missing trophy data)."
+
+    return jsonify({
+        "season_id": season_id, "section_index": section_index,
+        "own_avg_trophies": own_avg_trophies,
+        "rivals": rivals,
+        "toughest_rival": toughest,
+        "historical_vs_similar_tier": {
+            "tier": toughest_tier, "wins": wins, "losses": losses,
+            "win_rate_pct": round(wins / (wins + losses) * 100, 1) if (wins + losses) else None,
+            "note": history_note,
+        },
+        "data_freshness": war_data_freshness,
+    })
 
 
 @web_bp.route("/admin/api/war/calendar")
@@ -2157,6 +2603,64 @@ def admin_api_war_calendar():
             "rank": own_rank,
         })
     return jsonify({"races": days})
+
+
+@web_bp.route("/admin/api/war/season-comparison")
+def admin_api_war_season_comparison():
+    """Rec #8 (the one explicitly-open item noted in PLANNING_BOARD.md's CWL
+    history row): a season-over-season comparison view built purely from the
+    already-harvested war_history collection — no new CR API calls. Each CR
+    "season" (data.seasonId) is made up of several sections/races
+    (data.sectionIndex, normally one per week); this groups every completed
+    race we have by seasonId and rolls each season up into total fame, race
+    count, and win/loss record, then reports the deltas between each season
+    and the one before it so "are we doing better than last season" has a
+    real number attached instead of a gut feeling.
+    """
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    own_tag = f"#{CLAN_TAG}"
+    races = list(db_sync["war_history"].find({}, {"_id": 0}))
+    seasons = {}
+    for race in races:
+        data = race.get("data", {})
+        season_id = data.get("seasonId")
+        if season_id is None:
+            continue
+        own_fame = (data.get("clan") or {}).get("fame", 0) or 0
+        standings = sorted(data.get("standings", []) or [], key=lambda s: s.get("rank", 99))
+        own_rank = next((s.get("rank") for s in standings if (s.get("clan") or {}).get("tag") == own_tag), None)
+        s = seasons.setdefault(season_id, {"season_id": season_id, "sections": 0, "total_fame": 0, "wins": 0, "losses": 0, "unknown": 0})
+        s["sections"] += 1
+        s["total_fame"] += own_fame
+        if own_rank == 1:
+            s["wins"] += 1
+        elif own_rank:
+            s["losses"] += 1
+        else:
+            s["unknown"] += 1
+
+    ordered = sorted(seasons.values(), key=lambda s: s["season_id"])
+    for s in ordered:
+        decided = s["wins"] + s["losses"]
+        s["win_rate_pct"] = round(s["wins"] / decided * 100, 1) if decided else None
+        s["avg_fame_per_section"] = round(s["total_fame"] / s["sections"]) if s["sections"] else 0
+
+    # Deltas vs. the immediately preceding season -- this is the "season N vs
+    # season N-1" comparison PLANNING_BOARD.md called out as missing.
+    for i, s in enumerate(ordered):
+        prior = ordered[i - 1] if i > 0 else None
+        if prior:
+            s["fame_delta_vs_prior"] = s["total_fame"] - prior["total_fame"]
+            s["win_rate_delta_vs_prior"] = (
+                round(s["win_rate_pct"] - prior["win_rate_pct"], 1)
+                if s["win_rate_pct"] is not None and prior["win_rate_pct"] is not None else None
+            )
+        else:
+            s["fame_delta_vs_prior"] = None
+            s["win_rate_delta_vs_prior"] = None
+
+    ordered.sort(key=lambda s: -s["season_id"])
+    return jsonify({"seasons": ordered[:12]})
 
 
 @web_bp.route("/admin/api/war/missed-streaks")
@@ -2187,6 +2691,78 @@ def admin_api_war_missed_streaks():
     ]
     streaks.sort(key=lambda x: -x["missed_streak"])
     return jsonify({"streaks": streaks})
+
+
+@web_bp.route("/admin/api/roster/flight-risk")
+def admin_api_roster_flight_risk():
+    """Rec #14: a trend-based flight-risk heuristic, not a black-box ML
+    model -- three signals, each independently visible, summed into one 0-100
+    score per member so leadership can act on the number without having to
+    trust it blindly:
+      - consecutive recent war weeks with 0 decks used (same window/logic as
+        the existing missed-war-streaks feature, idea #8)
+      - zero donations this season (same signal already flagged elsewhere as
+        "inactive")
+      - a declining 7-day trophy trend (comparing the latest player_snapshots
+        row to the one from ~7 days ago)
+    This is deliberately conservative about false confidence: a member with
+    no signals at all scores 0, not some baseline non-zero number.
+    """
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+
+    # Signal 1: missed-war streak (same computation as admin_api_war_missed_streaks).
+    races = list(db_sync["war_history"].find({}, {"_id": 0}).sort("data.seasonId", -1).limit(10))
+    missed_streaks = {}
+    for race in races:
+        participants = (race.get("data", {}).get("clan") or {}).get("participants", [])
+        for p in participants:
+            tag = p.get("tag")
+            if not tag:
+                continue
+            entry = missed_streaks.setdefault(tag, {"streak": 0, "broke": False})
+            if entry["broke"]:
+                continue
+            if p.get("decksUsed", p.get("decksUsedToday", 0)) == 0:
+                entry["streak"] += 1
+            else:
+                entry["broke"] = True
+
+    # Signal 2: zero donations this season, from the live roster.
+    clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
+    members = clan_data.get("memberList", [])
+
+    # Signal 3: declining 7-day trophy trend, from player_snapshots.
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    results = []
+    for m in members:
+        tag = m.get("tag", "")
+        streak = missed_streaks.get(tag, {}).get("streak", 0)
+        donations = m.get("donations", 0)
+        old_snap = db_sync["player_snapshots"].find_one({"tag": tag, "date": {"$gte": week_ago}}, sort=[("date", 1)])
+        trophy_delta_7d = (m.get("trophies", 0) - old_snap.get("trophies", 0)) if old_snap else None
+
+        streak_component = min(streak * 20, 60)
+        donation_component = 20 if donations == 0 else 0
+        trend_component = min(20, round(abs(trophy_delta_7d) / 50 * 20)) if (trophy_delta_7d is not None and trophy_delta_7d < 0) else 0
+        risk_score = streak_component + donation_component + trend_component
+
+        if risk_score > 0:
+            results.append({
+                "tag": tag, "name": m.get("name", ""),
+                "risk_score": risk_score,
+                "missed_war_streak": streak,
+                "donations_this_season": donations,
+                "trophy_delta_7d": trophy_delta_7d,
+            })
+
+    results.sort(key=lambda r: -r["risk_score"])
+    return jsonify({
+        "at_risk": [r for r in results if r["risk_score"] >= 40],
+        "all_flagged": results,
+        "data_freshness": clan_data_freshness,
+    })
 
 
 @web_bp.route("/admin/api/player/excuse", methods=["POST"])
@@ -2461,6 +3037,20 @@ def admin_recruits_delete(tag):
     return jsonify({"success": True})
 
 
+
+# Rec #6: departure reason capture. Deliberately a small, fixed set of
+# categories (not a free-text default) so the "why people leave" report
+# stays a real aggregate instead of 40 slightly-different sentences.
+DEPARTURE_REASON_CATEGORIES = {
+    "inactive":       "Went inactive",
+    "moved_clans":    "Moved to another clan",
+    "kicked_strikes": "Removed for strikes/rules",
+    "kicked_low_trophies": "Removed for low trophies",
+    "personal":       "Personal reasons / life got busy",
+    "unknown":        "Unknown / not recorded",
+}
+
+
 @web_bp.route("/admin/api/clan/departed")
 def admin_departed_members():
     """Idea #17 (revised): visibility into who's in the ~23-week retention
@@ -2468,7 +3058,7 @@ def admin_departed_members():
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     from data_harvester import DEPARTED_MEMBER_RETENTION_WEEKS
     departed = list(db_sync["player_profiles"].find(
-        {"left_clan_at": {"$exists": True}}, {"tag": 1, "name": 1, "left_clan_at": 1}
+        {"left_clan_at": {"$exists": True}}, {"tag": 1, "name": 1, "left_clan_at": 1, "departure_reason": 1}
     ))
     now = datetime.now(timezone.utc)
     out = []
@@ -2486,8 +3076,51 @@ def admin_departed_members():
             "tag": d.get("tag"), "name": d.get("name"),
             "left_clan_at": left_at, "purge_at": purge_at,
             "days_until_purge": (purge_at - now).days if purge_at else None,
+            "departure_reason": d.get("departure_reason"),
         })
-    return jsonify({"departed": out, "retention_weeks": DEPARTED_MEMBER_RETENTION_WEEKS})
+    return jsonify({
+        "departed": out,
+        "retention_weeks": DEPARTED_MEMBER_RETENTION_WEEKS,
+        "reason_categories": DEPARTURE_REASON_CATEGORIES,
+    })
+
+
+@web_bp.route("/admin/api/player/<tag>/departure-reason", methods=["POST"])
+def admin_set_departure_reason(tag):
+    """Rec #6: capture why a departed member left, from a small fixed set of
+    categories, so leadership can eventually answer "why do people leave"
+    with real numbers instead of memory/anecdote."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get("reason") or "")
+    if reason not in DEPARTURE_REASON_CATEGORIES:
+        return jsonify({"error": f"reason must be one of: {', '.join(DEPARTURE_REASON_CATEGORIES)}"}), 400
+    db_sync["player_profiles"].update_one(
+        {"tag": f"#{clean_tag(tag)}"},
+        {"$set": {"departure_reason": reason}},
+    )
+    return jsonify({"success": True})
+
+
+@web_bp.route("/admin/api/clan/departure-reasons-report")
+def admin_departure_reasons_report():
+    """Rec #6: simple aggregate 'why people leave' report for the admin
+    Analytics tab — counts every departed profile (in or out of the
+    retention window, since the reason itself outlives the raw stats) by
+    category, including how many departures were never categorized."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    pipeline = [
+        {"$match": {"left_clan_at": {"$ne": None}}},
+        {"$group": {"_id": {"$ifNull": ["$departure_reason", "unknown"]}, "count": {"$sum": 1}}},
+    ]
+    counts = {row["_id"]: row["count"] for row in db_sync["player_profiles"].aggregate(pipeline)}
+    total = sum(counts.values())
+    breakdown = [
+        {"reason": key, "label": label, "count": counts.get(key, 0)}
+        for key, label in DEPARTURE_REASON_CATEGORIES.items()
+    ]
+    breakdown.sort(key=lambda r: r["count"], reverse=True)
+    return jsonify({"total": total, "breakdown": breakdown})
 
 
 @web_bp.route("/admin/api/war/previous")
@@ -2497,18 +3130,24 @@ def admin_api_war_previous():
     data = fetch_cr_api(f"clans/%23{CLAN_TAG}/riverracelog?limit=1")
     items = data.get("items", []) if data else []
     if items:
-        return jsonify(items[0])
+        result = dict(items[0])
+        result["data_freshness"] = CURRENT
+        return jsonify(result)
     # Live riverracelog call failed (or came back empty) -- war_history already
     # stores exactly this kind of completed-race data every time backfill_missed_wars
     # runs, so fall back to the most recent race there instead of an empty result.
+    # This is the *same* query ("the most recent completed race") just served
+    # locally instead of live, so it's MOST_RECENT (see data_freshness.py),
+    # not HISTORICAL -- unlike the War Fame leaderboard's fallback below,
+    # nothing here is being substituted across a different time period.
     last_race = db_sync["war_history"].find_one(
         {}, sort=[("data.seasonId", -1), ("data.sectionIndex", -1)]
     )
     if last_race and last_race.get("data"):
         result = dict(last_race["data"])
-        result["is_stale"] = True
+        result["data_freshness"] = MOST_RECENT
         return jsonify(result)
-    return jsonify({"standings": []})
+    return jsonify({"standings": [], "data_freshness": CURRENT})
 
 
 @web_bp.route("/admin/api/war/aggregate")
@@ -2875,7 +3514,7 @@ def admin_api_users():
     # Build a tag -> profile map for clan rank
     profiles = {
         p.get("tag", ""): p
-        for p in db_sync["player_profiles"].find({}, {"tag": 1, "role": 1, "name": 1})
+        for p in db_sync["player_profiles"].find({}, {"tag": 1, "role": 1, "name": 1, "role_since": 1})
     }
 
     # "Lay this info out in the admin panel" — resolves each stored server
@@ -2900,6 +3539,12 @@ def admin_api_users():
             "cr_tag": cr_tag.replace("#", "") if cr_tag else "",
             "is_linked": bool(cr_tag),
             "rank": profile.get("role", "—"),
+            # Rec #3: officer/co-leader term tracking -- how long this member
+            # has held their current in-game clan role, derived from
+            # role_since (stamped by data_harvester.py, already a plain
+            # "YYYY-MM-DD" string -- same format the harvester uses
+            # elsewhere for its own daily snapshot keys, not a datetime).
+            "role_since": profile.get("role_since"),
             "status": "Admin" if (discord_id in admin_ids or discord_id == master_admin) else "Member",
             # idea: "connect the discord id with information like their name
             # or picture" — avatar hash was already captured off Discord's own
@@ -2910,6 +3555,10 @@ def admin_api_users():
             # or a role that's since been deleted server-side) -- always shows
             # *something* rather than silently dropping a role the user has.
             "roles": [role_names.get(rid, rid) for rid in role_ids],
+            # Rec #1: onboarding checklist, visible to admins too -- only
+            # computed for linked members since discord_linked is always the
+            # first (and for an unlinked user, only meaningful) step.
+            "onboarding": compute_onboarding_checklist(discord_id, cr_tag) if cr_tag else None,
         })
 
     return jsonify(result)
@@ -2945,7 +3594,7 @@ def admin_analytics_overview():
     """Clan-wide headline numbers for the Analytics tab's stat row."""
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
 
-    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
     clan_data = clan_data or {}
     members = clan_data.get("memberList", [])
     member_count = len(members)
@@ -2991,7 +3640,92 @@ def admin_analytics_overview():
         "min_clan_size": min_clan_size,
         "boat_battles_logged": boat_total,
         "boat_battle_win_rate": boat_win_rate,
-        "is_stale": clan_data_is_stale,
+        "data_freshness": clan_data_freshness,
+    })
+
+
+# Rec #13: rough normalization target for the donations sub-score below --
+# this clan's own donation counts vary a lot week to week, and the CR API
+# doesn't expose a "good" benchmark, so this is a documented assumption
+# (average donations per member per season) rather than a precise figure.
+# Tune this constant if it consistently reads too harsh/lenient in practice.
+CLAN_HEALTH_DONATION_TARGET_PER_MEMBER = 300
+CLAN_HEALTH_RETENTION_LOOKBACK_WEEKS = 8
+
+
+@web_bp.route("/admin/api/clan/health-score")
+def admin_api_clan_health_score():
+    """Rec #13: a single composite 0-100 clan health score, averaging four
+    equally-weighted sub-scores so leadership has one number to watch instead
+    of scanning four separate stats every time:
+      - participation: war decks used vs. max possible, this race
+      - donations: average donations/member vs. a documented rough target
+      - retention: inverse of the departure rate over the last several weeks
+      - win rate: war-specific win rate (standings-based) over recent races,
+        not the broader all-battle win rate already shown elsewhere
+    Every sub-score is also returned individually so the composite number is
+    never a black box.
+    """
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    own_tag = f"#{CLAN_TAG}"
+
+    clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data = clan_data or {}
+    members = clan_data.get("memberList", [])
+    member_count = len(members) or 1
+
+    # 1. Participation
+    latest_war = db_sync["war_tracking"].find_one({}, sort=[("harvest_time", -1)]) or {}
+    participants = (latest_war.get("clan") or {}).get("participants", [])
+    decks_used = sum(p.get("decksUsedToday", 0) for p in participants)
+    max_decks = len(participants) * 4
+    participation_score = round((decks_used / max_decks) * 100, 1) if max_decks else None
+
+    # 2. Donations, vs. the documented rough target above.
+    total_donations = sum(m.get("donations", 0) for m in members)
+    avg_donations = total_donations / member_count
+    donation_score = round(min(100, (avg_donations / CLAN_HEALTH_DONATION_TARGET_PER_MEMBER) * 100), 1)
+
+    # 3. Retention -- departures in the lookback window vs. current roster size.
+    cutoff = datetime.now(timezone.utc) - timedelta(weeks=CLAN_HEALTH_RETENTION_LOOKBACK_WEEKS)
+    recent_departures = db_sync["player_profiles"].count_documents({"left_clan_at": {"$gte": cutoff}})
+    retention_score = round(max(0, 100 - (recent_departures / member_count) * 100), 1)
+
+    # 4. War-specific win rate (standings-based rank, not the broader
+    # all-battle win rate the Analytics overview already shows) over the
+    # last 10 completed races -- same rank/outcome logic as the war calendar.
+    races = list(db_sync["war_history"].find({}, {"_id": 0, "data.standings": 1}).sort("unique_war_id", -1).limit(10))
+    war_wins = war_losses = 0
+    for race in races:
+        standings = sorted((race.get("data", {}).get("standings") or []), key=lambda s: s.get("rank", 99))
+        own_rank = next((s.get("rank") for s in standings if (s.get("clan") or {}).get("tag") == own_tag), None)
+        if own_rank == 1:
+            war_wins += 1
+        elif own_rank:
+            war_losses += 1
+    decided = war_wins + war_losses
+    war_win_rate_score = round((war_wins / decided) * 100, 1) if decided else None
+
+    sub_scores = [s for s in (participation_score, donation_score, retention_score, war_win_rate_score) if s is not None]
+    composite = round(sum(sub_scores) / len(sub_scores), 1) if sub_scores else None
+
+    return jsonify({
+        "composite_score": composite,
+        "sub_scores": {
+            "participation": participation_score,
+            "donations": donation_score,
+            "retention": retention_score,
+            "war_win_rate": war_win_rate_score,
+        },
+        "details": {
+            "decks_used": decks_used, "max_decks": max_decks,
+            "avg_donations_per_member": round(avg_donations, 1),
+            "donation_target_per_member": CLAN_HEALTH_DONATION_TARGET_PER_MEMBER,
+            "recent_departures": recent_departures,
+            "retention_lookback_weeks": CLAN_HEALTH_RETENTION_LOOKBACK_WEEKS,
+            "war_wins": war_wins, "war_losses": war_losses, "war_races_considered": decided,
+        },
+        "data_freshness": clan_data_freshness,
     })
 
 
@@ -3307,6 +4041,7 @@ def admin_analytics_archetypes():
             "wins": v["wins"],
             "win_rate": round((v["wins"] / v["games"]) * 100, 1),
             "unique_players": len(v["players"]),
+            "player_tags": sorted(v["players"]),  # Rec #10: who's actually playing it
             "last_seen": v["last_seen"],
             "trend": trend,  # idea #224
             "elixir_curve": _elixir_curve(cards_list),  # idea #221
@@ -3324,6 +4059,29 @@ def admin_analytics_archetypes():
         top_share = max(a["games"] for a in scored) / total_games if total_games else 0
         diversity_score = round(1 - top_share, 2)
 
+    # Rec #10: turn the diversity score from a passive stat into an actual
+    # warning -- flag the single most-shared archetype (by distinct member
+    # count, not just game count) when enough different members are all
+    # running it. A meta deck spreading across the roster is a scouting
+    # liability (one counter-strategy beats several members at once) and
+    # worth surfacing by name, not just as a 0-1 score nobody reads.
+    diversity_warning = None
+    if scored:
+        most_shared = max(scored, key=lambda a: a["unique_players"])
+        if most_shared["unique_players"] >= DECK_DIVERSITY_WARN_MEMBER_THRESHOLD:
+            names = [
+                p.get("name") or p.get("tag")
+                for p in db_sync["player_profiles"].find(
+                    {"tag": {"$in": most_shared["player_tags"]}}, {"tag": 1, "name": 1}
+                )
+            ]
+            diversity_warning = {
+                "archetype_name": most_shared["name"],
+                "cards": most_shared["cards"],
+                "member_count": most_shared["unique_players"],
+                "member_names": names,
+            }
+
     result = {
         "sample_size": len(recent),
         "distinct_archetypes": len(archetypes),
@@ -3331,6 +4089,7 @@ def admin_analytics_archetypes():
         "top_by_win_rate": sorted(scored, key=lambda x: (-x["win_rate"], -x["games"]))[:15],
         "top_by_usage": sorted(scored, key=lambda x: -x["games"])[:15],
         "deck_diversity_score": diversity_score,
+        "diversity_warning": diversity_warning,
     }
     _record_query_timing("archetypes", (time.monotonic() - _t0) * 1000)
     _analytics_cache_set(cache_key, result)
@@ -3949,6 +4708,29 @@ def api_compare_players(tag1, tag2):
     })
 
 
+def _get_card_evolution_catalog() -> dict:
+    """Rec #15: card evolutions are only exposed via /cards' maxEvolutionLevel
+    (the catalog of all cards), not on a player's own `cards[]` entries -- a
+    player's card only carries their current `evolutionLevel`. Most cards
+    have no evolution at all (maxEvolutionLevel 0/absent), so this is cached
+    the same way as the rest of the analytics layer (Redis, non-fatal on
+    failure) since the catalog barely changes and hitting the CR API's
+    /cards endpoint on every single profile view would be wasteful.
+    """
+    cache_key = _analytics_cache_key("card_evolution_catalog")
+    cached = _analytics_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    catalog_data = fetch_cr_api("cards") or {}
+    catalog = {
+        item.get("name"): item.get("maxEvolutionLevel", 0) or 0
+        for item in catalog_data.get("items", [])
+        if item.get("name")
+    }
+    _analytics_cache_set(cache_key, catalog)
+    return catalog
+
+
 @web_bp.route("/api/player/<tag>/card-mastery")
 def api_player_card_mastery(tag):
     """Idea #26: card mastery grouped by category (Troop/Spell/Building) instead
@@ -3968,6 +4750,12 @@ def api_player_card_mastery(tag):
     total_copies = 0
     elixir_total = 0
     elixir_count = 0
+    # Rec #15: evolution tracking. A player's own card entry only carries
+    # their CURRENT evolutionLevel; whether a card can evolve at all (and up
+    # to what level) only lives in the separate /cards catalog -- see
+    # _get_card_evolution_catalog above.
+    evolution_catalog = _get_card_evolution_catalog()
+    evolutions = []
     for c in player.get("cards", []):
         maxed = c.get("level", 0) >= c.get("maxLevel", 999)
 
@@ -3993,12 +4781,86 @@ def api_player_card_mastery(tag):
             elixir_total += elixir
             elixir_count += 1
 
+        card_name = c.get("name", "")
+        max_evo = evolution_catalog.get(card_name, 0)
+        if max_evo > 0:
+            evolutions.append({
+                "name": card_name,
+                "evolution_level": c.get("evolutionLevel", 0) or 0,
+                "max_evolution_level": max_evo,
+                "maxed_evolution": (c.get("evolutionLevel", 0) or 0) >= max_evo,
+            })
+    evolutions.sort(key=lambda e: (-e["evolution_level"], e["name"]))
+
     return jsonify({
         "by_category": {cat: v for cat, v in by_category.items()},
         "by_rarity": by_rarity,
         "most_duplicated_card": most_duplicated,
         "total_card_copies": total_copies,
         "avg_elixir_cost": round(elixir_total / elixir_count, 2) if elixir_count else None,
+        "evolutions": evolutions,
+        "evolutions_unlocked_count": sum(1 for e in evolutions if e["evolution_level"] > 0),
+        "evolution_eligible_count": len(evolutions),
+    })
+
+
+def _card_quality_pct(cards: list) -> float | None:
+    """Rec #17: a single 0-100 "collection quality" number for a player,
+    averaging level/maxLevel across every owned card -- normalizes across
+    rarities (a maxed common and a maxed legendary both read as 100%) the
+    same way the existing collection_maxed_count stat already treats
+    "maxed" as level >= maxLevel, just expressed as a continuous average
+    instead of a maxed/not-maxed flag."""
+    ratios = [
+        c.get("level", 0) / c.get("maxLevel")
+        for c in cards
+        if c.get("maxLevel")
+    ]
+    return round(sum(ratios) / len(ratios) * 100, 1) if ratios else None
+
+
+@web_bp.route("/api/player/<tag>/deck-quality-benchmark")
+def api_player_deck_quality_benchmark(tag):
+    """Rec #17: how does this member's collection quality compare to other
+    members of the SAME role, not just the clan as a whole -- a brand-new
+    Member shouldn't be benchmarked against a founding Co-Leader. Reads
+    entirely from player_profiles, which already stores every member's full
+    `cards[]` array from the last harvest cycle (data_harvester.py's
+    harvest_clan_and_profiles spreads the raw player API response, cards
+    included) -- no new live CR API calls needed for the clan-wide side.
+    Public (no login gate): this is the same trust level as trophies/level
+    already shown on every profile, not sensitive per-admin data.
+    """
+    clean = clean_tag(tag)
+    own_profile = db_sync["player_profiles"].find_one({"tag": f"#{clean}"}, {"role": 1, "cards": 1, "name": 1})
+    if not own_profile:
+        return jsonify({"error": "No stored profile for this player yet -- try again after the next harvest cycle."}), 404
+    own_role = own_profile.get("role", "member")
+    own_quality = _card_quality_pct(own_profile.get("cards") or [])
+
+    role_profiles = list(db_sync["player_profiles"].find(
+        {"role": own_role, "left_clan_at": {"$exists": False}}, {"tag": 1, "cards": 1}
+    ))
+    role_qualities = [_card_quality_pct(p.get("cards") or []) for p in role_profiles]
+    role_qualities = [q for q in role_qualities if q is not None]
+    role_average = round(sum(role_qualities) / len(role_qualities), 1) if role_qualities else None
+
+    clan_profiles = list(db_sync["player_profiles"].find({"left_clan_at": {"$exists": False}}, {"cards": 1}))
+    clan_qualities = [_card_quality_pct(p.get("cards") or []) for p in clan_profiles]
+    clan_qualities = [q for q in clan_qualities if q is not None]
+    clan_average = round(sum(clan_qualities) / len(clan_qualities), 1) if clan_qualities else None
+
+    percentile_in_role = None
+    if own_quality is not None and role_qualities:
+        percentile_in_role = round(sum(1 for q in role_qualities if q <= own_quality) / len(role_qualities) * 100)
+
+    return jsonify({
+        "own_quality_pct": own_quality,
+        "role": own_role,
+        "role_average_pct": role_average,
+        "role_sample_size": len(role_qualities),
+        "clan_average_pct": clan_average,
+        "percentile_in_role": percentile_in_role,
     })
 
 
@@ -4181,7 +5043,22 @@ def how_it_works():
     """Idea #124: a public 'how the clan works' page (requirements, war
     schedule, culture, channel structure) as its own route, instead of that
     information only living in the /link page's sidebar."""
-    return render_sandboxed(get_template("how_it_works"), is_admin=is_admin())
+    bot_settings = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
+    # Rec #1: onboarding checklist -- this is the one step that needs an
+    # explicit user action to detect (the other three are all derivable from
+    # existing data). Stamped the first time a logged-in member visits this
+    # page; harmless to re-stamp on every later visit too.
+    if "discord_id" in session:
+        db_sync["users"].update_one(
+            {"discord_id": session["discord_id"]},
+            {"$set": {"read_how_it_works": True}},
+            upsert=True,
+        )
+    return render_sandboxed(
+        get_template("how_it_works"), is_admin=is_admin(),
+        min_trophies_requirement_display=f"{int(bot_settings.get('min_trophies', 6500)):,}",
+        war_days_text=bot_settings.get("war_days_text", "Thursday-Sunday"),
+    )
 
 
 @web_bp.route("/clan-card.png")
@@ -4232,6 +5109,72 @@ def clan_card_png():
         x += 320
 
     draw.text((40, H - 60), "graveyardbot.onrender.com  •  Recruiting now", font=font_small, fill=accent)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return Response(buf.getvalue(), mimetype="image/png")
+
+
+@web_bp.route("/war/<unique_war_id>/recap.png")
+def war_recap_png(unique_war_id):
+    """Rec #12: the shareable image version of the post-war recap. Idea #12
+    already auto-compiles a TEXT recap (top fame, slacker list) the moment a
+    race completes -- data_harvester.py's _queue_war_summary_post -- but
+    Discord embeds read a lot better with a real image, and this project
+    already has Pillow-based card-image infrastructure (player_card_png,
+    clan_card_png). This is public (no admin gate) since Discord's embed
+    preview fetches image URLs unauthenticated, same as the existing player
+    and clan cards.
+    """
+    if not _PIL_AVAILABLE:
+        return "War recap image generation requires Pillow (see requirements.txt).", 501
+    race = db_sync["war_history"].find_one({"unique_war_id": unique_war_id})
+    if not race:
+        return "War recap not found.", 404
+    data = race.get("data", {})
+    clan = data.get("clan", {})
+    own_tag = f"#{CLAN_TAG}"
+    standings = sorted(data.get("standings", []) or [], key=lambda s: s.get("rank", 99))
+    own_rank = next((s.get("rank") for s in standings if (s.get("clan") or {}).get("tag") == own_tag), None)
+    outcome = "VICTORY" if own_rank == 1 else (f"#{own_rank} FINISH" if own_rank else "RESULT UNKNOWN")
+    participants = sorted(clan.get("participants", []), key=lambda p: p.get("fame", 0), reverse=True)
+    top3 = participants[:3]
+    full_participation = sum(1 for p in participants if p.get("decksUsed", p.get("decksUsedToday", 0)) >= 4)
+
+    W, H = 1000, 500
+    bg = (11, 12, 16)
+    accent = (0, 229, 255)
+    ok = (0, 224, 150)
+    err = (231, 76, 60)
+    text_dim = (136, 136, 136)
+    text_bright = (240, 240, 240)
+    img = Image.new("RGB", (W, H), bg)
+    draw = ImageDraw.Draw(img)
+    outcome_color = ok if own_rank == 1 else (err if own_rank else text_dim)
+    draw.rectangle([0, 0, W - 1, H - 1], outline=outcome_color, width=4)
+    try:
+        font_huge = ImageFont.load_default(size=48)
+        font_big = ImageFont.load_default(size=26)
+        font_small = ImageFont.load_default(size=18)
+    except TypeError:
+        font_huge = font_big = font_small = ImageFont.load_default()
+
+    draw.text((40, 35), "⚔️ WAR RECAP", font=font_big, fill=accent)
+    draw.text((40, 75), clan.get("name", "Graveyard Squad"), font=font_huge, fill=text_bright)
+    draw.text((40, 145), outcome, font=font_huge, fill=outcome_color)
+    draw.text((40, 205), f"{clan.get('fame', 0):,} fame  •  Season {data.get('seasonId', '—')}, Race {data.get('sectionIndex', '—')}",
+               font=font_small, fill=text_dim)
+
+    y = 260
+    draw.text((40, y), "Top Fame", font=font_big, fill=text_bright)
+    y += 38
+    for i, p in enumerate(top3, 1):
+        draw.text((40, y), f"{i}. {p.get('name', '?')} — {p.get('fame', 0):,}", font=font_small, fill=ok)
+        y += 28
+
+    draw.text((40, H - 90), f"{full_participation}/{len(participants)} members used all 4 decks", font=font_small, fill=text_dim)
+    draw.text((40, H - 55), "graveyardbot.onrender.com", font=font_small, fill=accent)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -4290,7 +5233,13 @@ def api_onboarding():
             "onboarding_completed": bool(user.get("onboarding_completed", False)),
             "is_linked": bool(user.get("cr_tag")),
             "interest_tags": user.get("interest_tags", []),
-            "notif_prefs": user.get("notif_prefs", {"war_reminders": True}),
+            # Rec #4: expanded beyond just war_reminders as part of
+            # consolidating the scattered profile-page settings into one
+            # "My Settings" section -- strike_alerts and spotlight_alerts
+            # default True (matches war_reminders' existing default) since
+            # opting OUT of being told about your own strikes/wins isn't
+            # the obviously-safe default the way skipping a war nag is.
+            "notif_prefs": user.get("notif_prefs", {"war_reminders": True, "strike_alerts": True, "spotlight_alerts": True}),
             "email": user.get("email", ""),
         })
     data = request.get_json(silent=True) or {}
@@ -4299,7 +5248,12 @@ def api_onboarding():
         allowed = {"war", "social", "competitive"}
         update["interest_tags"] = [t for t in data.get("interest_tags", []) if t in allowed]
     if "notif_prefs" in data:
-        update["notif_prefs"] = {"war_reminders": bool((data.get("notif_prefs") or {}).get("war_reminders", True))}
+        np = data.get("notif_prefs") or {}
+        update["notif_prefs"] = {
+            "war_reminders": bool(np.get("war_reminders", True)),
+            "strike_alerts": bool(np.get("strike_alerts", True)),
+            "spotlight_alerts": bool(np.get("spotlight_alerts", True)),
+        }
     # Idea #138: optional email for the digest-email option (delivery itself is
     # stubbed — see clash_cog.py's weekly_digest_email handler — until real SMTP
     # credentials are configured for this project).
@@ -4448,6 +5402,93 @@ def admin_delete_webhook(hook_id):
     return jsonify({"success": True})
 
 
+API_KEY_SCOPES = ("clan", "war-history")
+# Rec #18: an issued key gets a much higher ceiling than the shared anonymous
+# IP bucket, since it's identified individually (own rate-limit bucket) and
+# an admin explicitly vouched for it -- still capped, not unlimited.
+API_KEY_RATE_LIMIT_MAX_ATTEMPTS = 600
+API_KEY_RATE_LIMIT_WINDOW_SECONDS = 600
+
+
+def _hash_api_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def _check_api_key(scope: str):
+    """Rec #18: optional scoped API key auth for the /api/v1/* routes, as an
+    alternative to relying only on IP-based rate limiting -- a real third-
+    party integration behind a shared IP (another Discord bot host, a CI
+    runner, etc.) would otherwise get lumped in with every anonymous caller
+    on the same address. Only the SHA-256 hash of the key is ever stored, so
+    a raw key is only ever visible once, at creation time (see
+    admin_create_api_key). Returns (ok, error_response_or_None):
+      - no key supplied at all -> (True, None), caller falls back to the
+        existing IP-based rate_limited() check, unauthenticated access is
+        still allowed since these endpoints were already fully public.
+      - a key WAS supplied -> it must be valid, unrevoked, and scoped to
+        this endpoint, or the request is rejected outright (a typo'd key
+        should never silently fall back to anonymous access).
+    """
+    raw_key = request.headers.get("X-API-Key") or request.args.get("api_key")
+    if not raw_key:
+        return True, None
+    key_doc = db_sync["api_keys"].find_one({"key_hash": _hash_api_key(raw_key)})
+    if not key_doc or key_doc.get("revoked"):
+        return False, (jsonify({"error": "Invalid or revoked API key."}), 401)
+    if scope not in (key_doc.get("scopes") or []):
+        return False, (jsonify({"error": f"This API key is not scoped for '{scope}'."}), 403)
+    if rate_limited_identity("public_api_key", str(key_doc["_id"]),
+                             max_attempts=API_KEY_RATE_LIMIT_MAX_ATTEMPTS,
+                             window_seconds=API_KEY_RATE_LIMIT_WINDOW_SECONDS):
+        return False, (jsonify({"error": f"Rate limit exceeded. Max {API_KEY_RATE_LIMIT_MAX_ATTEMPTS} requests per {API_KEY_RATE_LIMIT_WINDOW_SECONDS // 60} minutes for this key."}), 429)
+    db_sync["api_keys"].update_one({"_id": key_doc["_id"]}, {"$set": {"last_used_at": datetime.now(timezone.utc)}})
+    return True, None
+
+
+@web_bp.route("/admin/api/api-keys", methods=["GET", "POST"])
+def admin_api_keys():
+    """Rec #18: admin-issued scoped read-only API keys. The raw key is
+    returned exactly once, in the POST response -- only its SHA-256 hash is
+    persisted, same principle as never storing a plaintext password."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    if request.method == "GET":
+        keys = list(db_sync["api_keys"].find({}, {"key_hash": 0}).sort("created_at", -1))
+        for k in keys:
+            k["id"] = str(k.pop("_id"))
+        return jsonify({"keys": keys, "available_scopes": list(API_KEY_SCOPES)})
+
+    data = request.get_json(silent=True) or {}
+    label = str(data.get("label") or "").strip()[:80] or "Unlabeled key"
+    scopes = [s for s in (data.get("scopes") or []) if s in API_KEY_SCOPES] or list(API_KEY_SCOPES)
+    raw_key = f"gys_{secrets.token_urlsafe(32)}"
+    doc = {
+        "label": label, "scopes": scopes,
+        "key_hash": _hash_api_key(raw_key),
+        "key_preview": raw_key[:8] + "…" + raw_key[-4:],
+        "created_at": datetime.now(timezone.utc),
+        "created_by": session.get("discord_name", "admin"),
+        "revoked": False, "last_used_at": None,
+    }
+    result = db_sync["api_keys"].insert_one(doc)
+    log_admin_activity("Issued API key", target=label, details=", ".join(scopes))
+    return jsonify({"success": True, "id": str(result.inserted_id), "api_key": raw_key,
+                    "warning": "This key is shown only once -- copy it now. It cannot be retrieved again, only revoked and reissued."})
+
+
+@web_bp.route("/admin/api/api-keys/<key_id>/revoke", methods=["POST"])
+def admin_revoke_api_key(key_id):
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        oid = ObjectId(key_id)
+    except InvalidId:
+        return jsonify({"error": "Invalid key id."}), 400
+    db_sync["api_keys"].update_one({"_id": oid}, {"$set": {"revoked": True}})
+    log_admin_activity("Revoked API key", target=key_id)
+    return jsonify({"success": True})
+
+
 @web_bp.route("/api/v1/clan")
 def public_api_clan():
     """Idea #244: a public, read-only, rate-limited API exposing the same
@@ -4458,10 +5499,18 @@ def public_api_clan():
     requests / 10 minutes, same `rate_limited()` helper idea #147 added for
     /login and /link) so this can't be used to indirectly hammer the CR API
     past fetch_cr_api()'s own cache. CORS is wide open since this is meant to
-    be called from arbitrary third-party frontends/scripts."""
-    if rate_limited("public_api", max_attempts=60, window_seconds=600):
+    be called from arbitrary third-party frontends/scripts.
+
+    Rec #18: an optional X-API-Key header (or ?api_key= param) lets a known
+    integration skip the shared anonymous IP bucket in favor of its own,
+    much higher individual limit -- see _check_api_key.
+    """
+    key_ok, key_err = _check_api_key("clan")
+    if not key_ok:
+        return key_err
+    if not request.headers.get("X-API-Key") and not request.args.get("api_key") and rate_limited("public_api", max_attempts=60, window_seconds=600):
         return jsonify({"error": "Rate limit exceeded. Max 60 requests per 10 minutes."}), 429
-    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
     clan_data = clan_data or {}
     members = clan_data.get("memberList", [])
     resp = jsonify({
@@ -4472,7 +5521,7 @@ def public_api_clan():
         "member_count": len(members),
         "required_trophies": clan_data.get("requiredTrophies"),
         "clan_war_trophies": clan_data.get("clanWarTrophies"),
-        "is_stale": clan_data_is_stale,
+        "data_freshness": clan_data_freshness,
         "members": [
             {
                 "name": m.get("name"),
@@ -4493,8 +5542,11 @@ def public_api_clan():
 def public_api_war_history():
     """Idea #244 continued: recent war outcomes (win/loss/rank only — no
     per-member fame or Discord data, which stays admin-only), same rate limit
-    bucket as public_api_clan above."""
-    if rate_limited("public_api", max_attempts=60, window_seconds=600):
+    bucket as public_api_clan above. Rec #18: same optional API key path too."""
+    key_ok, key_err = _check_api_key("war-history")
+    if not key_ok:
+        return key_err
+    if not request.headers.get("X-API-Key") and not request.args.get("api_key") and rate_limited("public_api", max_attempts=60, window_seconds=600):
         return jsonify({"error": "Rate limit exceeded. Max 60 requests per 10 minutes."}), 429
     own_tag = f"#{CLAN_TAG}"
     races = list(db_sync["war_history"].find({}, {"_id": 0}).sort("unique_war_id", -1).limit(10))
@@ -4786,14 +5838,14 @@ def api_clan_progress():
     """Idea #106: clan-wide progress bar toward a shared monthly donation goal,
     for the roster page. Goal is configurable via bot_settings.monthly_donation_goal
     (default 50,000, a reasonable round number for a ~50-member clan)."""
-    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
     clan_data = clan_data or {}
     total_donations = sum(m.get("donations", 0) for m in clan_data.get("memberList", []))
     goal = int((db_sync["config"].find_one({"_id": "bot_settings"}) or {}).get("monthly_donation_goal", 50000))
     return jsonify({
         "total_donations": total_donations, "goal": goal,
         "pct": round(min(total_donations / goal, 1.0) * 100, 1) if goal else 0,
-        "is_stale": clan_data_is_stale,
+        "data_freshness": clan_data_freshness,
     })
 
 
@@ -4824,19 +5876,26 @@ def api_public_leaderboards():
     the admin-only analytics leaderboard — members who've set leaderboard_optout
     are excluded entirely rather than just anonymized."""
     optout_tags = {p["tag"] for p in db_sync["player_profiles"].find({"leaderboard_optout": True}, {"tag": 1})}
-    clan_data, clan_data_is_stale = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
+    clan_data, clan_data_freshness = fetch_cr_api_with_fallback(f"clans/%23{CLAN_TAG}")
     clan_data = clan_data or {}
     members = [m for m in clan_data.get("memberList", []) if m.get("tag") not in optout_tags]
     top_trophies = sorted(members, key=lambda m: m.get("trophies", 0), reverse=True)[:10]
 
     war_data = fetch_cr_api(f"clans/%23{CLAN_TAG}/currentriverrace") or {}
     fame_rows = [p for p in war_data.get("clan", {}).get("participants", []) if p.get("tag") not in optout_tags]
-    fame_is_last_race = False
+    # Fame is CURRENT by default here -- unlike top_trophies, this isn't a
+    # fetch-failure fallback (the live call above already succeeded or we
+    # wouldn't have war_data at all); see the HISTORICAL branch below for the
+    # actual substitution case.
+    fame_freshness = CURRENT
     if not any(p.get("fame", 0) for p in fame_rows):
         # Fame resets to 0 for everyone between war days -- most of the week,
-        # this river race response is genuinely all zeroes, not broken. Rather
-        # than show a wall of 0s, fall back to the most recently *completed*
-        # race, same data already used for the Boat Battle Leaderboard.
+        # this river race response is genuinely all zeroes, not broken. This
+        # is the canonical HISTORICAL case (see data_freshness.py): the live
+        # call succeeded, but there's no meaningful CURRENT value, so we
+        # substitute a real, different, past record (the last *completed*
+        # race) instead of a wall of 0s -- same data already used for the
+        # Boat Battle Leaderboard.
         last_race = db_sync["war_history"].find_one(
             {}, sort=[("data.seasonId", -1), ("data.sectionIndex", -1)]
         )
@@ -4845,14 +5904,14 @@ def api_public_leaderboards():
             race_participants = [p for p in race_clan.get("participants", []) if p.get("tag") not in optout_tags]
             if any(p.get("fame", 0) for p in race_participants):
                 fame_rows = race_participants
-                fame_is_last_race = True
+                fame_freshness = HISTORICAL
 
     top_fame = sorted(fame_rows, key=lambda p: p.get("fame", 0), reverse=True)[:10]
     return jsonify({
         "top_trophies": [{"name": m.get("name"), "value": m.get("trophies", 0)} for m in top_trophies],
-        "top_trophies_is_stale": clan_data_is_stale,
+        "top_trophies_freshness": clan_data_freshness,
         "top_fame": [{"name": p.get("name"), "value": p.get("fame", 0)} for p in top_fame],
-        "top_fame_is_last_race": fame_is_last_race,
+        "top_fame_freshness": fame_freshness,
     })
 
 
@@ -5273,16 +6332,19 @@ def family_page():
         return "The clan family page isn't enabled yet — an admin can turn it on in Settings once there's a second linked clan.", 404
     family_tags = bot_settings.get("family_clan_tags", []) or []
     clans = []
-    any_stale = False
+    overall_freshness = CURRENT
     for t in family_tags:
         # fetch_cr_api_with_fallback caches per-endpoint, so each family clan
         # tag gets its own independent last-known snapshot -- one clan's live
         # fetch failing no longer silently drops it from the page entirely.
-        data, is_stale = fetch_cr_api_with_fallback(f"clans/%23{clean_tag(t)}")
+        # Worst-case wins across clans: if any single one had to fall back,
+        # the page as a whole is MOST_RECENT, not CURRENT.
+        data, freshness = fetch_cr_api_with_fallback(f"clans/%23{clean_tag(t)}")
         if data:
             clans.append(data)
-            any_stale = any_stale or is_stale
-    return render_sandboxed(get_template("family"), clans=clans, is_admin=is_admin(), clan_data_is_stale=any_stale)
+            if not is_current(freshness):
+                overall_freshness = MOST_RECENT
+    return render_sandboxed(get_template("family"), clans=clans, is_admin=is_admin(), clan_data_freshness=overall_freshness)
 
 
 @web_bp.route("/alumni")

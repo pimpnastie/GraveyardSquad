@@ -400,7 +400,22 @@ class ClashRoyale(commands.Cog):
                     if channel_id and guild:
                         channel = guild.get_channel(int(channel_id))
                         if channel:
-                            recap_msg = await channel.send(action.get("message", "War recap unavailable."))
+                            # Rec #12: shareable image recap, generated server-side
+                            # by web_routes.py's war_recap_png (Pillow, same
+                            # approach as the existing player/clan cards) --
+                            # Discord fetches the URL itself for the embed
+                            # preview, so this is just a set_image, no file upload.
+                            image_url = action.get("image_url")
+                            if image_url:
+                                recap_embed = discord.Embed(
+                                    title="⚔️ War Recap",
+                                    description=action.get("message", "War recap unavailable."),
+                                    color=0x00E596,
+                                )
+                                recap_embed.set_image(url=image_url)
+                                recap_msg = await channel.send(embed=recap_embed)
+                            else:
+                                recap_msg = await channel.send(action.get("message", "War recap unavailable."))
                             # Idea #95: spin up a thread off the recap so war-day
                             # chatter doesn't clutter the main channel.
                             if isinstance(channel, discord.TextChannel):
@@ -411,13 +426,13 @@ class ClashRoyale(commands.Cog):
                                     )
                                 except discord.HTTPException as e:
                                     log.warning(f"Could not create war recap thread: {e}")
-                elif kind in ("role_change_post", "milestone_post", "war_start_reminder", "anniversary_shoutout", "weekly_digest_post", "stream_live_post"):
+                elif kind in ("role_change_post", "milestone_post", "war_start_reminder", "anniversary_shoutout", "weekly_digest_post", "stream_live_post", "weekly_meta_report_post"):
                     # Ideas #111 (role-change), #105 (milestone), #136 (war-start
                     # lead-up reminders), #137 (anniversary shoutouts), #135
-                    # (weekly digest), #243 (stream-live announcement) — all
-                    # queued by data_harvester.py, all simple channel
-                    # announcements routed to the same dedicated
-                    # #bot-announcements channel convention (idea #134).
+                    # (weekly digest), #243 (stream-live announcement), Rec #16
+                    # (weekly meta report) — all queued by data_harvester.py,
+                    # all simple channel announcements routed to the same
+                    # dedicated #bot-announcements channel convention (idea #134).
                     channel_id = await self._announcements_channel_id()
                     if channel_id and guild:
                         channel = guild.get_channel(int(channel_id))
