@@ -1650,8 +1650,17 @@ def index():
     war_fame_overrides = bot_settings_for_fame.get("war_fame_overrides", {})
     for m in clan_data.get("memberList", []):
         tag = m.get("tag", "")
-        clean_tag = tag.replace("#", "").upper()
-        override = war_fame_overrides.get(clean_tag, {})
+        # NOTE: named member_clean_tag, not clean_tag -- this is a plain
+        # local variable holding one member's stripped tag, whereas
+        # clean_tag() (no local shadowing) is the shared module-level helper
+        # function used elsewhere in this same route (own_linked_tag below).
+        # Reusing the name "clean_tag" here made Python treat every
+        # clean_tag(...) call anywhere in index() as a reference to this
+        # local variable instead of the function -- an UnboundLocalError the
+        # instant the loop hadn't run yet, which is exactly what broke the
+        # live site (500 on every single page load).
+        member_clean_tag = tag.replace("#", "").upper()
+        override = war_fame_overrides.get(member_clean_tag, {})
         m["war_fame_current"] = override.get("current", current_fame_by_tag.get(tag, 0))
         m["war_fame_previous"] = override.get("previous", previous_fame_by_tag.get(tag, 0))
         m["war_fame_current_overridden"] = "current" in override
