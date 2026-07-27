@@ -55,7 +55,15 @@
             outline: none; transition: 0.2s;
         }
         .input-group input:focus { border-color: var(--accent); box-shadow: 0 0 15px rgba(0,229,255,0.1); }
-        
+
+        /* Task #175: roster-name picker, same visual language as the tag input above. */
+        .input-group select {
+            width: 100%; box-sizing: border-box; padding: 14px 16px; background: var(--bg);
+            border: 2px solid var(--border); border-radius: 8px; color: var(--gy-text-bright);
+            font-family: inherit; font-size: 15px; outline: none; transition: 0.2s; cursor: pointer;
+        }
+        .input-group select:focus { border-color: var(--accent); box-shadow: 0 0 15px rgba(0,229,255,0.1); }
+
         .tag-helper { font-size: 12px; color: var(--dim); margin-top: 8px; display: block; }
         
         .submit-btn {
@@ -144,7 +152,22 @@
 
             <form method="POST" action="/link" id="linkForm">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <div class="input-group" style="position:relative;">
+
+                <!-- Task #175: pick your name straight off the roster instead of
+                     copy-pasting a tag, for the common case of an existing clan
+                     member linking for the first time. "Other" (also the
+                     default if the roster hasn't loaded yet, or you're not on
+                     it -- a fresh recruit, an alt, etc.) falls back to the
+                     original manual tag entry below, unchanged. -->
+                <div class="input-group" id="rosterPickGroup">
+                    <label for="rosterNameSelect">I'm already in the clan roster</label>
+                    <select id="rosterNameSelect" class="form-select" style="width:100%;">
+                        <option value="">Loading roster…</option>
+                        <option value="__other__">Other / not listed</option>
+                    </select>
+                </div>
+
+                <div class="input-group" style="position:relative;" id="manualTagGroup">
                     <label for="cr_tag">Player Tag</label>
                     <input type="text" id="cr_tag" name="tag" placeholder="#ABC123XYZ" autocomplete="off" required>
                     <span class="tag-helper">Found under your name in the in-game profile, or paste a royaleapi.com/clan link and we'll pull the tag out automatically.</span>
@@ -252,6 +275,63 @@ tagInput.addEventListener('paste', function(e) {
     }
     // otherwise let the normal 'input' handler above clean up a bare pasted tag
 });
+
+// ---------------------------------------------------
+// Task #175: "once someone links their discord, can you just have it pick
+// their name from the roster, or click other?" -- pulls the public
+// /api/clan/members-lite list (already used for the same purpose on
+// player.html's compare-tag autofill, task #64) so an existing clan member
+// can pick their own name instead of copy-pasting their tag. Picking "Other /
+// not listed" (or leaving it on the placeholder) falls back to the exact
+// manual-entry flow that already existed, untouched.
+// ---------------------------------------------------
+const rosterSelect = document.getElementById('rosterNameSelect');
+const rosterPickGroup = document.getElementById('rosterPickGroup');
+const manualTagGroup = document.getElementById('manualTagGroup');
+
+function stripCrColorTags(name) {
+    // Mirrors cr_name_plain() in web_routes.py -- a <select><option> can't
+    // render the color spans the |cr_name Jinja filter produces elsewhere,
+    // so this just strips the <cN>/</c> tags down to plain text.
+    return String(name == null ? '' : name).replace(/<c\d>|<\/c>/g, '');
+}
+function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function showManualTagEntry(show) {
+    manualTagGroup.style.display = show ? '' : 'none';
+    tagInput.required = show;
+}
+
+fetch('/api/clan/members-lite')
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(members => {
+        members = (members || []).slice().sort(function(a, b) {
+            return stripCrColorTags(a.name).localeCompare(stripCrColorTags(b.name));
+        });
+        rosterSelect.innerHTML = '<option value="">— Select your name —</option>'
+            + members.map(function(m) {
+                return '<option value="' + escHtml(m.tag) + '">' + escHtml(stripCrColorTags(m.name)) + '</option>';
+            }).join('')
+            + '<option value="__other__">Other / not listed</option>';
+    })
+    .catch(function() {
+        // Roster failed to load -- don't block linking on it, just hide the
+        // picker entirely and leave the always-available manual entry as-is.
+        rosterPickGroup.style.display = 'none';
+    });
+
+rosterSelect.addEventListener('change', function() {
+    if (this.value && this.value !== '__other__') {
+        showManualTagEntry(false);
+        tagInput.value = '#' + this.value;
+    } else {
+        showManualTagEntry(true);
+        tagInput.value = '';
+    }
+});
+// Manual entry is the safe default (shown) until someone actually picks a
+// roster name above, so nothing about the pre-existing flow changes for
+// anyone who ignores the new dropdown.
+showManualTagEntry(true);
 
 // ---------------------------------------------------
 // Idea #121: a one-time tooltip tutorial the first time someone hits /link,

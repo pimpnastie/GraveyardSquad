@@ -326,7 +326,7 @@
     <div class="nav-section">Navigation</div>
     <button class="nav-btn active" onclick="showTab('roster', this); loadRoster();"><span class="nav-icon">🛡️</span>Roster</button>
     <button class="nav-btn" onclick="showTab('diag', this); loadSecretRotation(); loadConfigBackups(); loadDbBackups(); loadApiKeys();"><span class="nav-icon">🔍</span>Diagnostics</button>
-    <button class="nav-btn" onclick="showTab('war', this)"><span class="nav-icon">⚔️</span>War Monitor</button>
+    <button class="nav-btn" onclick="showTab('war', this); loadWarMonitorAll();"><span class="nav-icon">⚔️</span>War Monitor</button>
     <button class="nav-btn" onclick="showTab('battles', this)"><span class="nav-icon">📜</span>Battle Logs</button>
     <button class="nav-btn" onclick="showTab('analytics', this); loadAnalytics();"><span class="nav-icon">📊</span>Analytics</button>
     <button class="nav-btn" onclick="showTab('harvest', this)"><span class="nav-icon">📡</span>Harvest Log</button>
@@ -337,7 +337,7 @@
     <button class="nav-btn" onclick="showTab('activity', this); loadActivityLog();"><span class="nav-icon">📋</span>Activity Log</button>
     <button class="nav-btn" onclick="showTab('settings', this)"><span class="nav-icon">🛠️</span>Settings</button>
     <div class="nav-section">Danger Zone</div>
-    <button class="nav-btn" onclick="showTab('admin', this); loadWebhooks();"><span class="nav-icon">⚙️</span>Admin Tools</button>
+    <button class="nav-btn" onclick="showTab('admin', this); loadWebhooks(); loadPendingActionsHealth();"><span class="nav-icon">⚙️</span>Admin Tools</button>
   </nav>
   <main class="main" id="main-content">
 
@@ -571,10 +571,10 @@
         <table class="war-table">
           <thead><tr>
             <th>Time (UTC)</th><th>Player</th><th>Tag</th><th>Type</th>
-            <th>Result</th><th>Score</th><th>Opponent</th><th>Decks (You / Opp)</th>
+            <th>Result</th><th>Score</th><th>Opponent</th><th>Towers</th><th>Decks (You / Opp)</th>
           </tr></thead>
           <tbody id="battles-body">
-            <tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">Click fetch to load the latest records.</td></tr>
+            <tr><td colspan="9" style="text-align:center; padding:24px; color:var(--dim);">Click fetch to load the latest records.</td></tr>
           </tbody>
         </table>
       </div>
@@ -1395,6 +1395,35 @@
            configure; Recruitment Video/Discord Invite/Founding Date/Culture
            Doc moved to the sections above since those are plain config
            values, not flags, despite previously living in this group.) -->
+
+      <!-- Task #173: the "devy our commands/abilities based on level of
+           admin" settings page. 6 named admin levels (assigned per-user on
+           the User Access tab) x a fixed set of capabilities, each mapped to
+           the minimum level required. Editable only by Super Admins (level
+           6) -- see has_capability("manage_permission_matrix") server-side --
+           everyone else sees it read-only. This intentionally covers the
+           permission-matrix mechanism itself plus a representative set of
+           capabilities, not a literal rewrite of every single existing admin
+           route to consult it (see the comment above ADMIN_LEVELS in
+           web_routes.py for why that's out of scope for this round). -->
+      <div class="section-label" style="margin-top:20px;">Permission Levels</div>
+      <div class="diag-card">
+        <div class="diag-card-header">
+          <div class="diag-card-title">Capability → Minimum Admin Level</div>
+          <button class="btn-refresh" onclick="loadPermissionMatrix()">↻ Refresh</button>
+        </div>
+        <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+          <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Controls which of the 6 admin levels (assigned per-user on the User Access tab) unlocks each capability. Only Superadmins can save changes here.</p>
+          <div style="overflow-x:auto;">
+            <table class="war-table" id="permission-matrix-table" style="min-width:480px;">
+              <thead><tr><th>Capability</th><th>Minimum Level</th></tr></thead>
+              <tbody id="permission-matrix-body"><tr><td colspan="2" style="text-align:center; color:var(--dim);">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <button class="btn-refresh" id="permission-matrix-save-btn" style="display:none; align-self:flex-start;" onclick="savePermissionMatrix()">💾 Save Permission Matrix</button>
+          <div id="permission-matrix-msg" style="font-size:12px;"></div>
+        </div>
+      </div>
       </div><!-- /settings-page-access -->
 
       <div class="settings-page" id="settings-page-flags">
@@ -1494,6 +1523,17 @@
             <button class="btn-danger" onclick="triggerManualHarvest()" style="background:rgba(241,196,15,0.1); border-color:#f1c40f; color:#f1c40f;">⚡ Trigger Now</button>
           </div>
         </div>
+        <div class="diag-card diag-card-danger">
+          <div class="diag-card-header"><div class="diag-card-title">🩹 Stuck Pending Actions</div><span class="status-pill pill-loading" id="pill-pending-health">LOADING</span></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">The bot only sees admin-triggered actions (DMs, backups, war recaps) through this queue -- if it's down or an action keeps erroring, they pile up silently here instead of anywhere visible. Force-clear anything stuck over an hour, or retry ones that already failed once (e.g. after fixing a bad channel ID).</p>
+            <div id="pending-actions-health-body" style="font-family:var(--font-mono); font-size:12px; color:var(--dim);">Loading…</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn-danger" onclick="confirmClearStuckPendingActions()">⚠ Force-Clear Stuck</button>
+              <button class="btn-refresh" onclick="retryFailedPendingActions()">↻ Retry Failed</button>
+            </div>
+          </div>
+        </div>
         <div class="diag-card" style="grid-column: 1 / -1;">
           <div class="diag-card-header"><div class="diag-card-title">🔗 Webhooks (ideas #242/#246)</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
@@ -1551,7 +1591,14 @@
 
 <div class="toast-wrap" id="toast-wrap"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<!-- Task #172: cdnjs is occasionally unreachable on some networks ("Chart
+     library failed to load (cdnjs unreachable?)") -- Chart.js had exactly one
+     source with no fallback, so that single failure took down every chart on
+     the Analytics tab (Clan Trend, Member Drill-Down, CW2 Trend, deck-usage
+     trend lines) with nothing to fall back to. This tries jsDelivr's mirror
+     of the same version if cdnjs's script tag fails to load. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"
+        onerror="var s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'; document.head.appendChild(s);"></script>
 <script>
 // CSRF protection: attach the per-session token to every same-origin POST made
 // from this page, so admin.py's before_request check has something to verify
@@ -1685,6 +1732,27 @@ function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Task #178: Clash Royale lets a player embed color codes in their in-game
+// name, e.g. "<c6>Gh<c5>ost" -- a <cN> tag opens a color region that runs to
+// the next tag/</c>/end of string. Renders those as colored <span>s (mirrors
+// the server-side `cr_name` Jinja filter in web_routes.py) instead of
+// showing the literal tag text, which every JS-rendered name table did.
+var CR_NAME_COLORS = {0:'#bdc3c7',1:'#ecf0f1',2:'#e74c3c',3:'#2ecc71',4:'#2980b9',5:'#3498db',6:'#ff69b4',7:'#f1c40f',8:'#9b59b6',9:'#922b21'};
+function crName(name) {
+  name = String(name == null ? '' : name);
+  if (name.indexOf('<c') === -1) return esc(name);
+  var re = /<c(\d)>|<\/c>/g, html = '', last = 0, open = false, m;
+  while ((m = re.exec(name)) !== null) {
+    html += esc(name.slice(last, m.index));
+    if (open) { html += '</span>'; open = false; }
+    if (m[1] !== undefined) { html += '<span style="color:' + (CR_NAME_COLORS[m[1]] || 'inherit') + '">'; open = true; }
+    last = re.lastIndex;
+  }
+  html += esc(name.slice(last));
+  if (open) html += '</span>';
+  return html;
 }
 
 // Bugfix (reported: "the actions button didn't expand" — the whole "actions
@@ -2626,6 +2694,19 @@ async function loadMemberTrend() {
 }
 
 // ── War ────────────────────────────────────────────────────────────────────────
+// Task #169: "way more relevant data auto compiled against all of our
+// opponents" — the War Monitor tab used to require five separate manual
+// button clicks (Refresh, Scout, Dossier, Calendar, Missed-Streaks) before
+// showing anything. Now everything loads the moment the tab is opened;
+// the buttons still work for an on-demand re-pull afterward.
+function loadWarMonitorAll() {
+  loadWar();
+  loadScouting();
+  loadMatchupDossier();
+  loadWarCalendar();
+  loadMissedStreaks();
+}
+
 async function loadWar() {
   var content = document.getElementById('war-content');
   content.innerHTML = '<div style="color:var(--dim);font-family:var(--font-mono);font-size:12px;"><span class="spin">↻</span> Fetching live war data…</div>';
@@ -2691,9 +2772,31 @@ async function loadScouting() {
     var d = await res.json();
     if (d.error) throw new Error(d.error);
     var rivals = d.rivals || [];
-    el.innerHTML = rivals.length ? rivals.map(function(r){
-      return '<div class="stat-row" style="justify-content:space-between; display:flex;"><span><strong>' + esc(r.name) + '</strong> <span style="color:var(--dim)">' + esc(r.tag) + '</span></span><span>' + esc(r.member_count) + ' members · avg ' + esc(r.avg_trophies) + ' 🏆 · ' + esc(r.current_fame) + ' fame</span></div>';
-    }).join('') : '<span style="color:var(--dim)">No rival data available.</span>';
+    if (!rivals.length) { el.innerHTML = '<span style="color:var(--dim)">No rival data available.</span>'; return; }
+    // Task #169: auto-compiled against every opponent in the race at once --
+    // race rank, period points, and fame gap vs. us, instead of just each
+    // rival's raw member/trophy numbers with no context for how close the
+    // race actually is.
+    var ourRow = (d.own_race_rank != null)
+      ? '<tr style="background:rgba(0,229,255,0.06);"><td colspan="6"><strong>Us — Rank ' + esc(d.own_race_rank) + ', ' + esc(d.own_fame||0) + ' fame</strong></td></tr>'
+      : '';
+    el.innerHTML = '<div class="diag-card" style="overflow-x:auto; padding:0;">'
+      + '<table class="war-table"><thead><tr><th>Rank</th><th>Clan</th><th>Members</th><th>Avg 🏆</th><th>Fame</th><th>Gap vs. Us</th></tr></thead><tbody>'
+      + ourRow
+      + rivals.map(function(r){
+          var gap = r.fame_gap_vs_us || 0;
+          var gapColor = gap > 0 ? 'var(--err)' : gap < 0 ? 'var(--ok)' : 'var(--dim)';
+          var gapText = gap > 0 ? ('+' + gap + ' ahead of us') : (gap < 0 ? (Math.abs(gap) + ' behind us') : 'tied');
+          return '<tr>'
+            + '<td>' + esc(r.race_rank != null ? r.race_rank : '—') + '</td>'
+            + '<td><strong>' + esc(r.name) + '</strong><div style="font-size:11px; color:var(--dim);">' + esc(r.tag) + '</div></td>'
+            + '<td>' + esc(r.member_count) + '</td>'
+            + '<td>' + esc(r.avg_trophies != null ? r.avg_trophies : '—') + '</td>'
+            + '<td style="color:var(--accent); font-weight:700;">' + esc(r.current_fame) + '<div style="font-size:10px; color:var(--dim);">' + esc(r.period_points||0) + ' pts</div></td>'
+            + '<td style="color:' + gapColor + ';">' + esc(gapText) + '</td>'
+            + '</tr>';
+        }).join('')
+      + '</tbody></table></div>';
   } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error: ' + esc(e.message) + '</span>'; }
 }
 
@@ -2732,12 +2835,29 @@ async function loadWarCalendar() {
     var res = await fetch('/admin/api/war/calendar');
     var d = await res.json();
     var races = d.races || [];
-    el.innerHTML = races.length ? '<div style="display:flex; flex-wrap:wrap; gap:6px;">' + races.map(function(r){
+    if (!races.length) { el.innerHTML = '<span style="color:var(--dim)">No completed races logged yet.</span>'; return; }
+    // Task #169: "a live calendar listing results" — dates and a result
+    // summary per race, not just an unlabeled color tile grid. Tile grid kept
+    // above the list as a quick-scan glance; the list underneath is where the
+    // actual dates/results live.
+    var tileRow = '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px;">' + races.map(function(r){
       var color = r.outcome === 'win' ? '#2ecc71' : (r.outcome === 'loss' ? '#e74c3c' : '#555');
-      // Rec #12: click a race tile to open its shareable recap image (same
-      // Pillow-generated PNG posted to Discord — see war_recap_png in web_routes.py).
-      return '<a href="/war/' + encodeURIComponent(r.unique_war_id) + '/recap.png" target="_blank" title="' + esc(r.unique_war_id) + ' — ' + esc(r.outcome) + ' (click for shareable recap image)" style="width:22px; height:22px; border-radius:4px; background:' + color + '; display:block;"></a>';
-    }).join('') + '</div>' : '<span style="color:var(--dim)">No completed races logged yet.</span>';
+      var dateLabel = r.created_date ? new Date(r.created_date).toLocaleDateString() : r.unique_war_id;
+      return '<a href="/war/' + encodeURIComponent(r.unique_war_id) + '/recap.png" target="_blank" title="' + esc(dateLabel) + ' — ' + esc(r.outcome) + ' (click for shareable recap image)" style="width:22px; height:22px; border-radius:4px; background:' + color + '; display:block;"></a>';
+    }).join('') + '</div>';
+    var listRows = races.map(function(r){
+      var dateLabel = r.created_date ? new Date(r.created_date).toLocaleDateString() : '—';
+      var resultColor = r.outcome === 'win' ? 'var(--ok)' : (r.outcome === 'loss' ? 'var(--err)' : 'var(--dim)');
+      var resultLabel = r.outcome === 'win' ? '🏆 Win' : (r.outcome === 'loss' ? '❌ Loss' : '— Unknown');
+      var extra = r.outcome === 'win' && r.runner_up_name ? ' (ahead of ' + esc(r.runner_up_name) + ')' : '';
+      return '<a href="/war/' + encodeURIComponent(r.unique_war_id) + '/recap.png" target="_blank" style="text-decoration:none; color:inherit;">'
+        + '<div class="stat-row" style="justify-content:space-between; display:flex; align-items:center; padding:6px 0; border-bottom:1px solid var(--border);">'
+        + '<span style="font-family:var(--font-mono); font-size:12px;">' + esc(dateLabel) + '</span>'
+        + '<span style="color:' + resultColor + '; font-weight:700;">' + resultLabel + '<span style="color:var(--dim); font-weight:normal;">' + extra + '</span></span>'
+        + '<span style="font-family:var(--font-mono); font-size:12px; color:var(--dim);">Rank ' + esc(r.rank != null ? r.rank : '—') + ' of ' + esc(r.field_size || '—') + ' · ' + esc(r.own_fame != null ? r.own_fame : '—') + ' fame</span>'
+        + '</div></a>';
+    }).join('');
+    el.innerHTML = tileRow + '<div>' + listRows + '</div>';
   } catch(e) { el.innerHTML = '<span style="color:var(--err)">Error: ' + esc(e.message) + '</span>'; }
 }
 
@@ -2790,7 +2910,7 @@ var battlesPageSize = 25;
 async function loadBattles(page) {
   page = Math.max(page || 0, 0);
   var tbody = document.getElementById('battles-body');
-  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading…</td></tr>';
   try {
     var res = await fetch('/admin/api/battles?page=' + page + '&page_size=' + battlesPageSize);
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -2809,7 +2929,7 @@ async function loadBattles(page) {
     document.getElementById('battles-next-btn').disabled = !(data && data.has_more);
     toast('Loaded ' + allBattles.length + ' battle records.', 'ok');
   } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--err);">Error: ' + esc(e.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:24px; color:var(--err);">Error: ' + esc(e.message) + '</td></tr>';
     toast('Failed to load battles: ' + e.message, 'err');
   }
 }
@@ -2826,14 +2946,25 @@ function renderBattles(battles) {
     var resultBadge = result ? '<span class="badge ' + badgeCls + '">' + esc(result) + '</span>' : '—';
     var pCards = (b.team_cards||[]).map(function(c){ return c.name||c; }).join(', ');
     var oCards = (b.opponent_cards||[]).map(function(c){ return c.name||c; }).join(', ');
+    // Task #169: towers taken/lost were sitting in the raw CR API data but
+    // never surfaced -- shown here as "princess towers still standing" for
+    // each side, plus a 👑 marker if that side's king tower was also taken.
+    var pPrincess = (b.team_princess_towers_hp||[]).filter(function(hp){ return hp > 0; }).length;
+    var oPrincess = (b.opponent_princess_towers_hp||[]).filter(function(hp){ return hp > 0; }).length;
+    var pKingDown = b.team_king_tower_hp === 0;
+    var oKingDown = b.opponent_king_tower_hp === 0;
+    var towersCell = (b.team_princess_towers_hp && b.team_princess_towers_hp.length)
+      ? (pPrincess + (pKingDown?'👑':'') + ' – ' + oPrincess + (oKingDown?'👑':''))
+      : '—';
     return '<tr onclick="showBattleDetails(' + i + ')" style="cursor:pointer">'
       + '<td style="color:var(--dim)">' + esc(formatBattleTime(b.battle_time)) + '</td>'
-      + '<td><strong>' + esc(b.player_name||'—') + '</strong></td>'
+      + '<td><strong>' + (b.player_name ? crName(b.player_name) : '—') + '</strong></td>'
       + '<td style="color:var(--dim)">' + esc(b.player_tag||'—') + '</td>'
       + '<td style="color:var(--dim)">' + esc(b.type||'—') + '</td>'
       + '<td>' + resultBadge + '</td>'
       + '<td>' + (b.team_crowns!=null?b.team_crowns:'—') + ' – ' + (b.opponent_crowns!=null?b.opponent_crowns:'—') + '</td>'
-      + '<td>' + esc(b.opponent_name||'—') + '</td>'
+      + '<td>' + (b.opponent_name ? crName(b.opponent_name) : '—') + '</td>'
+      + '<td style="font-size:11px; color:var(--dim);" title="Princess towers still standing (yours – opponent\'s); 👑 = king tower also taken">' + esc(towersCell) + '</td>'
       + '<td style="font-size:10px; line-height:1.4; color:var(--dim);"><strong style="color:var(--accent);">You:</strong> ' + esc(pCards)
       + '<br><strong style="color:var(--err);">Opp:</strong> ' + esc(oCards) + '</td></tr>';
   }).join('');
@@ -2871,12 +3002,17 @@ function showBattleDetails(i) {
   document.getElementById('modal-body').innerHTML =
     '<div class="modal-meta">'
     + '<div class="modal-meta-item"><span>Time</span>' + esc(formatBattleTime(b.battle_time)) + '</div>'
-    + '<div class="modal-meta-item"><span>Player</span>' + esc(b.player_name||b.player_tag) + '</div>'
-    + '<div class="modal-meta-item"><span>Opponent</span>' + esc(b.opponent_name||b.opponent_tag||'—') + '</div>'
+    + '<div class="modal-meta-item"><span>Player</span>' + (b.player_name ? crName(b.player_name) : esc(b.player_tag)) + '</div>'
+    + '<div class="modal-meta-item"><span>Opponent</span>' + (b.opponent_name ? crName(b.opponent_name) : esc(b.opponent_tag||'—')) + '</div>'
     + '<div class="modal-meta-item"><span>Result</span><strong style="color:var(--' + rc + ')">' + esc((b.result||'').toUpperCase()) + '</strong></div>'
     + '<div class="modal-meta-item"><span>Score</span>' + (b.team_crowns??'?') + ' – ' + (b.opponent_crowns??'?') + '</div>'
     + (b.trophy_change!=null?'<div class="modal-meta-item"><span>Trophy Δ</span>' + (b.trophy_change>=0?'+':'') + esc(b.trophy_change) + '</div>':'')
     + (b.type?'<div class="modal-meta-item"><span>Mode</span>' + esc(b.type) + '</div>':'')
+    + (b.arena_name?'<div class="modal-meta-item"><span>Arena</span>' + esc(b.arena_name) + '</div>':'')
+    + (b.game_mode_name?'<div class="modal-meta-item"><span>Game Mode</span>' + esc(b.game_mode_name) + '</div>':'')
+    + (b.deck_selection?'<div class="modal-meta-item"><span>Deck Selection</span>' + esc(b.deck_selection) + '</div>':'')
+    + (b.team_king_tower_hp!=null?'<div class="modal-meta-item"><span>Your King Tower HP</span>' + esc(b.team_king_tower_hp) + (b.team_king_tower_hp===0?' (taken)':'') + '</div>':'')
+    + (b.opponent_king_tower_hp!=null?'<div class="modal-meta-item"><span>Opp King Tower HP</span>' + esc(b.opponent_king_tower_hp) + (b.opponent_king_tower_hp===0?' (taken)':'') + '</div>':'')
     + '</div>'
     + '<div class="deck-section-title">Your Deck</div>' + cardGrid(teamCards)
     + '<div class="deck-section-title" style="margin-top:16px;">Opponent Deck</div>' + cardGrid(oppCards);
@@ -2886,14 +3022,22 @@ function closeModal() { document.getElementById('battle-modal').classList.remove
 
 // ── Users ──────────────────────────────────────────────────────────────────────
 var _usersData = [];  // idea #71: kept client-side so search/sort don't need a refetch
+var ADMIN_LEVEL_OPTIONS = [];  // task #173: [[level, label], ...], populated by loadPermissionMatrix()
 function renderUserRows(users) {
   var tbody = document.getElementById('user-table-body');
   if (!users.length) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">No matches.</td></tr>'; return; }
   tbody.innerHTML = users.map(function(u){
-    var tierPicker = u.status === 'Admin'
+    // Task #173: replaced the old flat Full/View-Only picker with the 6 named
+    // admin levels. ADMIN_LEVEL_OPTIONS is populated from
+    // /admin/api/permission-matrix on load (see loadPermissionMatrix()) so
+    // this stays in sync with the backend's ADMIN_LEVELS list instead of
+    // duplicating the names here.
+    var tierPicker = (u.status === 'Admin' && u.admin_level < 6)
       ? '<select class="form-select" style="font-size:11px; padding:2px 6px;" onchange="setUserTier(' + JSON.stringify(u.discord_id) + ', this.value)">'
-        + '<option value="full">Full Admin</option><option value="analytics_only">View-Only</option></select>'
-      : '';
+        + (ADMIN_LEVEL_OPTIONS.length ? ADMIN_LEVEL_OPTIONS : [[1,'Non-member'],[2,'Member'],[3,'Veteran'],[4,'Elder'],[5,'Coleader'],[6,'Superadmin']])
+            .map(function(o){ return '<option value="' + o[0] + '"' + (o[0]===u.admin_level?' selected':'') + '>' + esc(o[1]) + '</option>'; }).join('')
+        + '</select>'
+      : (u.status === 'Admin' ? '<span style="color:var(--accent); font-weight:bold;" title="Set via MASTER_ADMIN_ID / assigned Superadmin -- always full access.">Superadmin</span>' : '');
     // idea: "connect the discord id with any information like their name or
     // picture" -- avatar_url is computed server-side (discord_avatar_url() in
     // web_routes.py) from the avatar hash Discord's OAuth response already
@@ -2931,13 +3075,17 @@ function renderUserRows(users) {
       onboardingCell = '<span title="' + esc(title) + '" style="cursor:help; color:' + (done===steps.length?'var(--ok)':'var(--dim)') + ';">' + done + '/' + steps.length + '</span>';
     }
     // Actions: Edit is always available (fixes a stale/wrong cr_tag on any
-    // row, linked or not); Delete is only offered for genuinely unconnected
-    // entries (never linked a CR account -- is_linked is false) since those
-    // are unambiguously safe to remove, whereas a linked account might still
-    // be a real officer/admin identity worth keeping even if its clan rank
-    // shows "—" because the tag is stale.
+    // row, linked or not). Delete used to only be offered for unconnected
+    // entries; task #174 explicitly asked to be able to delete ANY row (the
+    // backend route already allowed it -- this was purely a frontend
+    // restriction), so it's now always shown, with a stronger confirm prompt
+    // for linked/admin rows since those are more likely to be a real identity
+    // worth double-checking before removing.
+    var deleteWarning = u.is_linked
+      ? 'Delete the user entry for "' + (u.discord_username||'') + '" (linked to ' + (u.name||'') + ', ' + u.discord_id + ')? This removes their site-access record and Discord link entirely -- it does NOT touch their Clash Royale profile or clan membership, but they will need to re-link to use the site again.'
+      : 'Delete the user entry for "' + (u.discord_username||'') + '" (' + u.discord_id + ')? This removes their site-access record entirely.';
     var actionsCell = '<button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px;" onclick="editUserLink(' + JSON.stringify(u.discord_id) + ', ' + JSON.stringify(u.cr_tag) + ')">✏️ Edit</button>'
-      + (!u.is_linked ? ' <button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px; border-color:var(--err); color:var(--err);" onclick="deleteUserEntry(' + JSON.stringify(u.discord_id) + ', ' + JSON.stringify(u.discord_username) + ')">🗑️ Delete</button>' : '');
+      + ' <button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px; border-color:var(--err); color:var(--err);" onclick="deleteUserEntry(' + JSON.stringify(u.discord_id) + ', ' + JSON.stringify(deleteWarning) + ')">🗑️ Delete</button>';
     return '<tr><td><a href="/player/' + esc(u.cr_tag) + '" style="color:var(--accent); text-decoration:none;">' + esc(u.name) + '</a></td>'
       + '<td style="white-space:nowrap;">' + discordCell + '</td>'
       + '<td>' + rolesCell + '</td>'
@@ -2958,8 +3106,8 @@ function editUserLink(discordId, currentTag) {
     .then(function(){ toast('User link updated.', 'ok'); loadUsers(); })
     .catch(function(e){ toast('Failed to update link: ' + e.message, 'err'); });
 }
-function deleteUserEntry(discordId, label) {
-  if (!confirm('Delete the user entry for "' + label + '" (' + discordId + ')? This removes their site-access record entirely (not their Clash Royale profile).')) return;
+function deleteUserEntry(discordId, warningMessage) {
+  if (!confirm(warningMessage || ('Delete the user entry for ' + discordId + '? This removes their site-access record entirely.'))) return;
   fetch('/admin/api/users/delete', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ discord_id: discordId }),
@@ -2967,12 +3115,70 @@ function deleteUserEntry(discordId, label) {
     .then(function(){ toast('User entry deleted.', 'ok'); loadUsers(); })
     .catch(function(e){ toast('Failed to delete: ' + e.message, 'err'); });
 }
-function setUserTier(discordId, tier) {
+// Task #173: sends the numeric admin level (1-6) instead of the old
+// "full"/"analytics_only" tier string; the backend still accepts the legacy
+// string too, but the UI now always speaks levels.
+function setUserTier(discordId, level) {
   fetch('/admin/api/users/tier', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ discord_id: discordId, tier: tier })
-  }).then(function(r){ if(!r.ok) throw new Error(); toast('Permission tier updated.', 'ok'); })
-    .catch(function(){ toast('Failed to update tier (full-admin only).', 'err'); });
+    body: JSON.stringify({ discord_id: discordId, level: parseInt(level, 10) })
+  }).then(function(r){ if(!r.ok) throw new Error(); toast('Admin level updated.', 'ok'); })
+    .catch(function(){ toast('Failed to update level (full-admin only).', 'err'); });
+}
+
+// ── Permission matrix (task #173) ───────────────────────────────────────────
+var PERMISSION_CAPABILITY_LABELS = {
+  view_admin_panel:         'View the admin panel at all',
+  roster_member_actions:    'Roster tab member actions (nudge / DM)',
+  manage_polls:             'Create / manage clan polls',
+  war_monitor_actions:      'War Monitor actions',
+  edit_roster_card_text:    'Edit custom text on roster.html cards',
+  manage_backups:           'Trigger / manage DB backups',
+  manage_settings:          'Change Settings tab values',
+  manage_user_access:       'Change admin levels / edit user links',
+  edit_war_fame_table:      'Edit the war-fame data table on the roster page',
+  manage_permission_matrix: 'Edit this permission matrix',
+  hide_roster_cards:        'Hide roster.html cards from non-admins',
+};
+var _permissionMatrixCanEdit = false;
+async function loadPermissionMatrix() {
+  var body = document.getElementById('permission-matrix-body');
+  try {
+    const res = await fetch('/admin/api/permission-matrix');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    ADMIN_LEVEL_OPTIONS = (d.levels || []).map(function(l){ return [l.level, l.label]; });
+    _permissionMatrixCanEdit = (d.my_level || 0) >= 6;
+    if (!body) return; // called before the Settings tab markup exists yet is fine, table just won't render
+    var caps = d.capabilities || {};
+    var keys = Object.keys(caps).sort(function(a,b){ return caps[a] - caps[b] || a.localeCompare(b); });
+    body.innerHTML = keys.map(function(key){
+      var label = PERMISSION_CAPABILITY_LABELS[key] || key;
+      var options = ADMIN_LEVEL_OPTIONS.map(function(o){
+        return '<option value="' + o[0] + '"' + (o[0]===caps[key]?' selected':'') + '>' + o[0] + ' — ' + esc(o[1]) + '</option>';
+      }).join('');
+      return '<tr><td>' + esc(label) + '</td><td>'
+        + '<select class="form-select" style="font-size:12px;" data-capability="' + esc(key) + '" ' + (_permissionMatrixCanEdit ? '' : 'disabled') + '>' + options + '</select>'
+        + '</td></tr>';
+    }).join('') || '<tr><td colspan="2" style="text-align:center; color:var(--dim);">No capabilities configured.</td></tr>';
+    var saveBtn = document.getElementById('permission-matrix-save-btn');
+    if (saveBtn) saveBtn.style.display = _permissionMatrixCanEdit ? '' : 'none';
+    var msg = document.getElementById('permission-matrix-msg');
+    if (msg) msg.textContent = _permissionMatrixCanEdit ? '' : 'Read-only — only Superadmins can change these.';
+  } catch (e) {
+    if (body) body.innerHTML = '<tr><td colspan="2" style="text-align:center; color:#e74c3c;">Failed to load.</td></tr>';
+  }
+}
+function savePermissionMatrix() {
+  var selects = document.querySelectorAll('#permission-matrix-body select[data-capability]');
+  var capabilities = {};
+  selects.forEach(function(sel){ capabilities[sel.getAttribute('data-capability')] = parseInt(sel.value, 10); });
+  fetch('/admin/api/permission-matrix', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ capabilities: capabilities })
+  }).then(function(r){ return r.json().then(function(d){ if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status)); }); })
+    .then(function(){ toast('Permission matrix saved.', 'ok'); })
+    .catch(function(e){ toast('Failed to save: ' + e.message, 'err'); });
 }
 function filterUsers() {
   var q = (document.getElementById('users-search').value || '').toLowerCase();
@@ -3570,6 +3776,53 @@ async function confirmCleanupBattleHistoryNulls() {
   }
 }
 
+// ── Task #170: self-healing — pending_actions queue health ──────────────────────
+async function loadPendingActionsHealth() {
+  var pill = document.getElementById('pill-pending-health');
+  var body = document.getElementById('pending-actions-health-body');
+  if (!body) return;
+  try {
+    var res = await fetch('/admin/api/pending-actions/health');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var d = await res.json();
+    var healthy = d.stuck_count === 0 && d.failed_count === 0;
+    if (pill) { pill.textContent = healthy ? 'HEALTHY' : 'ATTENTION'; pill.className = 'status-pill ' + (healthy ? 'pill-ok' : 'pill-err'); }
+    var lines = [
+      d.unprocessed_count + ' unprocessed right now (normal if the bot is mid-cycle)',
+      d.stuck_count + ' stuck over 1 hour' + (d.stuck_count ? ' — oldest: "' + esc(d.oldest_stuck_kind || '?') + '" since ' + esc(String(d.oldest_stuck_at||'').slice(0,19).replace('T',' ')) : ''),
+      d.failed_count + ' previously failed (have an error recorded)',
+    ];
+    body.innerHTML = lines.map(function(l){ return '<div>' + l + '</div>'; }).join('');
+  } catch(e) {
+    body.innerHTML = '<span style="color:var(--err)">Error: ' + esc(e.message) + '</span>';
+    if (pill) { pill.textContent = 'ERROR'; pill.className = 'status-pill pill-err'; }
+  }
+}
+
+async function confirmClearStuckPendingActions() {
+  if (!confirm('Force-resolve every pending action stuck unprocessed for over an hour? They\'ll be marked processed with a note instead of deleted, but whatever they were supposed to do (a DM, a post, etc.) will NOT happen.')) return;
+  try {
+    var res = await fetch('/admin/api/pending-actions/clear-stuck', { method: 'POST' });
+    var data = await res.json();
+    if (res.status === 401 && data.error === 'reauth_required') { return; }
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    toast('Force-cleared ' + data.cleared_count + ' stuck action(s).', 'ok');
+    loadPendingActionsHealth();
+  } catch(e) { toast('Clear failed: ' + e.message, 'err'); }
+}
+
+async function retryFailedPendingActions() {
+  if (!confirm('Re-queue every previously-failed pending action so the bot retries them on its next pass? Only do this after fixing whatever caused the failure (bad channel ID, etc.) — otherwise they\'ll likely just fail again.')) return;
+  try {
+    var res = await fetch('/admin/api/pending-actions/retry-failed', { method: 'POST' });
+    var data = await res.json();
+    if (res.status === 401 && data.error === 'reauth_required') { return; }
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    toast('Re-queued ' + data.retried_count + ' action(s) for retry.', 'ok');
+    loadPendingActionsHealth();
+  } catch(e) { toast('Retry failed: ' + e.message, 'err'); }
+}
+
 // ── UI Editor ──────────────────────────────────────────────────────────────────
 function _editorSetButtons(has) {
   ['btn-preview','btn-deploy','btn-reset','btn-diff','btn-versions'].forEach(function(id){ var el=document.getElementById(id); if(el) el.disabled=!has; });
@@ -3659,6 +3912,10 @@ document.addEventListener('DOMContentLoaded', function(){
   loadConfigBackups();
   loadDbBackups();
   loadApiKeys();
+  // Task #173: loaded up front (not just when Settings/Users tabs open) so
+  // ADMIN_LEVEL_OPTIONS is already populated the first time the User Access
+  // table renders its level pickers.
+  loadPermissionMatrix();
 });
 
 async function deployTemplate() {
@@ -4007,7 +4264,7 @@ function renderRoster(members) {
       + '<input type="checkbox" class="roster-bulk-check" data-tag="' + esc(tag) + '" onclick="event.stopPropagation(); updateBulkBar();" style="margin-right:8px;">'
       + '<div class="roster-name">'
       + '<a href="/player/' + esc(cleanTag) + '" onclick="event.stopPropagation()" style="' + nameStyle + '">'
-      + esc(m.name || 'Unknown') + '</a>'
+      + (m.name ? crName(m.name) : 'Unknown') + '</a>'
       + (adminBadge ? ' ' + adminBadge : '') + (trialBadge ? ' ' + trialBadge : '') + (trophyWarnBadge ? ' ' + trophyWarnBadge : '')
       + '<div style="font-size:11px; color:var(--dim); font-family:var(--font-mono); margin-top:2px;">' + esc(tag) + '</div>'
       + (dayPips || '')

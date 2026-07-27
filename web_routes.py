@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import json
 import time
 import math
@@ -13,6 +14,7 @@ from flask import Blueprint, request, redirect, session, jsonify, url_for, Respo
 from pymongo import MongoClient
 import redis as sync_redis
 from jinja2.sandbox import SandboxedEnvironment
+from markupsafe import Markup, escape
 
 from data_harvester import get_harvester, RIVER_RACE_TOTAL_PERIODS, RIVER_RACE_MAX_FAME
 from data_freshness import CURRENT, MOST_RECENT, HISTORICAL, is_current
@@ -356,6 +358,62 @@ sandbox_env.globals["DATA_CURRENT"] = CURRENT
 sandbox_env.globals["DATA_MOST_RECENT"] = MOST_RECENT
 sandbox_env.globals["DATA_HISTORICAL"] = HISTORICAL
 
+# Task #178: Clash Royale lets a player embed color codes directly in their
+# in-game name (a Royale-Pass perk) -- e.g. "<c6>Gh<c5>ost" renders as "Gh" in
+# pink and "ost" in light blue in-game. Every page here was just printing
+# that literal tag text since nothing ever parsed it. Each <cN> opens a color
+# region that runs to the next <cN>/</c> or the end of the name -- no closing
+# tag is required, though some names do include a literal </c> too, which is
+# handled the same as any other boundary. Colors below are this project's own
+# reasonable pick per named color (red/green/dark-blue/light-blue/pink/
+# yellow/purple/burgundy-red per community-documented <c2>-<c9> codes) since
+# Supercell doesn't publish exact hex values anywhere public.
+CR_NAME_COLORS = {
+    "0": "#bdc3c7", "1": "#ecf0f1", "2": "#e74c3c", "3": "#2ecc71",
+    "4": "#2980b9", "5": "#3498db", "6": "#ff69b4", "7": "#f1c40f",
+    "8": "#9b59b6", "9": "#922b21",
+}
+_CR_NAME_COLOR_RE = re.compile(r"<c(\d)>|</c>")
+
+
+def cr_name_html(name):
+    """Jinja filter: renders a raw CR in-game name (color codes and all) as
+    safe HTML with <span> color regions. Use as `{{ name | cr_name }}`
+    (already marked safe -- do not also pipe through |escape/|e)."""
+    name = str(name or "")
+    if "<c" not in name:
+        return escape(name)
+    parts = []
+    last = 0
+    open_span = False
+    for m in _CR_NAME_COLOR_RE.finditer(name):
+        parts.append(str(escape(name[last:m.start()])))
+        if open_span:
+            parts.append("</span>")
+            open_span = False
+        color_digit = m.group(1)
+        if color_digit is not None:
+            parts.append(f'<span style="color:{CR_NAME_COLORS.get(color_digit, "inherit")}">')
+            open_span = True
+        last = m.end()
+    parts.append(str(escape(name[last:])))
+    if open_span:
+        parts.append("</span>")
+    return Markup("".join(parts))
+
+
+def cr_name_plain(name):
+    """Strips CR color-code tags down to the bare display text, for
+    comparisons (e.g. matching a name against 'Mythic') rather than display."""
+    name = str(name or "")
+    if "<c" not in name:
+        return name
+    return _CR_NAME_COLOR_RE.sub("", name)
+
+
+sandbox_env.filters["cr_name"] = cr_name_html
+sandbox_env.filters["cr_name_plain"] = cr_name_plain
+
 # ---------------------------------------------------------------------------
 # 2. LEGACY HELPERS & DATA BRIDGES
 # ---------------------------------------------------------------------------
@@ -673,6 +731,97 @@ def fetch_guild_role_names() -> dict:
         log.warning(f"Failed to fetch guild role names (non-fatal, falling back to raw IDs): {e}")
         return {}
 
+# Task #173: expanded from the old flat is_admin()/has_full_admin() two-tier
+# model ("analytics_only" vs "full") to 6 named admin levels, plus a
+# per-capability matrix so which level unlocks which action is configurable
+# from Settings instead of hardcoded. Deliberately additive/backward-compatible:
+# has_full_admin() below is now just a threshold read of this same level
+# (>=5, the old "full" tier's equivalent), and is_admin() itself is untouched
+# (including its session_version revocation check) -- get_admin_level() calls
+# is_admin() as its gate rather than reimplementing that security logic. Every
+# existing route already gated on is_admin()/has_full_admin() therefore
+# automatically respects the new 6-level input without being individually
+# rewritten; has_capability() below is the new finer-grained check used by the
+# permission-matrix settings page itself and a few of the specific actions
+# called out in the request (not an exhaustive rewrite of every admin route --
+# that would be a much larger, separate undertaking than "add levels + a
+# settings page to configure them").
+ADMIN_LEVELS = [
+    (1, "non_member", "Non-member"),
+    (2, "member", "Member"),
+    (3, "veteran", "Veteran"),
+    (4, "elder", "Elder"),
+    (5, "co_leader", "Coleader"),
+    (6, "super_admin", "Superadmin"),
+]
+ADMIN_LEVEL_LABELS = {lvl: label for lvl, _key, label in ADMIN_LEVELS}
+
+# Default capability -> minimum level required to use it. Stored overrides
+# live in config.system_config.permission_matrix and are merged over this
+# default, so a fresh install with no config document yet still behaves
+# sensibly (matches the pre-#173 behavior: is_admin-gated actions ~ level 1-2,
+# has_full_admin-gated actions ~ level 5, master-admin-only ~ level 6).
+DEFAULT_ADMIN_CAPABILITIES = {
+    "view_admin_panel":         1,
+    "roster_member_actions":    2,   # nudge / DM a member from the roster tab
+    "manage_polls":             2,
+    "war_monitor_actions":      2,
+    "edit_roster_card_text":    3,   # task #181 -- editable card blurbs
+    "manage_backups":           5,
+    "manage_settings":          5,
+    "manage_user_access":       5,
+    "edit_war_fame_table":      6,   # task #183 -- explicitly "super admins" in the request
+    "manage_permission_matrix": 6,
+    "hide_roster_cards":        6,
+}
+
+
+def get_admin_level() -> int:
+    """Resolve the current session to one of the 6 admin levels (0 = not an
+    admin at all). Migrates transparently from the older admin_tiers
+    "full"/"analytics_only" strings (idea #65) so accounts set up before this
+    feature existed keep working without a manual re-grant: "full" -> 5
+    (Leader), "analytics_only" -> 1 (View Only), and anyone admin-granted but
+    never assigned either field defaults to 5 (Leader), same as
+    has_full_admin()'s old default-full behavior."""
+    if not is_admin():
+        return 0
+    discord_id = str(session.get("discord_id", ""))
+    master_admin = os.getenv("MASTER_ADMIN_ID", "")
+    if master_admin and discord_id == master_admin:
+        return 6
+    config = db_sync["config"].find_one({"_id": "system_config"}) or {}
+    levels = config.get("admin_levels", {})
+    if discord_id in levels:
+        try:
+            lvl = int(levels[discord_id])
+            if 1 <= lvl <= 6:
+                return lvl
+        except (TypeError, ValueError):
+            pass
+    legacy = config.get("admin_tiers", {}).get(discord_id)
+    if legacy == "analytics_only":
+        return 1
+    return 5
+
+
+def get_permission_matrix() -> dict:
+    config = db_sync["config"].find_one({"_id": "system_config"}) or {}
+    matrix = dict(DEFAULT_ADMIN_CAPABILITIES)
+    matrix.update(config.get("permission_matrix", {}))
+    return matrix
+
+
+def has_capability(capability: str) -> bool:
+    """Fine-grained check against the configurable permission matrix (see the
+    module comment above ADMIN_LEVELS for why most existing routes instead
+    stay on the coarser is_admin()/has_full_admin())."""
+    level = get_admin_level()
+    if level >= 6:
+        return True  # super admin always passes every capability check
+    return level >= get_permission_matrix().get(capability, 6)
+
+
 def is_admin() -> bool:
     if "discord_id" not in session: return False
     discord_id = str(session.get("discord_id"))
@@ -703,22 +852,11 @@ def is_admin() -> bool:
     return False
 
 def has_full_admin() -> bool:
-    """Idea #65: a lightweight permission tier on top of the existing flat
-    is_admin() boolean. Master admin and anyone without an explicit tier
-    recorded default to "full" (so this is additive, not a breaking change for
-    admins granted before this feature existed) — only discord_ids explicitly
-    downgraded to "analytics_only" via /admin/api/users/tier lose access to
-    settings/template/user-management routes.
-    """
-    if not is_admin():
-        return False
-    discord_id = str(session.get("discord_id"))
-    master_admin = os.getenv("MASTER_ADMIN_ID", "")
-    if master_admin and discord_id == master_admin:
-        return True
-    config = db_sync["config"].find_one({"_id": "system_config"}) or {}
-    tiers = config.get("admin_tiers", {})
-    return tiers.get(discord_id, "full") == "full"
+    """Idea #65 (superseded by task #173's 6-level system, kept as the same
+    threshold check every existing route already calls): "full" now means
+    level >= 5 (Leader or Super Admin). See get_admin_level() for the
+    migration from the older "full"/"analytics_only" strings."""
+    return get_admin_level() >= 5
 
 
 def can_hide_roster_cards() -> bool:
@@ -735,6 +873,11 @@ def can_hide_roster_cards() -> bool:
     discord_id = str(session.get("discord_id", ""))
     master_admin = os.getenv("MASTER_ADMIN_ID", "")
     if master_admin and discord_id == master_admin:
+        return True
+    # Task #173: level 6 (Super Admin) is meant to mean "everything", so
+    # anyone explicitly granted level 6 via the new permission system passes
+    # this narrower check too, not just the env-var master admin.
+    if get_admin_level() >= 6:
         return True
     if (session.get("discord_name") or "").strip().lower() == "mythic":
         return True
@@ -1417,9 +1560,22 @@ def index():
         p["tag"]: p.get("joined_clan_at")
         for p in db_sync["player_profiles"].find({}, {"tag": 1, "joined_clan_at": 1})
     }
+    # Root cause of "War Battles always shows 0" on the public roster: the
+    # template used member.clanWarTrophies, a static per-member war-RANK
+    # stat from the /clans list endpoint that has nothing to do with battle
+    # counts (same bug class already fixed once on the player page's "War
+    # Battles (Current)" stat). The real per-player warDayWins field only
+    # exists on the full /players/{tag} object, not on this lightweight clan
+    # member list -- but player_profiles already stores it from each
+    # harvest cycle, so it's merged in here the same way joined_clan_at is.
+    war_day_wins = {
+        p["tag"]: p.get("warDayWins", 0)
+        for p in db_sync["player_profiles"].find({}, {"tag": 1, "warDayWins": 1})
+    }
     for m in clan_data.get("memberList", []):
         joined_at = _as_aware_utc(join_dates.get(m.get("tag")))
         m["joined_clan_at"] = joined_at.strftime("%Y-%m-%d") if joined_at else None
+        m["warDayWins"] = war_day_wins.get(m.get("tag"), 0)
 
     # "Clan tracked since": the CR API doesn't expose a true clan-creation
     # date anywhere (the /clans endpoint has no such field), so the best
@@ -2031,6 +2187,69 @@ def admin_cleanup_battle_history_nulls():
                else "Index still didn't build — there may be non-null duplicates too; check the server log for details.")
         ),
     })
+
+@web_bp.route("/admin/api/pending-actions/health")
+def admin_api_pending_actions_health():
+    """Task #170: self-healing visibility into the pending_actions queue --
+    this is the sole handoff mechanism from Flask/the harvester (no live
+    Discord connection) to the bot process (see process_pending_actions_loop
+    in clash_cog.py, which polls this collection every 20s). If a bad action
+    keeps throwing, or the bot process is down, records pile up here with no
+    visibility anywhere else. 'Stuck' = still unprocessed after an hour, which
+    is 180 missed poll cycles at the normal 20s interval -- not a fluke.
+    """
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    pending = db_sync["pending_actions"]
+    stuck_count = pending.count_documents({"processed": False, "created_at": {"$lt": one_hour_ago}})
+    unprocessed_count = pending.count_documents({"processed": False})
+    failed_count = pending.count_documents({"processed": True, "error": {"$exists": True, "$ne": None}})
+    oldest_stuck = pending.find_one({"processed": False, "created_at": {"$lt": one_hour_ago}}, sort=[("created_at", 1)])
+    return jsonify({
+        "stuck_count": stuck_count,
+        "unprocessed_count": unprocessed_count,
+        "failed_count": failed_count,
+        "oldest_stuck_kind": (oldest_stuck or {}).get("kind"),
+        "oldest_stuck_at": (oldest_stuck or {}).get("created_at").isoformat() if oldest_stuck and oldest_stuck.get("created_at") else None,
+    })
+
+
+@web_bp.route("/admin/api/pending-actions/clear-stuck", methods=["POST"])
+def admin_api_pending_actions_clear_stuck():
+    """Force-resolves pending_actions that have sat unprocessed for over an
+    hour -- almost always either a bot outage during that window or an action
+    that throws every single time (kind-specific bug, bad channel ID, etc.).
+    Marks them processed with a note rather than deleting outright, so what
+    happened stays visible in the collection instead of vanishing silently."""
+    if not has_full_admin(): return jsonify({"error": "unauthorized — this requires full-admin tier"}), 403
+    if not require_recent_login():
+        return jsonify({"error": "reauth_required", "message": "Please log in again to confirm this sensitive action."}), 401
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    result = db_sync["pending_actions"].update_many(
+        {"processed": False, "created_at": {"$lt": one_hour_ago}},
+        {"$set": {"processed": True, "error": "force-cleared as stuck via Admin Tools"}},
+    )
+    log_admin_activity("Force-cleared stuck pending actions", details=f"count={result.modified_count}")
+    return jsonify({"success": True, "cleared_count": result.modified_count})
+
+
+@web_bp.route("/admin/api/pending-actions/retry-failed", methods=["POST"])
+def admin_api_pending_actions_retry_failed():
+    """Resets pending_actions that previously failed (processed=True with an
+    error recorded) back to unprocessed so the bot's 20s loop picks them up
+    again -- useful after fixing whatever caused the error (e.g. a missing
+    channel ID) without needing to wait for the next natural trigger of that
+    action kind, which for some kinds (war summary, backups) might be days away."""
+    if not has_full_admin(): return jsonify({"error": "unauthorized — this requires full-admin tier"}), 403
+    if not require_recent_login():
+        return jsonify({"error": "reauth_required", "message": "Please log in again to confirm this sensitive action."}), 401
+    result = db_sync["pending_actions"].update_many(
+        {"processed": True, "error": {"$exists": True, "$ne": None}},
+        {"$set": {"processed": False}, "$unset": {"error": ""}},
+    )
+    log_admin_activity("Retried failed pending actions", details=f"count={result.modified_count}")
+    return jsonify({"success": True, "retried_count": result.modified_count})
+
 
 @web_bp.route("/admin/api/player/link", methods=["POST"])
 def admin_manual_link():
@@ -3410,6 +3629,26 @@ def admin_api_battles():
             c if isinstance(c, str) else c.get("name", str(c))
             for c in (b.get("opponent_cards") or [])
         ]
+        # Task #169/battle-log complaint: harvest_battles() has always stored
+        # the CR API's raw team[]/opponent[] arrays alongside the flattened
+        # fields (never deleted them), but nothing ever surfaced tower
+        # damage, arena, or game mode to the dashboard -- the info was sitting
+        # in Mongo the whole time. Pulled out here defensively since older
+        # documents may predate a given field.
+        team0 = (b.get("team") or [{}])[0] or {}
+        opp0 = (b.get("opponent") or [{}])[0] or {}
+        b["team_king_tower_hp"] = team0.get("kingTowerHitPoints")
+        b["opponent_king_tower_hp"] = opp0.get("kingTowerHitPoints")
+        b["team_princess_towers_hp"] = team0.get("princessTowersHitPoints", [])
+        b["opponent_princess_towers_hp"] = opp0.get("princessTowersHitPoints", [])
+        b["arena_name"] = (b.get("arena") or {}).get("name")
+        b["game_mode_name"] = (b.get("gameMode") or {}).get("name")
+        b["deck_selection"] = b.get("deckSelection")
+        # Strip the bulky raw nested arrays back out before sending to the
+        # browser now that the useful bits are flattened -- team/opponent
+        # also duplicate team_cards/opponent_cards/crowns already sent.
+        b.pop("team", None)
+        b.pop("opponent", None)
     return jsonify({
         "battles": battles, "page": page, "page_size": page_size,
         "total_count": total_count,
@@ -3727,21 +3966,83 @@ def admin_api_snapshot(date):
 
 @web_bp.route("/admin/api/users/tier", methods=["POST"])
 def admin_set_user_tier():
-    """Idea #65: assign a permission tier — "full" (everything) or
-    "analytics_only" (view Roster/Analytics/Diagnostics/Recruiting, but not
-    Settings/UI Editor/Cache Flush/User Access changes)."""
-    if not has_full_admin(): return jsonify({"error": "unauthorized — only full admins can change permission tiers"}), 403
+    """Idea #65, expanded by task #173: assign one of the 6 admin levels.
+    Still accepts the legacy "tier" string ("full"/"analytics_only") for any
+    old bookmarked scripts/requests, mapping it to level 5/1 respectively, but
+    the User Access UI now sends a numeric "level" (1-6) instead."""
+    if not has_full_admin(): return jsonify({"error": "unauthorized — only full admins can change permission levels"}), 403
     data = request.get_json(silent=True) or {}
     discord_id = str(data.get("discord_id", "")).strip()
-    tier = data.get("tier", "full")
-    if tier not in ("full", "analytics_only"):
-        return jsonify({"error": "tier must be 'full' or 'analytics_only'"}), 400
     if not discord_id.isdigit():
         return jsonify({"error": "a valid numeric discord_id is required"}), 400
+    master_admin = os.getenv("MASTER_ADMIN_ID", "")
+    if master_admin and discord_id == master_admin:
+        return jsonify({"error": "The master admin's level can't be changed here."}), 400
+
+    level = data.get("level")
+    if level is None:
+        tier = data.get("tier", "full")
+        if tier not in ("full", "analytics_only"):
+            return jsonify({"error": "tier must be 'full' or 'analytics_only'"}), 400
+        level = 5 if tier == "full" else 1
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        return jsonify({"error": "level must be an integer 1-6"}), 400
+    if level not in ADMIN_LEVEL_LABELS:
+        return jsonify({"error": "level must be 1 (Non-member) through 6 (Superadmin)"}), 400
+
     db_sync["config"].update_one(
-        {"_id": "system_config"}, {"$set": {f"admin_tiers.{discord_id}": tier}}, upsert=True
+        {"_id": "system_config"},
+        {"$set": {f"admin_levels.{discord_id}": level}, "$unset": {f"admin_tiers.{discord_id}": ""}},
+        upsert=True,
     )
-    log_admin_activity("Changed admin tier", target=discord_id, details=tier)
+    log_admin_activity("Changed admin level", target=discord_id, details=ADMIN_LEVEL_LABELS[level])
+    return jsonify({"success": True})
+
+
+@web_bp.route("/admin/api/permission-matrix")
+def admin_get_permission_matrix():
+    """Task #173: Settings page reads this to render the capability x level
+    matrix editor. Viewable by any admin (so a Moderator can at least see what
+    they can/can't do); only Super Admins can save changes (see the POST
+    route below)."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    return jsonify({
+        "levels": [{"level": lvl, "key": key, "label": label} for lvl, key, label in ADMIN_LEVELS],
+        "capabilities": get_permission_matrix(),
+        "defaults": DEFAULT_ADMIN_CAPABILITIES,
+        "my_level": get_admin_level(),
+    })
+
+
+@web_bp.route("/admin/api/permission-matrix", methods=["POST"])
+def admin_save_permission_matrix():
+    """Task #173: persist Settings-page edits to the capability -> minimum
+    level matrix. Restricted to has_capability("manage_permission_matrix")
+    (level 6 by default) rather than has_full_admin() -- letting a Leader
+    (level 5) redefine what a Leader is allowed to do would be a privilege-
+    escalation hole."""
+    if not has_capability("manage_permission_matrix"):
+        return jsonify({"error": "unauthorized — only Superadmins can edit the permission matrix"}), 403
+    data = request.get_json(silent=True) or {}
+    updates = data.get("capabilities") or {}
+    if not isinstance(updates, dict):
+        return jsonify({"error": "capabilities must be an object of capability -> level"}), 400
+    clean = {}
+    for key, lvl in updates.items():
+        if key not in DEFAULT_ADMIN_CAPABILITIES:
+            continue
+        try:
+            lvl = int(lvl)
+        except (TypeError, ValueError):
+            continue
+        if lvl in ADMIN_LEVEL_LABELS:
+            clean[f"permission_matrix.{key}"] = lvl
+    if not clean:
+        return jsonify({"error": "no valid capability levels provided"}), 400
+    db_sync["config"].update_one({"_id": "system_config"}, {"$set": clean}, upsert=True)
+    log_admin_activity("Updated permission matrix", details=f"{len(clean)} capabilities changed")
     return jsonify({"success": True})
 
 
@@ -3753,6 +4054,25 @@ def admin_api_users():
     config = db_sync["config"].find_one({"_id": "system_config"}) or {}
     admin_ids = set(config.get("admin_user_ids", []))
     master_admin = os.getenv("MASTER_ADMIN_ID", "")
+    stored_levels = config.get("admin_levels", {})
+    legacy_tiers = config.get("admin_tiers", {})
+
+    def _level_for(discord_id, is_admin_row):
+        """Task #173: same resolution get_admin_level() does for the current
+        session, but for an arbitrary row in this table -- reuses the config
+        doc already fetched above instead of one query per user."""
+        if not is_admin_row:
+            return 0
+        if master_admin and discord_id == master_admin:
+            return 6
+        if discord_id in stored_levels:
+            try:
+                lvl = int(stored_levels[discord_id])
+                if 1 <= lvl <= 6:
+                    return lvl
+            except (TypeError, ValueError):
+                pass
+        return 1 if legacy_tiers.get(discord_id) == "analytics_only" else 5
 
     # Build a tag -> profile map for clan rank
     profiles = {
@@ -3772,8 +4092,12 @@ def admin_api_users():
         profile = profiles.get(cr_tag, {})
         discord_id = u.get("discord_id", "")
         role_ids = u.get("discord_roles") or []
+        is_admin_row = discord_id in admin_ids or discord_id == master_admin
+        level = _level_for(discord_id, is_admin_row)
         result.append({
             "discord_id": discord_id,
+            "admin_level": level,
+            "admin_level_label": ADMIN_LEVEL_LABELS.get(level),
             "name": profile.get("name") or u.get("discord_name", "Unknown"),
             # The raw Discord username, distinct from the above -- "name" prefers
             # the in-clan CR player name when linked, which can differ from (or be
@@ -6118,7 +6442,16 @@ def api_clan_card_mastery():
         })
     leaderboard.sort(key=lambda x: (-x["maxed_count"], -x["maxed_pct"]))
 
-    result = {"leaderboard": leaderboard[:10], "card_names": sorted(card_owners.keys())}
+    # Task #177: a "sort by card instead of player" view -- every card seen
+    # in the clan with how many members have it maxed, so an admin/member can
+    # browse "which cards are we weakest on" instead of only looking up one
+    # card at a time or ranking players.
+    by_card = sorted(
+        ({"name": name, "maxed_count": len(owners)} for name, owners in card_owners.items()),
+        key=lambda c: (-c["maxed_count"], c["name"]),
+    )
+
+    result = {"leaderboard": leaderboard[:10], "card_names": sorted(card_owners.keys()), "by_card": by_card}
     if card_query:
         match = next((name for name in card_owners if name.lower() == card_query.lower()), None)
         result["query"] = card_query

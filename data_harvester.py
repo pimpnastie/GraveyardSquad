@@ -439,13 +439,26 @@ class DataHarvester:
                 new_entry = self._lb_entry(top.get("tag"), top.get("name"), top.get("fame", 0), f"{top.get('fame', 0):,} fame")
         categories["war_fame_leader"] = self._merge_leaderboard_entry(existing_categories, "war_fame_leader", new_entry, now)
 
-        # 6. Perfect War Attendance (all 4 war-day decks used, current war).
-        perfect = [p for p in war_participants if p.get("decksUsedToday", p.get("decksUsed", 0)) >= 4]
+        # 6. Perfect War Attendance -- task #179: this used to only ever look at
+        # the CURRENT war and, among members already 4/4 that race, break ties
+        # by fame -- so the "leader" reset every single race and never actually
+        # accumulated into a record. Changed to scan the last 50 tracked war
+        # races (same cap/pattern compute_clan_legends() uses for most_war_mvps)
+        # and count how many times each member has gone a full 4/4, surfacing
+        # whoever's all-time total is highest.
+        perfect_races = list(self.col_war_history.find({}, {"data.clan.participants": 1}).sort("data.seasonId", -1).limit(50))
+        perfect_counts = {}
+        for race in perfect_races:
+            participants = ((race.get("data", {}).get("clan") or {}).get("participants")) or []
+            for p in participants:
+                if p.get("decksUsed", p.get("decksUsedToday", 0)) >= 4:
+                    key = (p.get("tag"), p.get("name"))
+                    perfect_counts[key] = perfect_counts.get(key, 0) + 1
+        most_perfect = max(perfect_counts.items(), key=lambda kv: kv[1], default=((None, None), 0))
         new_entry = None
-        if perfect:
-            # Multiple members can qualify; surface whichever has the most fame among them.
-            top = max(perfect, key=lambda p: p.get("fame", 0) or 0)
-            new_entry = self._lb_entry(top.get("tag"), top.get("name"), 1, "4/4 war decks used")
+        if most_perfect[0][0]:
+            new_entry = self._lb_entry(most_perfect[0][0], most_perfect[0][1], most_perfect[1],
+                                        f"4/4 war decks used {most_perfect[1]}x")
         categories["perfect_war_attendance"] = self._merge_leaderboard_entry(existing_categories, "perfect_war_attendance", new_entry, now)
 
         # 7-9: battle_history-derived categories over the last WEEKLY_LOOKBACK_DAYS.
@@ -756,18 +769,42 @@ class DataHarvester:
         self.col_config.update_one({"_id": "weekly_spotlights"}, {"$set": doc}, upsert=True)
 
     def compute_clan_legends(self):
-        """Idea #110: an all-time 'legends' record book, separate from the
-        current-week Hall of Fame already shown on the roster page. Deliberately
-        avoids any per-member battle-log scan so this stays cheap to run every
-        harvest cycle regardless of how much history has piled up — the
-        "most war MVPs" record instead reuses the already-stored war_history
-        race docs (capped at the last 50 races)."""
-        profiles = list(self.col_profiles.find({}, {"tag": 1, "name": 1, "bestTrophies": 1, "donations": 1, "joined_clan_at": 1}))
+        """Idea #110 (expanded, task #176): an all-time 'legends' record book,
+        separate from the current-week Hall of Fame already shown on the roster
+        page. Originally only computed 4 categories (and roster.html's
+        loadLegends() only ever rendered 3 of those — top_season_donator was
+        silently dropped, fixed here by no longer being an orphan field).
+        Expanded to 11 categories total (comfortably over the "at least 10
+        distinct superlatives" ask) by pulling in fields the harvester already
+        stores on every player_profiles doc (lifetime_donations_banked,
+        warDayWins, threeCrownWins, expLevel, cards[]) plus one full pass over
+        battle_history for the two all-time battle-log categories (win streak,
+        battles logged). That pass is heavier than the rest of this function
+        (which deliberately avoids per-member battle-log scans elsewhere), but
+        this only runs once per harvest cycle, not per page load."""
+        profiles = list(self.col_profiles.find({}, {
+            "tag": 1, "name": 1, "bestTrophies": 1, "donations": 1, "joined_clan_at": 1,
+            "lifetime_donations_banked": 1, "warDayWins": 1, "threeCrownWins": 1,
+            "expLevel": 1, "cards": 1,
+        }))
         if not profiles:
             return
-        trophy_legend   = max(profiles, key=lambda p: p.get("bestTrophies", 0))
-        donation_legend = max(profiles, key=lambda p: p.get("donations", 0))
-        veteran = min((p for p in profiles if p.get("joined_clan_at")), key=lambda p: p["joined_clan_at"], default=None)
+        trophy_legend    = max(profiles, key=lambda p: p.get("bestTrophies", 0) or 0)
+        donation_legend  = max(profiles, key=lambda p: p.get("donations", 0) or 0)
+        veteran          = min((p for p in profiles if p.get("joined_clan_at")), key=lambda p: p["joined_clan_at"], default=None)
+        lifetime_donator = max(profiles, key=lambda p: p.get("lifetime_donations_banked", 0) or 0)
+        war_wins_legend  = max(profiles, key=lambda p: p.get("warDayWins", 0) or 0)
+        crown_legend     = max(profiles, key=lambda p: p.get("threeCrownWins", 0) or 0)
+        level_legend     = max(profiles, key=lambda p: p.get("expLevel", 0) or 0)
+
+        # Absolute level 16, matching MAX_CARD_LEVEL in web_routes.py (task #154
+        # changed "maxed" to mean the true max card level, not account-relative).
+        _MAX_CARD_LEVEL = 16
+        cards_legend, cards_legend_maxed = None, -1
+        for p in profiles:
+            maxed = sum(1 for c in (p.get("cards") or []) if (c.get("level") or 0) >= _MAX_CARD_LEVEL)
+            if maxed > cards_legend_maxed:
+                cards_legend, cards_legend_maxed = p, maxed
 
         races = list(self.col_war_history.find({}, {"data.clan.participants": 1}).sort("data.seasonId", -1).limit(50))
         mvp_counts = {}
@@ -780,6 +817,24 @@ class DataHarvester:
             mvp_counts[key] = mvp_counts.get(key, 0) + 1
         most_mvp = max(mvp_counts.items(), key=lambda kv: kv[1], default=((None, None), 0))
 
+        # All-time win streak + battles-logged: one pass over the whole
+        # battle_history collection grouped by player_tag (note: battle_history
+        # stores tags WITHOUT the "#", unlike player_profiles).
+        name_by_clean_tag = {(p.get("tag") or "").lstrip("#"): p.get("name") for p in profiles}
+        battle_counts, streak_running, streak_best = {}, {}, {}
+        for b in self.col_battles.find({}, {"player_tag": 1, "result": 1, "battle_time": 1}).sort("battle_time", 1):
+            tag = b.get("player_tag")
+            if not tag:
+                continue
+            battle_counts[tag] = battle_counts.get(tag, 0) + 1
+            if b.get("result") == "win":
+                streak_running[tag] = streak_running.get(tag, 0) + 1
+                streak_best[tag] = max(streak_best.get(tag, 0), streak_running[tag])
+            else:
+                streak_running[tag] = 0
+        streak_legend = max(streak_best.items(), key=lambda kv: kv[1], default=(None, 0))
+        battles_legend = max(battle_counts.items(), key=lambda kv: kv[1], default=(None, 0))
+
         doc = {
             "computed_at": datetime.now(timezone.utc),
             "highest_trophies_ever": {"tag": trophy_legend.get("tag"), "name": trophy_legend.get("name"), "value": trophy_legend.get("bestTrophies", 0)},
@@ -789,6 +844,13 @@ class DataHarvester:
             "top_season_donator": {"tag": donation_legend.get("tag"), "name": donation_legend.get("name"), "value": donation_legend.get("donations", 0)},
             "most_war_mvps": {"tag": most_mvp[0][0], "name": most_mvp[0][1], "count": most_mvp[1]} if most_mvp[0][0] else None,
             "clan_veteran": {"tag": veteran.get("tag"), "name": veteran.get("name"), "since": veteran.get("joined_clan_at")} if veteran else None,
+            "top_lifetime_donator": {"tag": lifetime_donator.get("tag"), "name": lifetime_donator.get("name"), "value": lifetime_donator.get("lifetime_donations_banked", 0) or 0},
+            "most_war_day_wins": {"tag": war_wins_legend.get("tag"), "name": war_wins_legend.get("name"), "value": war_wins_legend.get("warDayWins", 0) or 0},
+            "most_three_crown_wins": {"tag": crown_legend.get("tag"), "name": crown_legend.get("name"), "value": crown_legend.get("threeCrownWins", 0) or 0},
+            "highest_level": {"tag": level_legend.get("tag"), "name": level_legend.get("name"), "value": level_legend.get("expLevel", 0) or 0},
+            "most_cards_maxed": {"tag": cards_legend.get("tag"), "name": cards_legend.get("name"), "value": cards_legend_maxed} if cards_legend and cards_legend_maxed > 0 else None,
+            "longest_win_streak_ever": {"tag": f"#{streak_legend[0]}", "name": name_by_clean_tag.get(streak_legend[0]), "value": streak_legend[1]} if streak_legend[0] else None,
+            "most_battles_logged": {"tag": f"#{battles_legend[0]}", "name": name_by_clean_tag.get(battles_legend[0]), "value": battles_legend[1]} if battles_legend[0] else None,
         }
         self.col_config.update_one({"_id": "clan_legends"}, {"$set": doc}, upsert=True)
 
