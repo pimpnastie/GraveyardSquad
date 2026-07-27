@@ -297,7 +297,13 @@ def _handle_500(e):
     return _ERROR_PAGE.format(title="Server Error", code="500", message="Something broke on our end. It's been logged — try again shortly."), 500
 
 CLAN_TAG = os.getenv("CLAN_TAG", "9LVY89UP").strip().upper().replace("#", "")
-MAX_CARD_LEVEL = int(os.getenv("MAX_CARD_LEVEL", 15))
+# Supercell has stated level 16 is the permanent ceiling -- no further card
+# level increases planned. "Maxed" below is therefore checked against this
+# absolute level, not each card's own account-relative `maxLevel` (which is
+# gated by the player's current King Tower level, not the card's true cap) --
+# a level-16 card is also free to donate, which is why this threshold matters
+# for donation-request logic too, not just the maxed-count display.
+MAX_CARD_LEVEL = int(os.getenv("MAX_CARD_LEVEL", 16))
 
 # Discord OAuth2 (Authorization Code flow)
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "")
@@ -715,6 +721,32 @@ def has_full_admin() -> bool:
     return tiers.get(discord_id, "full") == "full"
 
 
+def can_hide_roster_cards() -> bool:
+    """Task #155: a narrower permission than the general is_admin()/
+    has_full_admin() tiers, on purpose -- this controls what every OTHER
+    member sees on the public roster page (hiding a dashboard card behind
+    admin-only visibility), not just admin-only tooling, so it's restricted
+    to just the master admin (MASTER_ADMIN_ID -- the "super admin") and
+    whoever currently holds the name "Mythic", checked against both their
+    Discord display name and their linked Clash Royale in-game name since
+    either could be how they're actually identified."""
+    if not is_admin():
+        return False
+    discord_id = str(session.get("discord_id", ""))
+    master_admin = os.getenv("MASTER_ADMIN_ID", "")
+    if master_admin and discord_id == master_admin:
+        return True
+    if (session.get("discord_name") or "").strip().lower() == "mythic":
+        return True
+    user_doc = db_sync["users"].find_one({"discord_id": discord_id}, {"cr_tag": 1}) or {}
+    cr_tag = user_doc.get("cr_tag")
+    if cr_tag:
+        profile = db_sync["player_profiles"].find_one({"tag": cr_tag}, {"name": 1}) or {}
+        if (profile.get("name") or "").strip().lower() == "mythic":
+            return True
+    return False
+
+
 def get_template(template_name: str) -> str:
     with _cache_lock:
         if template_name in _HTML_CACHE: return _HTML_CACHE[template_name]
@@ -825,10 +857,15 @@ def get_player_analytical_data(tag):
     player["recent_battles"] = history
 
     # Collection completion — how much of their full card collection is maxed.
+    # "Maxed" is checked against MAX_CARD_LEVEL (absolute level 16, Supercell's
+    # stated permanent ceiling), not each card's own account-relative
+    # `maxLevel` (which is gated by the player's current King Tower level and
+    # would call a card "maxed" before it's actually at the level that's free
+    # to donate/request).
     cards = player.get("cards") or []
     player["collection_total_count"] = len(cards)
     player["collection_maxed_count"] = sum(
-        1 for c in cards if c.get("level", 0) >= c.get("maxLevel", 999)
+        1 for c in cards if c.get("level", 0) >= MAX_CARD_LEVEL
     )
 
     now = datetime.now(timezone.utc)
@@ -967,6 +1004,41 @@ def get_player_analytical_data(tag):
             return (1, -frac)  # completed — after in-progress, but still grouped together
         return (0, -frac)  # in-progress, closest-first
     player["achievements"] = sorted(achievements, key=_completion_key)
+
+    # Task #146: group the flat achievement list into actual visual sections
+    # (In Progress / Completed / No Target) instead of one long undifferentiated
+    # scroll -- the sort above already puts them in this order, this just makes
+    # the grouping visible in the template.
+    player["achievements_in_progress"] = [a for a in player["achievements"] if _completion_key(a)[0] == 0]
+    player["achievements_completed"] = [a for a in player["achievements"] if _completion_key(a)[0] == 1]
+    player["achievements_no_target"] = [a for a in player["achievements"] if _completion_key(a)[0] == 2]
+
+    # Bug fix: "War Battles (Current)" was wired to clanWarTrophies, a static
+    # per-player war-rank stat that has nothing to do with battles fought this
+    # war (and never changes day-to-day, which is what looked like "missing
+    # yesterday's data"). Pull the real per-player decksUsed/decksUsedToday off
+    # the latest war_tracking participant record instead -- same pattern as
+    # get_clan_war_summary()/admin_api_roster() elsewhere in this file.
+    latest_war = db_sync["war_tracking"].find_one({}, sort=[("harvest_time", -1)])
+    war_participant = None
+    if latest_war:
+        war_participant = next(
+            (p for p in latest_war.get("participants", []) if p.get("tag") == f"#{clean}"),
+            None,
+        )
+    player["war_decks_used"] = war_participant.get("decksUsed", 0) if war_participant else 0
+    player["war_decks_used_today"] = war_participant.get("decksUsedToday", 0) if war_participant else 0
+    player["war_fame"] = war_participant.get("fame", 0) if war_participant else 0
+    player["war_in_current_race"] = war_participant is not None
+
+    # Task #143: real "tracked lifetime" donation totals -- banked pre-reset
+    # history (data_harvester.py accumulates this every season rollover) plus
+    # whatever's accrued this season. Honest label on this in the template:
+    # it's tracked-since-the-bot-started, not a true CR account lifetime.
+    player["totalDonations"] = (player.get("lifetime_donations_banked", 0) or 0) + (player.get("donations", 0) or 0)
+    player["totalDonationsReceived"] = (
+        (player.get("lifetime_donations_received_banked", 0) or 0) + (player.get("donationsReceived", 0) or 0)
+    )
 
     player["data_freshness"] = player_freshness
     return player
@@ -1392,6 +1464,14 @@ def index():
         discord_guild_id=GUILD_ID,
         discord_invite_url=bot_settings.get("discord_invite_url", ""),
         discord_widget_style=bot_settings.get("discord_widget_style", "official"),
+        # Task #155: hide-a-dashboard-card-behind-the-admin-wall feature.
+        # hidden_roster_cards is the persisted set of hidden card slugs (any
+        # admin can still see them, they're just gone from the regular-member
+        # view); can_hide_roster_cards is the narrower permission (master
+        # admin + whoever is named "Mythic") that controls the hide/unhide
+        # icon itself, separate from the general is_admin flag above.
+        hidden_roster_cards=bot_settings.get("hidden_roster_cards", []),
+        can_hide_roster_cards=can_hide_roster_cards(),
     )
 
 def compute_onboarding_checklist(discord_id, cr_tag):
@@ -1510,15 +1590,21 @@ EXPORT_FIELD_LABELS = {
     "warDayWins": "War Day Wins", "totalWins": "Total Wins", "totalLosses": "Total Losses",
     "current_streak": "Win Streak",
     "win_rate_pct": "Win Rate %", "war_participation_pct": "War Participation %",
+    # Task #149: card-level fields, sourced from the same player_profiles doc
+    # (its cards[]/currentDeck[] are the raw CR API arrays, spread verbatim
+    # onto the profile every harvest cycle -- see data_harvester.py).
+    "cards_maxed_count": "Cards Maxed", "cards_total_count": "Total Cards",
+    "cards_maxed_pct": "Cards Maxed %", "current_deck": "Current Deck",
+    "current_deck_evo_count": "Evolutions Equipped", "deck_archetype": "Deck Archetype",
 }
 # Percentage columns get a real Excel percent number format (see the xlsx
 # branch below) rather than being written as a "87.5%" text string, which
 # Excel/Sheets can't sort, sum, or average as a number.
-EXPORT_PERCENT_LABELS = {"Win Rate %", "War Participation %"}
+EXPORT_PERCENT_LABELS = {"Win Rate %", "War Participation %", "Cards Maxed %"}
 # Numeric columns worth a bottom TOTALS/AVERAGE row in the xlsx export --
 # something a spreadsheet-native leadership review would otherwise have to
 # add a formula for themselves every single export.
-EXPORT_SUM_LABELS = {"Donations", "War Fame", "Total Wins", "Total Losses", "War Day Wins", "Decks Used Today"}
+EXPORT_SUM_LABELS = {"Donations", "War Fame", "Total Wins", "Total Losses", "War Day Wins", "Decks Used Today", "Cards Maxed", "Evolutions Equipped"}
 
 @web_bp.route("/admin/export/custom", methods=["POST"])
 def admin_export_csv():
@@ -1563,6 +1649,19 @@ def admin_export_csv():
         total_losses = db_profile.get("losses", 0)
         decks_used = wp.get("decksUsedToday", 0)
         decks_remaining = 4 - decks_used
+
+        # Task #149: card-level export fields. cards[]/currentDeck[] are the
+        # raw CR API arrays the harvester spreads onto player_profiles every
+        # cycle -- same source get_player_analytical_data() already uses for
+        # the Cards Maxed stat on the player page, just reused here so the
+        # exporter's numbers can never drift from what the site itself shows.
+        db_cards = db_profile.get("cards") or []
+        cards_total = len(db_cards)
+        cards_maxed = sum(1 for c in db_cards if c.get("level", 0) >= MAX_CARD_LEVEL)
+        current_deck_cards = db_profile.get("currentDeck") or []
+        deck_names = [c.get("name", "?") for c in current_deck_cards if isinstance(c, dict)]
+        evo_count = sum(1 for c in current_deck_cards if isinstance(c, dict) and c.get("evolutionLevel", 0) > 0)
+
         row = {
             "name": m.get("name", ""),
             "tag": m.get("tag", ""),
@@ -1585,6 +1684,12 @@ def admin_export_csv():
             # branch below applies a genuine percent number format on top.
             "win_rate_pct": round((total_wins / (total_wins + total_losses)) * 100, 1) if (total_wins + total_losses) else 0.0,
             "war_participation_pct": round((decks_used / (decks_used + decks_remaining)) * 100, 1) if (decks_used + decks_remaining) else 0.0,
+            "cards_maxed_count": cards_maxed,
+            "cards_total_count": cards_total,
+            "cards_maxed_pct": round((cards_maxed / cards_total) * 100, 1) if cards_total else 0.0,
+            "current_deck": ", ".join(deck_names) if deck_names else "",
+            "current_deck_evo_count": evo_count,
+            "deck_archetype": ", ".join(sorted(deck_names)) if deck_names else "",
         }
         # Only keep requested fields/formulas, relabeled to human-readable headers.
         records.append({EXPORT_FIELD_LABELS.get(k, k): row[k] for k in selected_keys if k in row})
@@ -1822,6 +1927,37 @@ def admin_resolve_strike_appeal():
     log_admin_activity("Resolved strike appeal", target=tag)
     return jsonify({"success": True})
 
+@web_bp.route("/admin/roster-cards/toggle-hide", methods=["POST"])
+def admin_toggle_roster_card_hide():
+    """Task #155: lets the master admin ("super admin") and whoever currently
+    holds the name "Mythic" hide/unhide any dashboard card on the public
+    roster page. Hiding moves a card behind the existing admin wall -- it
+    disappears for regular members, but any logged-in admin can still see it
+    (with a "Hidden from members" marker), same as everything else already
+    gated by is_admin(). Deliberately a narrower permission than is_admin()
+    itself -- see can_hide_roster_cards() -- since this controls what every
+    other member sees, not just admin-only tooling."""
+    if not can_hide_roster_cards():
+        return jsonify({"error": "unauthorized"}), 403
+    data = request.get_json(silent=True) or {}
+    card_id = (data.get("card_id") or "").strip()
+    if not card_id:
+        return jsonify({"error": "card_id required"}), 400
+    settings_doc = db_sync["config"].find_one({"_id": "bot_settings"}) or {}
+    hidden = set(settings_doc.get("hidden_roster_cards", []))
+    if card_id in hidden:
+        hidden.discard(card_id)
+        now_hidden = False
+    else:
+        hidden.add(card_id)
+        now_hidden = True
+    db_sync["config"].update_one(
+        {"_id": "bot_settings"}, {"$set": {"hidden_roster_cards": sorted(hidden)}}, upsert=True
+    )
+    log_admin_activity(f"{'Hid' if now_hidden else 'Unhid'} roster card", target=card_id)
+    return jsonify({"success": True, "hidden": now_hidden})
+
+
 @web_bp.route("/admin/api/player/admin_toggle", methods=["POST"])
 def admin_toggle_privilege():
     # Idea #146: this is one of the two most sensitive admin actions (the other
@@ -2035,6 +2171,20 @@ def admin_save_settings():
     # Idea #131/#139: leadership escalation channel.
     if "leadership_channel_id" in data:
         update["leadership_channel_id"] = data.get("leadership_channel_id") or None
+    # Daily full-DB backup destination channel. This field was already wired
+    # up in admin.html's Settings form and read by clash_cog.py's
+    # _backup_channel_id(), but this save route never actually persisted it --
+    # fixed alongside the fallback-toggle work below since both touch the
+    # same channel-routing settings.
+    if "backup_channel_id" in data:
+        update["backup_channel_id"] = data.get("backup_channel_id") or None
+    # Off by default: previously every channel-ID setting above silently fell
+    # back to a different channel (announcements -> war channel, leadership ->
+    # announcements, backup -> leadership -> announcements) whenever it was
+    # left blank, which could mean posts landed somewhere unexpected. With
+    # this off, an unset channel just means that post is skipped.
+    if "channel_fallback_enabled" in data:
+        update["channel_fallback_enabled"] = bool(data.get("channel_fallback_enabled"))
     # Idea #99: quiet hours (UTC) during which automated DMs are held, not dropped.
     if "quiet_hours_start" in data or "quiet_hours_end" in data:
         try:
@@ -2217,12 +2367,19 @@ def admin_diagnostics():
     cr_health = db_sync["config"].find_one({"_id": "cr_api_health"}, {"_id": 0}) or {}
     result["cr_api"]["cumulative"] = cr_health
 
-    # Bot (written by the bot process into Mongo every 30s via reload_config_loop)
+    # Bot (written by the bot process into Mongo every 30s via ClashCog.send_heartbeat_loop)
     bot_heartbeat = db_sync["config"].find_one({"_id": "bot_heartbeat"}) or {}
+    last_beat_at = bot_heartbeat.get("last_beat_at")
+    # A heartbeat older than 90s (3 missed beats) means the bot process is
+    # gone even if it last wrote connected: true -- otherwise a crashed bot
+    # would show as ONLINE forever using its last-known value.
+    stale = (not last_beat_at) or ((datetime.now(timezone.utc) - last_beat_at.replace(tzinfo=timezone.utc)).total_seconds() > 90)
     result["bot"] = {
-        "connected": bot_heartbeat.get("connected", False),
+        "connected": bool(bot_heartbeat.get("connected", False)) and not stale,
         "latency_ms": bot_heartbeat.get("latency_ms"),
         "uptime": bot_heartbeat.get("uptime"),
+        "last_beat_at": last_beat_at.isoformat() if last_beat_at else None,
+        "stale": stale,
     }
 
     # Cache
@@ -2418,6 +2575,12 @@ def admin_api_war_day_breakdown():
     """Idea #2: per-war-day fame breakdown (day 1-4) instead of only the
     aggregate race total, using the periodLogs the CR API already returns on
     the current-race endpoint (one entry per completed period this race).
+
+    Also returns a per-member breakdown (task #168): each periodLogs entry's
+    clan.participants[] is that member's activity for that single day, not a
+    running total, so this reconstructs a day-by-day fame history for every
+    member without needing our own historical snapshots -- the CR API already
+    carries it for the current (or immediately preceding) river race.
     """
     if not is_admin(): return jsonify({"error": "unauthorized"}), 403
     data, data_freshness = _current_riverrace_with_fallback()
@@ -2426,14 +2589,24 @@ def admin_api_war_day_breakdown():
     own_tag = f"#{CLAN_TAG}"
     logs = data.get("periodLogs", [])
     breakdown = []
+    member_days = {}  # clean tag -> [fame_day1, fame_day2, ...]
     for i, log_entry in enumerate(logs):
         items = log_entry.get("items", [])
         own = next((it for it in items if it.get("clan", {}).get("tag") == own_tag), None)
+        own_clan = (own or {}).get("clan", {}) if own else {}
         breakdown.append({
             "day": i + 1,
-            "fame": (own or {}).get("clan", {}).get("fame", 0) if own else 0,
+            "fame": own_clan.get("fame", 0),
         })
-    return jsonify({"days": breakdown, "current_period_index": data.get("periodIndex"), "data_freshness": data_freshness})
+        for p in own_clan.get("participants", []):
+            clean = p.get("tag", "").replace("#", "").upper()
+            member_days.setdefault(clean, []).append(p.get("fame", 0))
+    return jsonify({
+        "days": breakdown,
+        "member_days": member_days,
+        "current_period_index": data.get("periodIndex"),
+        "data_freshness": data_freshness,
+    })
 
 
 @web_bp.route("/admin/api/war/scouting")
@@ -2447,6 +2620,15 @@ def admin_api_war_scouting():
     if not war_data:
         return jsonify({"error": "No active race to scout, and no cached fallback exists yet."})
     own_tag = f"#{CLAN_TAG}"
+
+    # Task #169: richer, auto-compiled opponent data -- rank the whole race
+    # field by fame once so every rival gets a race position and a fame gap
+    # against us, instead of just their own raw numbers with no context.
+    all_clans = war_data.get("clans", []) + ([war_data["clan"]] if war_data.get("clan") else [])
+    ranked = sorted(all_clans, key=lambda c: -(c.get("fame", 0) or 0))
+    rank_by_tag = {c.get("tag"): i + 1 for i, c in enumerate(ranked)}
+    own_fame = (war_data.get("clan") or {}).get("fame", 0) or 0
+
     rival_summaries = []
     for c in war_data.get("clans", []):
         tag = c.get("tag", "")
@@ -2457,12 +2639,18 @@ def admin_api_war_scouting():
         detail = fetch_cr_api(f"clans/{tag.replace('#', '%23')}")
         members = (detail or {}).get("memberList", [])
         avg_trophies = round(sum(m.get("trophies", 0) for m in members) / len(members)) if members else None
+        rival_fame = c.get("fame", 0) or 0
         rival_summaries.append({
             "tag": tag, "name": c.get("name", detail.get("name") if detail else "Unknown"),
             "member_count": len(members), "avg_trophies": avg_trophies,
-            "current_fame": c.get("fame", 0),
+            "current_fame": rival_fame,
+            "race_rank": rank_by_tag.get(tag),
+            "period_points": c.get("periodPoints", 0),
+            "clan_score": c.get("clanScore"),
+            "fame_gap_vs_us": rival_fame - own_fame,  # positive = they're ahead of us
         })
-    return jsonify({"rivals": rival_summaries, "data_freshness": war_data_freshness})
+    rival_summaries.sort(key=lambda r: r.get("race_rank") or 99)
+    return jsonify({"rivals": rival_summaries, "own_race_rank": rank_by_tag.get(own_tag), "own_fame": own_fame, "data_freshness": war_data_freshness})
 
 
 def _strength_tier(rival_avg_trophies, own_avg_trophies, band=250):
@@ -2593,15 +2781,34 @@ def admin_api_war_calendar():
     for race in races:
         data = race.get("data", {})
         clan_list = sorted(data.get("standings", []) or [], key=lambda s: s.get("rank", 99))
-        own_rank = next((s.get("rank") for s in clan_list if (s.get("clan") or {}).get("tag") == own_tag), None)
+        own_standing = next((s for s in clan_list if (s.get("clan") or {}).get("tag") == own_tag), None)
+        own_rank = own_standing.get("rank") if own_standing else None
         outcome = "win" if own_rank == 1 else ("loss" if own_rank else "unknown")
+        # Task #169: a "live calendar listing results" needs an actual date,
+        # not just a colored tile -- the CR API's riverracelog already
+        # includes createdDate on every completed race (raw supercell format,
+        # e.g. "20260112T120000.000Z"), parsed here so the frontend can show
+        # a real date instead of just season/section numbers.
+        created_raw = data.get("createdDate")
+        created_iso = None
+        if created_raw:
+            try:
+                created_iso = datetime.strptime(created_raw.split(".")[0], "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc).isoformat()
+            except (ValueError, AttributeError):
+                created_iso = None
+        top_rival = next((s for s in clan_list if s is not own_standing), None)
         days.append({
             "unique_war_id": race.get("unique_war_id"),
             "season_id": data.get("seasonId"),
             "section_index": data.get("sectionIndex"),
             "outcome": outcome,
             "rank": own_rank,
+            "created_date": created_iso,
+            "own_fame": (own_standing or {}).get("clan", {}).get("fame", 0) if own_standing else None,
+            "field_size": len(clan_list) or None,
+            "runner_up_name": (top_rival or {}).get("clan", {}).get("name") if own_rank == 1 and top_rival else None,
         })
+    days.sort(key=lambda d: (d.get("season_id") or 0, d.get("section_index") or 0), reverse=True)
     return jsonify({"races": days})
 
 
@@ -3474,6 +3681,42 @@ def admin_harvest_manual():
     return jsonify({"success": True, "message": "Harvest started in the background."})
 
 
+@web_bp.route("/admin/backup/manual", methods=["POST"])
+def admin_backup_manual():
+    """Manual "Backup Now" trigger -- runs backup_full_database(force=True) in
+    the background (bypassing the once-per-day dedupe that gates the
+    automatic version called from run_full_cycle()), which itself enqueues a
+    pending_actions doc so the bot process delivers the zip to Discord within
+    its usual ~20s poll interval. This route only kicks the job off; it
+    doesn't wait for the Discord upload to finish (this Flask process has no
+    Discord connection of its own to confirm delivery with anyway)."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    harvester = get_harvester()
+    threading.Thread(
+        target=harvester.backup_full_database,
+        kwargs={"force": True, "triggered_by": f"manual ({session.get('discord_name', 'admin')})"},
+        daemon=True,
+    ).start()
+    log_admin_activity("Triggered manual database backup")
+    return jsonify({"success": True, "message": "Backup started -- it'll post to the configured backup channel within about 20 seconds."})
+
+
+@web_bp.route("/admin/api/backups")
+def admin_api_backups():
+    """Read-only visibility into recent full-DB backups (metadata only, same
+    reasoning as the existing /admin/api/config-backups: no raw dump payload
+    is stored in Mongo long-term, just size/count stats, since the whole
+    point of this feature is getting the data OUT to Discord rather than
+    keeping a second copy sitting in the same database it's meant to protect
+    against losing)."""
+    if not is_admin(): return jsonify({"error": "unauthorized"}), 403
+    backups = list(db_sync["db_backups_log"].find({}).sort("created_at", -1).limit(20))
+    for b in backups:
+        b["id"] = str(b.pop("_id"))
+        b["created_at"] = b["created_at"].isoformat() if b.get("created_at") else None
+    return jsonify({"backups": backups})
+
+
 @web_bp.route("/admin/api/snapshot/<date>")
 def admin_api_snapshot(date):
     """Return all player snapshots for a given date (YYYY-MM-DD) as JSON."""
@@ -3584,6 +3827,65 @@ def admin_users_update():
             {"$pull": {"admin_user_ids": discord_id}},
         )
     return redirect("/admin")
+
+
+@web_bp.route("/admin/api/users/edit", methods=["POST"])
+def admin_api_user_edit():
+    """User Access tab: admin-side override for a users doc's linked CR tag.
+    Previously the ONLY way cr_tag ever changed was the member-facing /link
+    (and /unlink) flow -- there was no admin override at all, so an entry
+    that looked "unconnected" (no cr_tag, or a cr_tag pointing at a departed
+    member's tag that no longer resolves to anything in player_profiles) had
+    no fix short of asking that person to re-link themselves, which doesn't
+    work for a stale/abandoned account. Gated by has_full_admin() (not just
+    is_admin()) since this directly rewrites someone else's account linkage,
+    same stricter gate as the permission-tier route above."""
+    if not has_full_admin(): return jsonify({"error": "unauthorized — only full admins can edit user entries"}), 403
+    data = request.get_json(silent=True) or {}
+    discord_id = str(data.get("discord_id", "")).strip()
+    if not discord_id.isdigit():
+        return jsonify({"error": "a valid numeric discord_id is required"}), 400
+    if not db_sync["users"].find_one({"discord_id": discord_id}):
+        return jsonify({"error": "No user found with that Discord ID"}), 404
+    new_tag = clean_tag(data.get("cr_tag", "") or "")
+    if new_tag:
+        db_sync["users"].update_one({"discord_id": discord_id}, {"$set": {"cr_tag": f"#{new_tag}"}})
+        detail = f"linked to #{new_tag}"
+    else:
+        # Empty string clears the link entirely, same end state as /unlink,
+        # but without requiring the member to do it themselves.
+        db_sync["users"].update_one({"discord_id": discord_id}, {"$unset": {"cr_tag": ""}})
+        detail = "unlinked"
+    log_admin_activity("Edited user link", target=discord_id, details=detail)
+    return jsonify({"success": True})
+
+
+@web_bp.route("/admin/api/users/delete", methods=["POST"])
+def admin_api_user_delete():
+    """User Access tab: remove a users doc entirely -- for accounts that
+    logged in once (creating a doc via oauth_callback) and never linked a CR
+    account, or any other entry an admin decides is dead weight. Also purges
+    the same discord_id from admin_user_ids/admin_tiers so a deleted account
+    can't linger as a phantom admin grant nobody can see anymore. Gated by
+    has_full_admin() -- deleting an account record is more destructive than
+    the plain is_admin()-gated promote/demote form above."""
+    if not has_full_admin(): return jsonify({"error": "unauthorized — only full admins can delete user entries"}), 403
+    data = request.get_json(silent=True) or {}
+    discord_id = str(data.get("discord_id", "")).strip()
+    if not discord_id.isdigit():
+        return jsonify({"error": "a valid numeric discord_id is required"}), 400
+    master_admin = os.getenv("MASTER_ADMIN_ID", "")
+    if master_admin and discord_id == master_admin:
+        return jsonify({"error": "Can't delete the master admin account."}), 400
+    result = db_sync["users"].delete_one({"discord_id": discord_id})
+    if result.deleted_count == 0:
+        return jsonify({"error": "No user found with that Discord ID"}), 404
+    db_sync["config"].update_one(
+        {"_id": "system_config"},
+        {"$pull": {"admin_user_ids": discord_id}, "$unset": {f"admin_tiers.{discord_id}": ""}},
+    )
+    log_admin_activity("Deleted user entry", target=discord_id)
+    return jsonify({"success": True})
 
 
 # ---------------------------------------------------------------------------
@@ -4757,7 +5059,10 @@ def api_player_card_mastery(tag):
     evolution_catalog = _get_card_evolution_catalog()
     evolutions = []
     for c in player.get("cards", []):
-        maxed = c.get("level", 0) >= c.get("maxLevel", 999)
+        # "Maxed" = absolute level 16 (MAX_CARD_LEVEL), Supercell's stated
+        # permanent ceiling -- not the card's account-relative `maxLevel`,
+        # which is gated by current King Tower level.
+        maxed = c.get("level", 0) >= MAX_CARD_LEVEL
 
         cat = categorize_card(c.get("name", ""))
         entry = by_category.setdefault(cat, {"total": 0, "maxed": 0})
@@ -5773,6 +6078,54 @@ def api_clan_members_lite():
         for m in clan_data.get("memberList", [])
         if m.get("tag")
     ])
+
+
+@web_bp.route("/api/clan/card-mastery")
+def api_clan_card_mastery():
+    """Task #150: home-page "who has which cards maxed" card. Backs both a
+    top-10 leaderboard (members ranked by cards maxed) and a per-card lookup
+    (?card=Name -> which members have that specific card maxed).
+
+    Reads player_profiles' cards[] -- already harvested every cycle as part
+    of the raw {**profile_data, ...} spread in data_harvester.py -- rather
+    than making a live CR API call per member, same reasoning as
+    members-lite above and the existing player-page card-mastery endpoint's
+    per-player version of this same computation."""
+    card_query = (request.args.get("card") or "").strip()
+    profiles = list(db_sync["player_profiles"].find(
+        {"left_clan_at": {"$exists": False}}, {"tag": 1, "name": 1, "cards": 1}
+    ))
+    leaderboard = []
+    card_owners = {}
+    for p in profiles:
+        cards = p.get("cards") or []
+        total = len(cards)
+        if not total:
+            continue
+        maxed = 0
+        for c in cards:
+            # Absolute level 16 (MAX_CARD_LEVEL), not account-relative maxLevel --
+            # see the comment on MAX_CARD_LEVEL's definition above.
+            if c.get("level", 0) >= MAX_CARD_LEVEL:
+                maxed += 1
+                card_owners.setdefault(c.get("name", "Unknown"), []).append(
+                    {"tag": p.get("tag"), "name": p.get("name")}
+                )
+        leaderboard.append({
+            "tag": p.get("tag"), "name": p.get("name"),
+            "maxed_count": maxed, "total_count": total,
+            "maxed_pct": round(maxed / total * 100, 1),
+        })
+    leaderboard.sort(key=lambda x: (-x["maxed_count"], -x["maxed_pct"]))
+
+    result = {"leaderboard": leaderboard[:10], "card_names": sorted(card_owners.keys())}
+    if card_query:
+        match = next((name for name in card_owners if name.lower() == card_query.lower()), None)
+        result["query"] = card_query
+        result["owners"] = (
+            sorted(card_owners.get(match, []), key=lambda o: (o.get("name") or "")) if match else []
+        )
+    return jsonify(result)
 
 
 DISCORD_WIDGET_CACHE_TTL_SECONDS = 60  # same order of magnitude as CR_API_CACHE_TTL_SECONDS

@@ -231,14 +231,17 @@ class ClashRoyale(commands.Cog):
         self.clan_tag     = "9LVY89UP"
         self.all_cards    = []
         self.active_warmups = set()
+        self.start_time   = datetime.now(timezone.utc)
 
         self.process_pending_actions_loop.start()
         self.check_auto_strike_rules.start()
+        self.send_heartbeat_loop.start()
         asyncio.create_task(self._cache_cards())
 
     def cog_unload(self):
         self.process_pending_actions_loop.cancel()
         self.check_auto_strike_rules.cancel()
+        self.send_heartbeat_loop.cancel()
 
     # ── Cache helpers ─────────────────────────────────────────────────────────
 
@@ -356,6 +359,35 @@ class ClashRoyale(commands.Cog):
         harvester = get_harvester()
         await self.bot.loop.run_in_executor(None, harvester.run_full_cycle)
 
+    # ── Heartbeat (read by /admin Diagnostics and /botstatus) ──────────────────
+
+    @tasks.loop(seconds=30)
+    async def send_heartbeat_loop(self):
+        """Writes a small status doc into Mongo every 30s so the Flask
+        Diagnostics tab and the /botstatus command can tell the bot process
+        is actually alive, instead of always reporting OFFLINE. Previously
+        both readers referenced a 'reload_config_loop' that never existed,
+        so bot_heartbeat was written by nothing at all."""
+        try:
+            now = datetime.now(timezone.utc)
+            uptime_seconds = (now - self.start_time).total_seconds()
+            await self.db["config"].update_one(
+                {"_id": "bot_heartbeat"},
+                {"$set": {
+                    "connected": self.bot.is_ready() and not self.bot.is_closed(),
+                    "latency_ms": round(self.bot.latency * 1000, 1) if self.bot.latency is not None else None,
+                    "uptime": uptime_seconds,
+                    "last_beat_at": now,
+                }},
+                upsert=True,
+            )
+        except Exception as e:
+            log.warning(f"Heartbeat write failed (non-fatal): {e}")
+
+    @send_heartbeat_loop.before_loop
+    async def _before_heartbeat_loop(self):
+        await self.bot.wait_until_ready()
+
     # ── Pending admin actions (queued by the Flask dashboard) ──────────────────
 
     @tasks.loop(seconds=20)
@@ -455,11 +487,57 @@ class ClashRoyale(commands.Cog):
                     log.info(f"[EMAIL DIGEST STUB] Would email {len(action.get('recipient_emails', []))} recipient(s): {action.get('message', '')[:80]}...")
                 elif kind == "changelog_post":
                     # Idea #98: auto-post a changelog line whenever settings/templates change.
-                    channel_id = (await self.db["config"].find_one({"_id": "bot_settings"}) or {}).get("changelog_channel_id") or await self._announcements_channel_id()
+                    _cl_settings = await self.db["config"].find_one({"_id": "bot_settings"}) or {}
+                    channel_id = _cl_settings.get("changelog_channel_id")
+                    if not channel_id and await self._channel_fallback_enabled(_cl_settings):
+                        channel_id = await self._announcements_channel_id()
                     if channel_id and guild:
                         channel = guild.get_channel(int(channel_id))
                         if channel:
                             await channel.send(f"🛠️ **Bot Update:** {action.get('message', 'Settings changed.')}")
+                elif kind == "db_backup_post":
+                    # Daily (or manually-triggered) full-Mongo-database backup,
+                    # built by data_harvester.py's backup_full_database(). This
+                    # process is the only one with a live Discord connection,
+                    # hence the pending_actions handoff -- the harvester/Flask
+                    # side just builds the zip and leaves a file path here.
+                    channel_id = await self._backup_channel_id()
+                    zip_path = action.get("zip_path")
+                    try:
+                        if channel_id and guild and zip_path and os.path.exists(zip_path):
+                            channel = guild.get_channel(int(channel_id))
+                            if channel:
+                                size_mb = (action.get("size_bytes") or 0) / (1024 * 1024)
+                                # Discord's attachment size cap varies by server
+                                # boost tier (8/50/100MB); 20MB is a conservative
+                                # cutoff that clears the no-boost default with
+                                # room to spare. Past that, still tell leadership
+                                # a backup ran (and where the file lives on the
+                                # host) rather than silently failing the upload.
+                                if size_mb <= 20:
+                                    await channel.send(
+                                        content=(
+                                            f"🗄️ **Daily database backup** — {action.get('collection_count', 0)} collections, "
+                                            f"{action.get('total_docs', 0)} documents, {size_mb:.1f} MB."
+                                        ),
+                                        file=discord.File(zip_path, filename=os.path.basename(zip_path)),
+                                    )
+                                else:
+                                    await channel.send(
+                                        f"🗄️ **Daily database backup** ran ({action.get('collection_count', 0)} collections, "
+                                        f"{action.get('total_docs', 0)} documents, {size_mb:.1f} MB) but is too large to "
+                                        f"attach here directly (>20MB). It's still on disk at `{zip_path}` on the bot's "
+                                        f"host until the next restart -- download it from there if you need it."
+                                    )
+                    finally:
+                        # Clean up the temp file/dir regardless of whether the
+                        # upload succeeded, so these never accumulate on disk.
+                        if zip_path and os.path.exists(zip_path):
+                            try:
+                                os.remove(zip_path)
+                                os.rmdir(os.path.dirname(zip_path))
+                            except OSError as e:
+                                log.warning(f"Could not clean up backup temp file {zip_path}: {e}")
                 elif kind == "war_nudge_tier":
                     # Idea #13: tiered war-day reminders queued by
                     # data_harvester.py's check_tiered_war_reminders() at ~50%
@@ -481,18 +559,49 @@ class ClashRoyale(commands.Cog):
     async def before_pending_actions_loop(self):
         await self.bot.wait_until_ready()
 
+    async def _channel_fallback_enabled(self, settings: dict = None) -> bool:
+        """Off by default. When off, each of the _*_channel_id() helpers below
+        returns None instead of silently redirecting to a different channel
+        once its own specific setting is unset -- so an unconfigured post type
+        is simply skipped rather than potentially landing somewhere the admin
+        didn't intend."""
+        if settings is None:
+            settings = await self.db["config"].find_one({"_id": "bot_settings"}) or {}
+        return bool(settings.get("channel_fallback_enabled", False))
+
     async def _announcements_channel_id(self):
         """Idea #134: a dedicated #bot-announcements channel convention for all
         automated posts (war recaps, milestones, digests, role changes), so
         recurring bot content doesn't bury real conversation in the war channel.
-        Falls back to war_channel_id if nothing more specific is configured, so
-        existing setups keep working without any required migration."""
+        Falls back to war_channel_id if nothing more specific is configured AND
+        channel_fallback_enabled is on (off by default)."""
         settings = await self.db["config"].find_one({"_id": "bot_settings"}) or {}
-        return settings.get("announcements_channel_id") or self.bot.war_channel_id
+        explicit = settings.get("announcements_channel_id")
+        if explicit:
+            return explicit
+        return self.bot.war_channel_id if await self._channel_fallback_enabled(settings) else None
 
     async def _leadership_channel_id(self):
         settings = await self.db["config"].find_one({"_id": "bot_settings"}) or {}
-        return settings.get("leadership_channel_id") or await self._announcements_channel_id()
+        explicit = settings.get("leadership_channel_id")
+        if explicit:
+            return explicit
+        return await self._announcements_channel_id() if await self._channel_fallback_enabled(settings) else None
+
+    async def _backup_channel_id(self):
+        """Daily Mongo backup destination (the user's "warbot logs" channel).
+        Deliberately its own dedicated setting rather than reusing
+        war_channel_id -- that field is set once at startup and never
+        refreshed from the DB (see mainbot.py), so it's not a reliable
+        destination for anything configured after boot. Falls back to the
+        leadership channel (then announcements) only if channel_fallback_enabled
+        is on; otherwise a backup with no channel configured is simply skipped
+        (the file still gets built, just not delivered anywhere)."""
+        settings = await self.db["config"].find_one({"_id": "bot_settings"}) or {}
+        explicit = settings.get("backup_channel_id")
+        if explicit:
+            return explicit
+        return await self._leadership_channel_id() if await self._channel_fallback_enabled(settings) else None
 
     async def _in_quiet_hours(self) -> bool:
         """Idea #99: configurable quiet hours (UTC) — automated DMs are held

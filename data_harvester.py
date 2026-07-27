@@ -2,9 +2,12 @@ import os
 import json
 import time
 import logging
+import tempfile
+import zipfile
 import threading
 from datetime import datetime, timezone, timedelta
 import requests
+from bson import json_util
 from pymongo import MongoClient, UpdateOne
 import redis as _redis
 from dotenv import load_dotenv
@@ -86,6 +89,13 @@ class DataHarvester:
         self.col_war_history = self.db["war_history"]
         self.col_snapshots = self.db["clan_snapshots"]
         self.col_player_snapshots = self.db["player_snapshots"]
+        # Task #151: one row per member per day capturing their equipped deck
+        # (currentDeck from the raw player API response) -- separate from
+        # player_profiles' live overwrite-in-place copy of the same field, so
+        # deck composition can be analyzed over time (popularity trends, meta
+        # shifts, "how often does this player change their deck") instead of
+        # only ever seeing whatever the deck happens to be right now.
+        self.col_deck_snapshots = self.db["deck_snapshots"]
         self.col_config = self.db["config"]
         try:
             self.redis_client = _redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
@@ -108,6 +118,8 @@ class DataHarvester:
             (self.col_battles, "unique_battle_id", {"unique": True}),
             (self.col_player_snapshots, [("tag", 1), ("date", 1)], {"unique": True}),
             (self.col_player_snapshots, "date", {}),
+            (self.col_deck_snapshots, [("tag", 1), ("date", 1)], {"unique": True}),
+            (self.col_deck_snapshots, "date", {}),
         ]
         for collection, keys, opts in index_specs:
             try:
@@ -1105,6 +1117,7 @@ class DataHarvester:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         profile_operations = []
         snapshot_operations = []
+        deck_snapshot_operations = []
         for tag in member_tags:
             profile_data = self.fetch_api(f"players/%23{tag}")
             if profile_data:
@@ -1112,7 +1125,11 @@ class DataHarvester:
                 # audit_log array player.html's "Clan History Log" already reads,
                 # so leadership changes show up next to admin actions instead of
                 # being invisible. Compares against whatever role we last stored.
-                prior = self.col_profiles.find_one({"tag": profile_data["tag"]}, {"role": 1, "wins": 1, "bestTrophies": 1})
+                prior = self.col_profiles.find_one(
+                    {"tag": profile_data["tag"]},
+                    {"role": 1, "wins": 1, "bestTrophies": 1, "donations": 1, "donationsReceived": 1,
+                     "lifetime_donations_banked": 1, "lifetime_donations_received_banked": 1},
+                )
                 new_role = profile_data.get("role")
                 if prior and prior.get("role") and new_role and prior["role"] != new_role:
                     self.col_profiles.update_one(
@@ -1143,10 +1160,33 @@ class DataHarvester:
                         "created_at": datetime.now(timezone.utc), "processed": False,
                     })
 
+                # Task #143: "Total Donations (All-Time)" has always read a totalDonations
+                # field that nothing ever populated -- the CR API has no lifetime-donations
+                # concept at all, only a season-scoped counter that resets to 0 at every
+                # season boundary. donations/donationsReceived can only ever go DOWN
+                # within a season if a reset just happened, so that's a reliable signal
+                # to bank the last-known pre-reset value into a running total. This lets
+                # the dashboard show a real (bot-tracked-history) lifetime figure as
+                # banked + current, instead of a phantom stat that always reads 0.
+                donation_bank_updates = {}
+                if prior:
+                    old_donations = prior.get("donations", 0) or 0
+                    new_donations = profile_data.get("donations", 0) or 0
+                    if new_donations < old_donations:
+                        donation_bank_updates["lifetime_donations_banked"] = (
+                            (prior.get("lifetime_donations_banked", 0) or 0) + old_donations
+                        )
+                    old_received = prior.get("donationsReceived", 0) or 0
+                    new_received = profile_data.get("donationsReceived", 0) or 0
+                    if new_received < old_received:
+                        donation_bank_updates["lifetime_donations_received_banked"] = (
+                            (prior.get("lifetime_donations_received_banked", 0) or 0) + old_received
+                        )
+
                 profile_operations.append(UpdateOne(
                     {"tag": profile_data["tag"]},
                     {
-                        "$set": {**profile_data, "last_updated": datetime.now(timezone.utc)},
+                        "$set": {**profile_data, "last_updated": datetime.now(timezone.utc), **donation_bank_updates},
                         # First time we see this tag: stamp when we started tracking them
                         # (idea #107's rising-star window) and seed the gamification fields
                         # (ideas #103/#104) so later $inc/$set calls never hit a missing field.
@@ -1155,6 +1195,8 @@ class DataHarvester:
                             "clan_points": 0,
                             "war_participation_streak": 0,
                             "streak_shields": 1,
+                            "lifetime_donations_banked": 0,
+                            "lifetime_donations_received_banked": 0,
                             # Rec #3: seeds role_since for a brand-new profile so it's
                             # never missing -- the role-change block elsewhere in this
                             # loop overwrites it going forward whenever the role
@@ -1186,6 +1228,39 @@ class DataHarvester:
                     }},
                     upsert=True
                 ))
+
+                # Task #151: record this member's equipped deck once per calendar
+                # day (same one-row-per-day cadence as player_snapshots above) so
+                # deck composition can be analyzed over time. currentDeck cards
+                # keep their level/evolutionLevel so "was this an evo deck"
+                # analytics stay possible later, not just card names.
+                current_deck = profile_data.get("currentDeck") or []
+                if current_deck:
+                    deck_snapshot_operations.append(UpdateOne(
+                        {"tag": profile_data["tag"], "date": today},
+                        {"$set": {
+                            "tag": profile_data["tag"],
+                            "name": profile_data.get("name"),
+                            "date": today,
+                            "deck": [
+                                {
+                                    "name": c.get("name"),
+                                    "level": c.get("level"),
+                                    "maxLevel": c.get("maxLevel"),
+                                    "evolutionLevel": c.get("evolutionLevel", 0),
+                                    "rarity": c.get("rarity"),
+                                    "elixirCost": c.get("elixirCost"),
+                                }
+                                for c in current_deck if isinstance(c, dict)
+                            ],
+                            "support_cards": [
+                                c.get("name") for c in (profile_data.get("currentDeckSupportCards") or []) if isinstance(c, dict)
+                            ],
+                            "favourite_card": (profile_data.get("currentFavouriteCard") or {}).get("name"),
+                            "recorded_at": datetime.now(timezone.utc),
+                        }},
+                        upsert=True
+                    ))
             time.sleep(0.05)
 
         if profile_operations:
@@ -1194,6 +1269,9 @@ class DataHarvester:
 
         if snapshot_operations:
             self.col_player_snapshots.bulk_write(snapshot_operations)
+
+        if deck_snapshot_operations:
+            self.col_deck_snapshots.bulk_write(deck_snapshot_operations)
 
         return member_tags
 
@@ -1708,6 +1786,112 @@ class DataHarvester:
         cutoff = now - timedelta(days=self.CONFIG_BACKUP_RETENTION)
         db["config_backups"].delete_many({"created_at": {"$lt": cutoff}})
 
+    DB_BACKUP_LOG_RETENTION_DAYS = 30  # how long to keep the metadata log (the
+    # actual zip is deleted right after a successful Discord upload -- this
+    # collection never holds the backup payload itself, just its stats)
+    DB_BACKUP_EXCLUDED_COLLECTIONS = {
+        # config already gets its own daily snapshot (backup_config_collection
+        # above) -- backing that collection up again here would just be a
+        # backup of a backup, growing forever for no extra safety.
+        "config_backups",
+        # This method's own metadata log -- excluding it avoids a collection
+        # backing up a record of itself.
+        "db_backups_log",
+        # Pure re-derivable CR API response cache, not data that's ever a real
+        # loss if it disappears (and can get large/churny).
+        "api_cache", "mongo_cache",
+    }
+
+    def backup_full_database(self, force: bool = False, triggered_by: str = "scheduled") -> dict | None:
+        """A full-Mongo-database safety net, one level broader than
+        backup_config_collection() above (which only ever covered the
+        `config` collection). Every other collection in the main
+        `graveyardbot` database (player_profiles, battle_history, war_tracking,
+        users, etc. -- everything except DB_BACKUP_EXCLUDED_COLLECTIONS) gets
+        dumped to one JSON file each via bson's json_util (which round-trips
+        ObjectId/datetime correctly, unlike plain json.dumps), zipped into a
+        single archive, and handed off to the bot process via the existing
+        pending_actions queue (kind="db_backup_post") so it can actually post
+        the file to Discord -- this process has no live Discord connection of
+        its own, same reasoning as every other Discord-facing action already
+        routed through pending_actions elsewhere in this file.
+
+        De-duped per calendar day like the config backup, unless force=True
+        (the manual "Backup Now" admin button bypasses the dedupe). The
+        forum's separate `graveyardbot_forum` database (its own MongoClient,
+        deliberately isolated -- see forum_routes.py) is NOT included; it's a
+        distinct, lower-stakes dataset and backing it up would require a
+        second connection and separate handling this pass didn't scope in.
+
+        Returns a small metadata dict (or None if skipped/failed) rather than
+        raising -- callers (run_full_cycle and the manual-trigger route) both
+        treat a failed backup as non-fatal.
+        """
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        db = self.col_config.database
+        if not force and db["db_backups_log"].find_one({"backup_date": today}):
+            return None
+
+        tmp_dir = tempfile.mkdtemp(prefix="graveyardbot_backup_")
+        zip_path = os.path.join(tmp_dir, f"graveyardbot_backup_{now.strftime('%Y%m%d_%H%M%S')}.zip")
+        collection_count = 0
+        total_docs = 0
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name in db.list_collection_names():
+                    if name in self.DB_BACKUP_EXCLUDED_COLLECTIONS:
+                        continue
+                    docs = list(db[name].find({}))
+                    total_docs += len(docs)
+                    collection_count += 1
+                    # json_util.dumps preserves ObjectId/datetime/etc. as
+                    # round-trippable {"$oid": ...}/{"$date": ...} wrappers --
+                    # a real restore path (json_util.loads back into pymongo),
+                    # not just a human-readable snapshot.
+                    zf.writestr(f"{name}.json", json_util.dumps(docs, indent=None))
+            size_bytes = os.path.getsize(zip_path)
+        except Exception:
+            # Clean up the temp dir even on failure -- don't leak partial
+            # backup files if a collection dump throws partway through.
+            try:
+                os.remove(zip_path)
+            except OSError:
+                pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+            raise
+
+        db["db_backups_log"].insert_one({
+            "backup_date": today, "created_at": now, "size_bytes": size_bytes,
+            "collection_count": collection_count, "total_docs": total_docs,
+            "triggered_by": triggered_by,
+        })
+        cutoff = now - timedelta(days=self.DB_BACKUP_LOG_RETENTION_DAYS)
+        db["db_backups_log"].delete_many({"created_at": {"$lt": cutoff}})
+
+        # Hand off to the bot process for actual Discord delivery. The bot's
+        # pending_actions consumer (cogs/clash_cog.py) is responsible for
+        # deleting zip_path/tmp_dir once it's done uploading (or given up).
+        db["pending_actions"].insert_one({
+            "kind": "db_backup_post",
+            "zip_path": zip_path,
+            "size_bytes": size_bytes,
+            "collection_count": collection_count,
+            "total_docs": total_docs,
+            "backup_date": today,
+            "triggered_by": triggered_by,
+            "created_at": now,
+            "processed": False,
+        })
+        log.info(f"Full DB backup ready: {collection_count} collections, {total_docs} docs, {size_bytes} bytes -> {zip_path}")
+        return {
+            "backup_date": today, "size_bytes": size_bytes,
+            "collection_count": collection_count, "total_docs": total_docs,
+        }
+
     def apply_due_scheduled_settings(self):
         """Idea #77: settings changes scheduled for a future time (queued via
         web_routes.py's /admin/api/settings/schedule) get applied here once due."""
@@ -1802,6 +1986,10 @@ class DataHarvester:
             self.backup_config_collection()
         except Exception as e:
             log.error(f"Config backup failed (non-fatal): {e}")
+        try:
+            self.backup_full_database()
+        except Exception as e:
+            log.error(f"Full database backup failed (non-fatal): {e}")
 
         # Idea #214: off unless an admin explicitly enabled it in Settings.
         try:

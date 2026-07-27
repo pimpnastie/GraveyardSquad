@@ -134,6 +134,8 @@
         .achv-stars { color: var(--warning); font-size: 11px; margin-left: 6px; }
         .achv-bar-track { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin-top: 6px; }
         .achv-bar-fill { height: 100%; background: var(--warning); border-radius: 3px; }
+        .achv-group-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); margin: 14px 0 2px; }
+        .achv-group-label:first-child { margin-top: 0; }
 
         /* ── Battle Intelligence (superlatives) ── */
         .superlative-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 14px; margin-bottom: 20px; }
@@ -343,21 +345,25 @@
                     <canvas id="trend7dChart" height="50"></canvas>
                 </div>
                 {% endif %}
-                <div class="stat-row">
+                <div class="stat-row" title="Donated this season only. Clash Royale resets this counter to 0 at the start of every season -- a low number right after a reset is expected, not a bug.">
                     <span class="stat-label">Donations (Season) 🎁</span>
                     <span class="stat-val" style="color: var(--success);">{{ player.donations }}</span>
                 </div>
-                <div class="stat-row">
+                <div class="stat-row" title="Received this season only. Also resets to 0 every season -- Clash Royale's API doesn't expose a true lifetime figure for this stat.">
                     <span class="stat-label">Donations Received 📥</span>
                     <span class="stat-val">{{ player.donationsReceived | default(0) }}</span>
                 </div>
-                <div class="stat-row">
-                    <span class="stat-label">Total Donations (All-Time) 🏦</span>
+                <div class="stat-row" title="Tracked since this dashboard started monitoring the clan: this season's total plus everything banked at prior season resets. Not the same as a true CR account lifetime total, since we can't see donation history from before we started tracking.">
+                    <span class="stat-label">Total Donations (Tracked) 🏦</span>
                     <span class="stat-val">{{ player.totalDonations | default(0) }}</span>
                 </div>
-                <div class="stat-row">
+                <div class="stat-row" title="Same tracked-lifetime approach as Total Donations, applied to donations received.">
+                    <span class="stat-label">Total Received (Tracked) 🏦</span>
+                    <span class="stat-val">{{ player.totalDonationsReceived | default(0) }}</span>
+                </div>
+                <div class="stat-row" title="Decks used in the current war so far (out of a max of 4/day). Not the same as War Trophies, which is a separate static rank stat.">
                     <span class="stat-label">War Battles (Current) ⚔️</span>
-                    <span class="stat-val">{{ player.clanWarTrophies | default(0) }}</span>
+                    <span class="stat-val">{% if player.war_in_current_race %}{{ player.war_decks_used_today | default(0) }}/4 today ({{ player.war_decks_used | default(0) }} this war){% else %}Not in a war{% endif %}</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">War Day Wins (Lifetime) 🎖️</span>
@@ -407,7 +413,7 @@
                     <span class="stat-label">Highest Trophies Tracked</span>
                     <span class="stat-val" style="color: var(--warning);">{{ player.personal_best_trophies_tracked | default(player.trophies) }}</span>
                 </div>
-                <div class="stat-row">
+                <div class="stat-row" title="Consecutive wins in a row, longest ever seen across all logged battles. This is computed by the bot -- Clash Royale's API has no native streak field.">
                     <span class="stat-label">Longest Win Streak (All-Time)</span>
                     <span class="stat-val">{{ player.personal_best_win_streak | default(0) }}</span>
                 </div>
@@ -477,11 +483,11 @@
                     <span class="stat-label">Total Battles (Lifetime)</span>
                     <span class="stat-val">{{ player.battleCount | default(0) }}</span>
                 </div>
-                <div class="stat-row">
+                <div class="stat-row" title="Consecutive wins in a row right now (resets to 0 on any loss/draw). Computed from logged battle history -- not a Clash Royale native stat.">
                     <span class="stat-label">Current Streak</span>
                     <span class="stat-val" id="stat-current-streak">—</span>
                 </div>
-                <div class="stat-row">
+                <div class="stat-row" title="Longest consecutive-wins run found in logged battle history. Computed by the bot -- not a Clash Royale native stat.">
                     <span class="stat-label">Longest Win Streak 🔥</span>
                     <span class="stat-val" id="stat-longest-streak">—</span>
                 </div>
@@ -502,7 +508,7 @@
                     <span class="stat-val">{{ player.clanCardsCollected | default(0) }}</span>
                 </div>
                 <div class="stat-row">
-                    <span class="stat-label" style="cursor:help;" title="A card counts as maxed when its level equals its max level for the player's current King Tower level -- straight from Clash Royale's own card data, not a house rule. See the Card Mastery breakdown in the Achievements tab for maxed counts by card type.">Cards Maxed ⓘ</span>
+                    <span class="stat-label" style="cursor:help;" title="A card counts as maxed at level 16 -- Supercell's stated permanent ceiling, and the level at which a card becomes free to donate/request. Not the same as a card's account-relative max level (which is capped by your current King Tower level and can be lower than 16). See the Card Mastery breakdown in the Achievements tab for maxed counts by card type.">Cards Maxed ⓘ</span>
                     <span class="stat-val">
                         {{ player.collection_maxed_count | default(0) }} / {{ player.collection_total_count | default(0) }}
                         {% if player.collection_total_count %} ({{ "%.0f" | format(player.collection_maxed_count / player.collection_total_count * 100) }}%){% endif %}
@@ -634,11 +640,12 @@
                 {% endif %}
             </div>
 
-            <!-- ── ACHIEVEMENTS ── -->
+            <!-- ── ACHIEVEMENTS (task #146: grouped into In Progress / Completed /
+                 No Target sections instead of one flat undifferentiated list) ── -->
             <div class="card">
                 <div class="card-title">🎯 Achievements</div>
                 {% if player.achievements %}
-                {% for a in player.achievements %}
+                {% macro achv_row(a) %}
                 <div class="achv-row">
                     <div class="achv-top">
                         <span class="achv-name">{{ a.name }}{% if a.info %} <span style="cursor:help; font-size:11px; color:var(--dim);" title="{{ a.info }}">ⓘ</span>{% endif %}{% if a.stars %}<span class="achv-stars">{% for _ in range(a.stars) %}★{% endfor %}</span>{% endif %}</span>
@@ -652,24 +659,38 @@
                     </div>
                     {% endif %}
                 </div>
-                {% endfor %}
+                {% endmacro %}
+                {% if player.achievements_in_progress %}
+                <div class="achv-group-label">In Progress ({{ player.achievements_in_progress | length }})</div>
+                {% for a in player.achievements_in_progress %}{{ achv_row(a) }}{% endfor %}
+                {% endif %}
+                {% if player.achievements_completed %}
+                <div class="achv-group-label">Completed ({{ player.achievements_completed | length }})</div>
+                {% for a in player.achievements_completed %}{{ achv_row(a) }}{% endfor %}
+                {% endif %}
+                {% if player.achievements_no_target %}
+                <div class="achv-group-label">Other</div>
+                {% for a in player.achievements_no_target %}{{ achv_row(a) }}{% endfor %}
+                {% endif %}
                 {% else %}
                 <div class="empty-note">No achievement data available.</div>
                 {% endif %}
+            </div>
+
+            <!-- ── CARD MASTERY (idea #26) ── moved to sit right after Achievements
+                 so the two progression/completion views live next to each other
+                 instead of being split apart by Clan Badges. -->
+            <div class="card">
+                <div class="card-title">🃏 Card Mastery
+                    <span style="cursor:help; font-size:12px; color:var(--dim); font-weight:normal;" title="Same 'maxed' definition as Cards Maxed in Overview (level 16, Supercell's permanent ceiling), broken out by card type instead of one flat number. Troop/Spell/Building is a hand-maintained lookup covering the well-known card pool -- a newly-released card we haven't catalogued yet falls into 'Other' rather than being miscounted.">ⓘ</span>
+                </div>
+                <div id="cardMasteryContent">Loading…</div>
             </div>
 
             <!-- ── ACHIEVEMENT BADGES (idea #101/#113) ── -->
             <div class="card">
                 <div class="card-title">🏅 Clan Badges</div>
                 <div id="badgesContent" style="display:flex; flex-wrap:wrap; gap:8px;">Loading…</div>
-            </div>
-
-            <!-- ── CARD MASTERY (idea #26) ── -->
-            <div class="card">
-                <div class="card-title">🃏 Card Mastery
-                    <span style="cursor:help; font-size:12px; color:var(--dim); font-weight:normal;" title="Same 'maxed' definition as Cards Maxed in Overview (level equals max level for this account's King Tower level), broken out by card type instead of one flat number. Troop/Spell/Building is a hand-maintained lookup covering the well-known card pool -- a newly-released card we haven't catalogued yet falls into 'Other' rather than being miscounted.">ⓘ</span>
-                </div>
-                <div id="cardMasteryContent">Loading…</div>
             </div>
 
             <div class="section-divider">Active Goals</div>
@@ -687,8 +708,8 @@
                     <span class="stat-label">Balance</span>
                     <span class="stat-val" id="clanPointsBalance">—</span>
                 </div>
-                <div class="stat-row">
-                    <span class="stat-label">War Streak</span>
+                <div class="stat-row" title="Consecutive war weeks with a full 4/4 deck usage -- a participation streak, not a win streak. Shields (🛡️) protect it against a single missed week.">
+                    <span class="stat-label">War Participation Streak</span>
                     <span class="stat-val" id="warStreakVal">—</span>
                 </div>
                 <div style="display:flex; gap:8px; margin-top:10px;">
@@ -1085,8 +1106,8 @@ function buildBattleEntry(b, idx) {
     const badgeCls = result === 'win' ? 'badge-win' : result === 'loss' ? 'badge-loss' : 'badge-draw';
     const entryBorderCls = result === 'win' ? 'win' : result === 'loss' ? 'loss' : 'draw';
     const teamC = b.team_crowns ?? '?';
-    const oppC  = b.opp_crowns  ?? '?';
-    const oppName = b.opp_name || 'Unknown';
+    const oppC  = b.opponent_crowns ?? '?';
+    const oppName = b.opponent_name || 'Unknown';
     const type    = friendlyType(b.type);
     const time    = formatTime(b.battle_time);
 

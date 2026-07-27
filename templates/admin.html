@@ -81,6 +81,15 @@
   .main { flex: 1; overflow-y: auto; padding: 28px 32px; }
   .tab-pane { display: none; }
   .tab-pane.active { display: block; }
+  /* Task #147: Settings tab pagination -- one group visible at a time behind
+     a small pill nav, instead of ~7 section groups all rendered in one long
+     scroll. */
+  .settings-pill-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  .settings-pill { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--dim); font-family: var(--font-mono); font-size: 12px; font-weight: 600; letter-spacing: .3px; cursor: pointer; transition: all .15s; }
+  .settings-pill:hover { color: var(--text); border-color: var(--accent); }
+  .settings-pill.active { color: var(--accent); border-color: var(--accent); background: rgba(0,229,255,0.08); }
+  .settings-page { display: none; }
+  .settings-page.active { display: block; }
   .page-header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 14px; }
   .page-title { font-size: 28px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-bright); }
   .page-sub { font-family: var(--font-mono); font-size: 12px; color: var(--dim); letter-spacing: 1px; }
@@ -221,6 +230,13 @@
   .roster-strikes { font-family: var(--font-mono); font-size: 11px; color: var(--err); white-space: nowrap; }
   .roster-expand-btn { margin-left: auto; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--dim); cursor: pointer; padding: 4px 10px; font-size: 12px; transition: all .15s; white-space: nowrap; }
   .roster-expand-btn:hover { border-color: var(--accent); color: var(--accent); }
+  /* Per-day war progress pips (task #168) — small numbered dots under the
+     member's tag, one per race day so far, green if they earned fame that
+     day and red if they didn't. */
+  .war-day-pips { display: flex; gap: 4px; margin-top: 4px; }
+  .war-day-pip { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; font-size: 9px; font-family: var(--font-mono); font-weight: 700; }
+  .war-day-pip.pip-ok   { background: rgba(0,224,150,0.15); color: var(--ok); border: 1px solid rgba(0,224,150,0.35); }
+  .war-day-pip.pip-zero { background: rgba(255,61,113,0.15); color: var(--err); border: 1px solid rgba(255,61,113,0.35); }
 
   /* ── Player drawer ── */
   .player-drawer { display: none; border-top: 1px solid var(--border); background: rgba(0,0,0,0.2); padding: 20px; }
@@ -309,7 +325,7 @@
     </div>
     <div class="nav-section">Navigation</div>
     <button class="nav-btn active" onclick="showTab('roster', this); loadRoster();"><span class="nav-icon">🛡️</span>Roster</button>
-    <button class="nav-btn" onclick="showTab('diag', this); loadSecretRotation(); loadConfigBackups(); loadApiKeys();"><span class="nav-icon">🔍</span>Diagnostics</button>
+    <button class="nav-btn" onclick="showTab('diag', this); loadSecretRotation(); loadConfigBackups(); loadDbBackups(); loadApiKeys();"><span class="nav-icon">🔍</span>Diagnostics</button>
     <button class="nav-btn" onclick="showTab('war', this)"><span class="nav-icon">⚔️</span>War Monitor</button>
     <button class="nav-btn" onclick="showTab('battles', this)"><span class="nav-icon">📜</span>Battle Logs</button>
     <button class="nav-btn" onclick="showTab('analytics', this); loadAnalytics();"><span class="nav-icon">📊</span>Analytics</button>
@@ -349,6 +365,7 @@
           <option value="member">Member</option>
         </select>
         <select class="form-select" id="roster-sort" onchange="filterRoster()">
+          <option value="fame" selected>Sort: War Fame</option>
           <option value="trophies">Sort: Trophies</option>
           <option value="name">Sort: Name</option>
           <option value="donations">Sort: Donations</option>
@@ -366,13 +383,14 @@
         <button class="btn-refresh" style="margin-left:auto;" onclick="clearBulkSelection()">Clear</button>
       </div>
 
-      <!-- War slacker banner — only shown when slackers exist -->
-      <div id="slacker-banner" style="display:none; background:rgba(255,61,113,0.08); border:1px solid var(--err); border-radius:6px; padding:12px 16px; margin-bottom:20px; display:none; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+      <div id="roster-list"></div>
+
+      <!-- War slacker banner — moved to the bottom of the list per feedback
+           (it was the first thing anyone saw, ahead of the roster itself). -->
+      <div id="slacker-banner" style="display:none; background:rgba(255,61,113,0.08); border:1px solid var(--err); border-radius:6px; padding:12px 16px; margin-top:20px; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <span style="font-family:var(--font-mono); font-size:12px; color:var(--err);" id="slacker-text"></span>
         <button class="btn-danger" style="padding:6px 14px; font-size:12px;" onclick="fireWarNudges(this)">⚔️ DM All Slackers</button>
       </div>
-
-      <div id="roster-list"></div>
     </div>
 
     <!-- DIAGNOSTICS -->
@@ -439,6 +457,14 @@
           <div class="diag-card-header"><div class="diag-card-title">💾 Config Backups</div></div>
           <div class="diag-body">
             <div id="config-backups-list" style="font-size:12px;">Loading…</div>
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">🗄️ Full Database Backups</div></div>
+          <div class="diag-body">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-top:0;">Every collection in the database (except caches), zipped and posted to the Database Backup Channel (Settings → Channels &amp; Posts) once a day automatically. This is separate from Config Backups above, which only covers settings.</p>
+            <button class="btn-refresh" onclick="triggerManualBackup()">🗄️ Backup Now</button>
+            <div id="db-backups-list" style="font-size:12px; margin-top:10px;">Loading…</div>
           </div>
         </div>
         <div class="diag-card">
@@ -535,6 +561,9 @@
           <option value="loss">Losses only</option>
           <option value="draw">Draws only</option>
         </select>
+        <select class="form-select" id="mode-filter" onchange="filterBattles()">
+          <option value="">All modes</option>
+        </select>
         <button class="btn-refresh" onclick="loadBattles(0)">↻ Fetch Latest</button>
         <span class="last-refresh" id="battles-last-refresh"></span>
       </div>
@@ -586,6 +615,33 @@
         <div class="stat-card" id="ov-boat"><div class="stat-label">Boat Battles</div><div class="stat-value">—</div><div class="stat-note">Boat battle activity</div></div>
       </div>
 
+      <!-- Moved up per feedback: trend charts are the most-checked widgets on this tab,
+           so they now sit right under the overview stats instead of below the fold. -->
+      <div class="section-label">Clan Trend</div>
+      <div class="toolbar">
+        <select class="form-select" id="trend-days" onchange="loadClanTrend()">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="180">Last 180 days</option>
+        </select>
+      </div>
+      <div class="diag-card" style="padding:16px; margin-bottom:28px;">
+        <canvas id="clan-trend-chart" height="80"></canvas>
+        <div id="clan-trend-note" style="font-size:12px; color:var(--dim); margin-top:8px;"></div>
+      </div>
+
+      <div class="section-label">Member Drill-Down</div>
+      <div class="toolbar">
+        <select class="form-select" id="member-select" onchange="loadMemberTrend()" style="min-width:220px;">
+          <option value="">Select a member…</option>
+        </select>
+      </div>
+      <div class="diag-card" style="padding:16px; margin-bottom:28px;">
+        <canvas id="member-trend-chart" height="80"></canvas>
+        <div id="member-trend-note" style="font-size:12px; color:var(--dim); margin-top:8px;"></div>
+      </div>
+
       <div class="section-label">Leaderboards</div>
       <div class="diag-grid">
         <div class="diag-card">
@@ -620,29 +676,6 @@
       <div class="diag-card" style="padding:16px; overflow-x:auto; margin-bottom:28px;">
         <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono); margin-top:0;">Each row is one CR season (several war races rolled up), most recent first. Δ columns compare against the season directly above.</p>
         <div id="season-comparison-content"><span style="color:var(--dim); font-family:var(--font-mono); font-size:12px;">Loading…</span></div>
-      </div>
-
-      <div class="section-label">Clan Trend</div>
-      <div class="toolbar">
-        <select class="form-select" id="trend-days" onchange="loadClanTrend()">
-          <option value="7">Last 7 days</option>
-          <option value="30" selected>Last 30 days</option>
-          <option value="90">Last 90 days</option>
-          <option value="180">Last 180 days</option>
-        </select>
-      </div>
-      <div class="diag-card" style="padding:16px; margin-bottom:28px;">
-        <canvas id="clan-trend-chart" height="80"></canvas>
-      </div>
-
-      <div class="section-label">Member Drill-Down</div>
-      <div class="toolbar">
-        <select class="form-select" id="member-select" onchange="loadMemberTrend()" style="min-width:220px;">
-          <option value="">Select a member…</option>
-        </select>
-      </div>
-      <div class="diag-card" style="padding:16px; margin-bottom:28px;">
-        <canvas id="member-trend-chart" height="80"></canvas>
       </div>
 
       <div class="section-label">Battle-Level Card Analysis</div>
@@ -772,6 +805,12 @@
           <label><input type="checkbox" name="csv-fields" value="warDayWins"> War Day Wins</label>
           <label><input type="checkbox" name="csv-fields" value="decksUsedToday" checked> Decks Used</label>
           <label><input type="checkbox" name="csv-fields" value="decksRemaining" checked> Decks Remaining</label>
+          <label><input type="checkbox" name="csv-fields" value="cards_maxed_count"> Cards Maxed</label>
+          <label><input type="checkbox" name="csv-fields" value="cards_total_count"> Total Cards</label>
+          <label><input type="checkbox" name="csv-fields" value="cards_maxed_pct"> Cards Maxed %</label>
+          <label><input type="checkbox" name="csv-fields" value="current_deck"> Current Deck</label>
+          <label><input type="checkbox" name="csv-fields" value="current_deck_evo_count"> Evolutions Equipped</label>
+          <label><input type="checkbox" name="csv-fields" value="deck_archetype"> Deck Archetype</label>
         </div>
         <label style="color:var(--dim); font-family:var(--font-mono); font-size:12px; text-transform:uppercase;">2. Computed Formulas</label>
         <div style="display:grid; gap:10px; margin:12px 0 24px; color:var(--text-bright); font-family:var(--font-mono); font-size:13px;">
@@ -870,10 +909,10 @@
       <div class="diag-card" style="padding:0; overflow-x:auto;">
         <table class="war-table">
           <thead><tr>
-            <th>Member Name</th><th>Discord</th><th>Server Roles</th><th>Linked</th><th>Clan Rank</th><th>Site Access</th><th>Onboarding</th>
+            <th>Member Name</th><th>Discord</th><th>Server Roles</th><th>Linked</th><th>Clan Rank</th><th>Site Access</th><th>Onboarding</th><th>Actions</th>
           </tr></thead>
           <tbody id="user-table-body">
-            <tr><td colspan="7" style="text-align:center; padding:24px; color:var(--dim);">Loading user roster...</td></tr>
+            <tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">Loading user roster...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1059,6 +1098,24 @@
            URL and a date alongside real on/off toggles). Same cards, same
            input ids/values/logic throughout; only the grouping and headers
            changed, so nothing below needed a JS or backend change. -->
+
+      <!-- Task #147: paginated into one group visible at a time via a small
+           pill nav, instead of ~7 section groups (dozens of cards) all
+           rendered in a single long scroll. showSettingsPage() below is a
+           pure client-side show/hide -- every input keeps the same id, so
+           saveBotSettings() (which reads every field by id regardless of
+           which page is currently visible) needed zero changes. -->
+      <div class="settings-pill-nav" role="tablist">
+        <button type="button" class="settings-pill active" role="tab" onclick="showSettingsPage('behavior', this)">⚙️ Bot Behavior</button>
+        <button type="button" class="settings-pill" role="tab" onclick="showSettingsPage('channels', this)">📢 Channels &amp; Posts</button>
+        <button type="button" class="settings-pill" role="tab" onclick="showSettingsPage('recruitment', this)">🎯 Recruitment</button>
+        <button type="button" class="settings-pill" role="tab" onclick="showSettingsPage('discord', this)">💬 Discord Card</button>
+        <button type="button" class="settings-pill" role="tab" onclick="showSettingsPage('history', this)">📜 History &amp; Culture</button>
+        <button type="button" class="settings-pill" role="tab" onclick="showSettingsPage('access', this)">🔐 Access &amp; Scheduling</button>
+        <button type="button" class="settings-pill" role="tab" onclick="showSettingsPage('flags', this)">🚩 Feature Flags</button>
+      </div>
+
+      <div class="settings-page active" id="settings-page-behavior">
       <div class="section-label">Bot Behavior</div>
       <div class="diag-grid">
         <div class="diag-card">
@@ -1118,6 +1175,9 @@
         </div>
       </div>
 
+      </div><!-- /settings-page-behavior -->
+
+      <div class="settings-page" id="settings-page-channels">
       <div class="section-label">Channels &amp; Automated Posts</div>
       <div class="diag-grid">
         <div class="diag-card">
@@ -1130,7 +1190,7 @@
         <div class="diag-card">
           <div class="diag-card-header"><div class="diag-card-title">Changelog Channel ID</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
-            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where auto-posted "settings/template changed" lines go. Falls back to the announcements channel, then the War Channel, if unset.</p>
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where auto-posted "settings/template changed" lines go. Falls back to the announcements channel, then the War Channel, only if Channel-ID Fallback below is enabled.</p>
             <input type="text" id="set-changelog-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.changelog_channel_id or '' }}">
           </div>
         </div>
@@ -1144,7 +1204,7 @@
         <div class="diag-card">
           <div class="diag-card-header"><div class="diag-card-title">Leadership Escalation Channel ID</div></div>
           <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
-            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where escalation alerts go when a member ignores every war-day nudge tier. Falls back to the announcements channel if unset.</p>
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where escalation alerts go when a member ignores every war-day nudge tier. Falls back to the announcements channel only if Channel-ID Fallback below is enabled.</p>
             <input type="text" id="set-leadership-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.leadership_channel_id or '' }}">
           </div>
         </div>
@@ -1173,8 +1233,27 @@
             <input type="text" id="set-beta-sync-role" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.beta_sync_role_id or '' }}">
           </div>
         </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Database Backup Channel ID</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">Where the daily full-database backup .zip gets posted (e.g. your "warbot logs" channel). If Channel-ID Fallback below is off, nothing posts unless this is filled in directly.</p>
+            <input type="text" id="set-backup-channel" class="form-input" placeholder="e.g. 123456789012345678" value="{{ bot_settings.backup_channel_id or '' }}">
+          </div>
+        </div>
+        <div class="diag-card">
+          <div class="diag-card-header"><div class="diag-card-title">Channel-ID Fallback</div></div>
+          <div class="diag-body" style="display:flex; flex-direction:column; gap:10px;">
+            <p style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">When a specific channel above (Backup, Leadership, Announcements, Changelog) is left blank, the bot used to silently fall back to a different channel -- which could mean posts land somewhere unexpected. Off by default: if a channel isn't explicitly set, that post is skipped instead of redirected.</p>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="set-channel-fallback" {% if bot_settings.channel_fallback_enabled %}checked{% endif %}> Enabled
+            </label>
+          </div>
+        </div>
       </div>
 
+      </div><!-- /settings-page-channels -->
+
+      <div class="settings-page" id="settings-page-recruitment">
       <div class="section-label">Recruitment &amp; Onboarding</div>
       <div class="diag-grid">
         <div class="diag-card">
@@ -1236,6 +1315,9 @@
         </div>
       </div>
 
+      </div><!-- /settings-page-recruitment -->
+
+      <div class="settings-page" id="settings-page-discord">
       <div class="section-label">Roster Page — "Our Discord" Card</div>
       <div class="diag-grid">
         <div class="diag-card">
@@ -1257,6 +1339,9 @@
         </div>
       </div>
 
+      </div><!-- /settings-page-discord -->
+
+      <div class="settings-page" id="settings-page-history">
       <div class="section-label">Clan History &amp; Culture</div>
       <div class="diag-grid">
         <div class="diag-card">
@@ -1275,6 +1360,9 @@
         </div>
       </div>
 
+      </div><!-- /settings-page-history -->
+
+      <div class="settings-page" id="settings-page-access">
       <div class="section-label">Access &amp; Scheduling</div>
       <div class="diag-grid">
         <div class="diag-card">
@@ -1307,6 +1395,9 @@
            configure; Recruitment Video/Discord Invite/Founding Date/Culture
            Doc moved to the sections above since those are plain config
            values, not flags, despite previously living in this group.) -->
+      </div><!-- /settings-page-access -->
+
+      <div class="settings-page" id="settings-page-flags">
       <div class="section-label">Feature Flags (off by default)</div>
       <div class="diag-grid">
         <div class="diag-card">
@@ -1359,6 +1450,7 @@
           </div>
         </div>
       </div>
+      </div><!-- /settings-page-flags -->
 
       <div class="toolbar">
         <button class="btn-refresh" onclick="saveBotSettings()" id="settings-save-btn">💾 Save All Settings</button>
@@ -1531,6 +1623,16 @@ function showTab(name, btn) {
   _currentAdminTab = name;
   // Idea #161: picking a section on mobile should close the off-canvas sidebar.
   if (window.innerWidth <= 900) toggleSidebar(false);
+}
+
+// Task #147: Settings tab pagination -- swaps which .settings-page is
+// visible, mirroring showTab()'s pattern one level down.
+function showSettingsPage(name, btn) {
+  document.querySelectorAll('.settings-page').forEach(function(p){ p.classList.remove('active'); });
+  document.querySelectorAll('.settings-pill').forEach(function(b){ b.classList.remove('active'); });
+  var page = document.getElementById('settings-page-' + name);
+  if (page) page.classList.add('active');
+  if (btn) btn.classList.add('active');
 }
 
 // Restores whichever tab the admin was on before a reauthenticateNow()
@@ -1873,6 +1975,32 @@ async function loadConfigBackups() {
   } catch(e) { el.innerHTML = '<span style="color:var(--err)">Failed to load.</span>'; }
 }
 
+async function loadDbBackups() {
+  var el = document.getElementById('db-backups-list');
+  if (!el) return;
+  try {
+    var res = await fetch('/admin/api/backups');
+    var d = await res.json();
+    var backups = d.backups || [];
+    el.innerHTML = backups.length ? backups.slice(0, 5).map(function(b) {
+      var mb = (b.size_bytes / (1024*1024)).toFixed(1);
+      return '<div class="diag-row"><span class="diag-key">' + esc(b.backup_date) + '</span><span class="diag-val">' + b.collection_count + ' collections, ' + b.total_docs + ' docs, ' + mb + ' MB (' + esc(b.triggered_by || 'scheduled') + ')</span></div>';
+    }).join('') + '<div style="color:var(--dim); margin-top:6px; font-size:11px;">' + backups.length + ' backup(s) logged (30-day metadata retention -- the zip files themselves aren\'t kept, they\'re deleted right after posting to Discord).</div>'
+      : '<span style="color:var(--dim)">No backups yet — one runs automatically every day, or hit "Backup Now".</span>';
+  } catch(e) { el.innerHTML = '<span style="color:var(--err)">Failed to load.</span>'; }
+}
+
+async function triggerManualBackup() {
+  if (!confirm('Start a full database backup now? It\'ll post to the configured backup channel in about 20 seconds.')) return;
+  try {
+    var res = await fetch('/admin/backup/manual', { method: 'POST' });
+    var d = await res.json();
+    if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
+    alert(d.message || 'Backup started.');
+    setTimeout(loadDbBackups, 3000);
+  } catch(e) { alert('Could not start backup: ' + e.message); }
+}
+
 // ── Rec #18: scoped read-only API keys ──────────────────────────────────────────
 async function loadApiKeys() {
   var el = document.getElementById('apikey-list');
@@ -1961,11 +2089,18 @@ function renderDiagnostics(d) {
     ['Endpoint Tested', api.endpoint_tested||'N/A']
   ]);
   var bot = d.bot||{}, botOk = bot.connected===true;
-  setPill('pill-bot', botOk?'CONNECTED':'OFFLINE', botOk?'ok':'err');
+  setPill('pill-bot', botOk?'CONNECTED':(bot.stale?'STALE':'OFFLINE'), botOk?'ok':'err');
+  var uptimeStr = 'N/A';
+  if (bot.uptime != null) {
+    var upS = Math.floor(bot.uptime);
+    var d_ = Math.floor(upS/86400), h_ = Math.floor((upS%86400)/3600), m_ = Math.floor((upS%3600)/60);
+    uptimeStr = (d_?d_+'d ':'') + (h_?h_+'h ':'') + m_+'m';
+  }
   document.getElementById('body-bot').innerHTML = renderRows([
     ['Discord WS', bot.connected?'Connected':'Disconnected', bot.connected?'ok':'err'],
     ['Latency', bot.latency_ms!=null?bot.latency_ms+' ms':'N/A'],
-    ['Uptime', bot.uptime||'N/A']
+    ['Uptime', uptimeStr],
+    ['Last Heartbeat', bot.last_beat_at ? String(bot.last_beat_at).slice(0,19).replace('T',' ')+' UTC' : 'Never', bot.stale?'err':'ok']
   ]);
   var cache = d.cache||{}, totalKeys = cache.total_keys!=null?cache.total_keys:0;
   setStatCard('sc-cache-keys', totalKeys, 'keys in store', totalKeys>0?'ok':'warn');
@@ -2041,32 +2176,41 @@ function renderDiagnostics(d) {
 
 // ── Analytics ──────────────────────────────────────────────────────────────────
 async function loadAnalytics() {
+  // Each widget below is independently try/caught (via Promise.allSettled)
+  // rather than one long serial await chain inside a single try -- previously
+  // a single early failure (e.g. one endpoint returning 403/500, or clan-trend/
+  // member-trend throwing on a non-200 response) aborted every widget after
+  // it, including populateMemberSelect() and loadClanHealthScore(), which is
+  // why Member Drill-Down and Clan Trend could look completely inert with no
+  // visible error at all.
   var btn = document.getElementById('btn-analytics-refresh');
   var spin = document.getElementById('analytics-spin');
   btn.disabled = true; spin.className = 'spin';
   try {
-    const [overview, leaderboards, battles, archetypes] = await Promise.all([
-      fetch('/admin/api/analytics/overview').then(function(r){ return r.json(); }),
-      fetch('/admin/api/analytics/leaderboards').then(function(r){ return r.json(); }),
-      fetch('/admin/api/analytics/battles').then(function(r){ return r.json(); }),
-      fetch('/admin/api/analytics/archetypes').then(function(r){ return r.json(); }),
+    var res = await Promise.allSettled([
+      fetch('/admin/api/analytics/overview').then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }).then(renderAnalyticsOverview),
+      fetch('/admin/api/analytics/leaderboards').then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }).then(renderLeaderboards),
+      fetch('/admin/api/analytics/battles').then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }).then(renderBattleAnalysis),
+      fetch('/admin/api/analytics/archetypes').then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }).then(renderArchetypes),
+      loadClanTrend(),
+      loadCW2Trend(),
+      loadSeasonComparison(),
+      loadClanHealthScore(),
+      populateMemberSelect(),
+      loadTierList(),
+      loadUnderusedGems(),
+      loadHardCounters(),
+      loadMatchupBreakdown(),
+      loadMetaSnapshotDiff(),
     ]);
-    renderAnalyticsOverview(overview);
-    renderLeaderboards(leaderboards);
-    renderBattleAnalysis(battles);
-    renderArchetypes(archetypes);
-    await loadClanTrend();
-    await loadCW2Trend();
-    await loadSeasonComparison();
-    await loadClanHealthScore();
-    await populateMemberSelect();
-    loadTierList();
-    loadUnderusedGems();
-    loadHardCounters();
-    loadMatchupBreakdown();
-    loadMetaSnapshotDiff();
+    var failures = res.filter(function(r){ return r.status === 'rejected'; });
     document.getElementById('analytics-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
-    toast('Analytics refreshed.', 'ok');
+    if (failures.length) {
+      toast(failures.length + ' analytics widget(s) failed to load — see individual sections for details.', 'err');
+      failures.forEach(function(f){ console.error('Analytics widget failed:', f.reason); });
+    } else {
+      toast('Analytics refreshed.', 'ok');
+    }
   } catch(e) {
     toast('Failed to load analytics: ' + e.message, 'err');
   } finally {
@@ -2377,35 +2521,47 @@ async function runCounterPickPrep() {
 
 var clanTrendChart = null;
 async function loadClanTrend() {
-  var days = document.getElementById('trend-days').value;
-  var res = await fetch('/admin/api/analytics/clan-trend?days=' + encodeURIComponent(days));
-  var docs = await res.json();
-  var labels = docs.map(function(d){ return (d.timestamp || '').substring(0, 10); });
-  var trophyData = docs.map(function(d){ return d.clanScore || 0; });
-  var memberData = docs.map(function(d){ return d.memberCount || 0; });
-  var ctx = document.getElementById('clan-trend-chart').getContext('2d');
-  if (clanTrendChart) clanTrendChart.destroy();
-  if (typeof Chart === 'undefined') return;
-  clanTrendChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: labels,
-      datasets: [
-        { label: 'Clan Score', data: trophyData, borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)', yAxisID: 'y', tension: 0.25 },
-        { label: 'Member Count', data: memberData, borderColor: '#ffaa00', backgroundColor: 'rgba(255,170,0,0.08)', yAxisID: 'y1', tension: 0.25 },
-      ]
-    },
-    options: {
-      responsive: true,
-      interaction: { mode: 'index', intersect: false },
-      scales: {
-        y:  { position: 'left',  ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
-        y1: { position: 'right', ticks: { color: '#c9d1d9' }, grid: { drawOnChartArea: false } },
-        x:  { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
-      },
-      plugins: { legend: { labels: { color: '#c9d1d9' } } },
+  var noteEl = document.getElementById('clan-trend-note');
+  try {
+    var days = document.getElementById('trend-days').value;
+    var res = await fetch('/admin/api/analytics/clan-trend?days=' + encodeURIComponent(days));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var docs = await res.json();
+    if (!Array.isArray(docs)) throw new Error(docs.error || 'Unexpected response shape');
+    var ctx = document.getElementById('clan-trend-chart').getContext('2d');
+    if (clanTrendChart) { clanTrendChart.destroy(); clanTrendChart = null; }
+    if (!docs.length) {
+      if (noteEl) noteEl.textContent = 'No clan snapshots recorded yet for this range — one gets saved every harvest cycle, so this fills in over the first day or two of tracking.';
+      return;
     }
-  });
+    if (noteEl) noteEl.textContent = '';
+    if (typeof Chart === 'undefined') { if (noteEl) noteEl.textContent = 'Chart library failed to load (cdnjs unreachable?) — data exists, just can\'t render it as a graph right now.'; return; }
+    var labels = docs.map(function(d){ return (d.timestamp || '').substring(0, 10); });
+    var trophyData = docs.map(function(d){ return d.clanScore || 0; });
+    var memberData = docs.map(function(d){ return d.memberCount || 0; });
+    clanTrendChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Clan Score', data: trophyData, borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)', yAxisID: 'y', tension: 0.25 },
+          { label: 'Member Count', data: memberData, borderColor: '#ffaa00', backgroundColor: 'rgba(255,170,0,0.08)', yAxisID: 'y1', tension: 0.25 },
+        ]
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          y:  { position: 'left',  ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y1: { position: 'right', ticks: { color: '#c9d1d9' }, grid: { drawOnChartArea: false } },
+          x:  { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        },
+        plugins: { legend: { labels: { color: '#c9d1d9' } } },
+      }
+    });
+  } catch (e) {
+    if (noteEl) noteEl.textContent = 'Failed to load clan trend: ' + e.message;
+  }
 }
 
 async function populateMemberSelect() {
@@ -2413,44 +2569,60 @@ async function populateMemberSelect() {
   if (sel.dataset.loaded) return;
   try {
     var res = await fetch('/admin/api/roster');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     var members = await res.json();
+    if (!Array.isArray(members)) throw new Error(members.error || 'Unexpected response shape');
     sel.innerHTML = '<option value="">Select a member…</option>' + members.map(function(m){
       var tag = (m.tag || '').replace('#', '');
       return '<option value="' + esc(tag) + '">' + esc(m.name) + '</option>';
     }).join('');
     sel.dataset.loaded = '1';
   } catch(e) {
-    // Non-fatal — the member dropdown just stays empty; roster tab surfaces the real error.
+    // Non-fatal — the member dropdown just stays on "Select a member…"; the
+    // Roster tab itself surfaces the real error if /admin/api/roster is down.
   }
 }
 
 var memberTrendChart = null;
 async function loadMemberTrend() {
+  var noteEl = document.getElementById('member-trend-note');
   var tag = document.getElementById('member-select').value;
   var ctx = document.getElementById('member-trend-chart').getContext('2d');
   if (memberTrendChart) { memberTrendChart.destroy(); memberTrendChart = null; }
-  if (!tag || typeof Chart === 'undefined') return;
-  var res = await fetch('/admin/api/analytics/member/' + encodeURIComponent(tag) + '/trend?days=30');
-  var docs = await res.json();
-  var labels = docs.map(function(d){ return d.date; });
-  memberTrendChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: labels,
-      datasets: [
-        { label: 'Trophies', data: docs.map(function(d){ return d.trophies || 0; }), borderColor: '#00e096', backgroundColor: 'rgba(0,224,150,0.08)', tension: 0.25 },
-        { label: 'Donations', data: docs.map(function(d){ return d.donations || 0; }), borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)', tension: 0.25 },
-      ]
-    },
-    options: {
-      responsive: true,
-      scales: {
-        y: { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
-        x: { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
-      },
-      plugins: { legend: { labels: { color: '#c9d1d9' } } },
+  if (noteEl) noteEl.textContent = '';
+  if (!tag) return;
+  try {
+    var res = await fetch('/admin/api/analytics/member/' + encodeURIComponent(tag) + '/trend?days=30');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var docs = await res.json();
+    if (!Array.isArray(docs)) throw new Error(docs.error || 'Unexpected response shape');
+    if (!docs.length) {
+      if (noteEl) noteEl.textContent = 'No snapshots recorded yet for this member in the last 30 days.';
+      return;
     }
-  });
+    if (typeof Chart === 'undefined') { if (noteEl) noteEl.textContent = 'Chart library failed to load (cdnjs unreachable?) — data exists, just can\'t render it as a graph right now.'; return; }
+    var labels = docs.map(function(d){ return d.date; });
+    memberTrendChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Trophies', data: docs.map(function(d){ return d.trophies || 0; }), borderColor: '#00e096', backgroundColor: 'rgba(0,224,150,0.08)', tension: 0.25 },
+          { label: 'Donations', data: docs.map(function(d){ return d.donations || 0; }), borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)', tension: 0.25 },
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          x: { ticks: { color: '#c9d1d9' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        },
+        plugins: { legend: { labels: { color: '#c9d1d9' } } },
+      }
+    });
+  } catch (e) {
+    if (noteEl) noteEl.textContent = 'Failed to load member trend: ' + e.message;
+  }
 }
 
 // ── War ────────────────────────────────────────────────────────────────────────
@@ -2627,6 +2799,7 @@ async function loadBattles(page) {
     filteredBattles = allBattles.slice();
     battlesCurrentPage = (data && data.page != null) ? data.page : page;
     document.getElementById('battles-last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
+    populateModeFilter(allBattles);
     renderBattles(filteredBattles);
     // Idea #234: pagination controls.
     var totalCount = (data && data.total_count != null) ? data.total_count : allBattles.length;
@@ -2659,20 +2832,30 @@ function renderBattles(battles) {
       + '<td style="color:var(--dim)">' + esc(b.player_tag||'—') + '</td>'
       + '<td style="color:var(--dim)">' + esc(b.type||'—') + '</td>'
       + '<td>' + resultBadge + '</td>'
-      + '<td>' + (b.team_crowns!=null?b.team_crowns:'—') + ' – ' + (b.opp_crowns!=null?b.opp_crowns:'—') + '</td>'
-      + '<td>' + esc(b.opp_name||'—') + '</td>'
+      + '<td>' + (b.team_crowns!=null?b.team_crowns:'—') + ' – ' + (b.opponent_crowns!=null?b.opponent_crowns:'—') + '</td>'
+      + '<td>' + esc(b.opponent_name||'—') + '</td>'
       + '<td style="font-size:10px; line-height:1.4; color:var(--dim);"><strong style="color:var(--accent);">You:</strong> ' + esc(pCards)
       + '<br><strong style="color:var(--err);">Opp:</strong> ' + esc(oCards) + '</td></tr>';
   }).join('');
 }
 
+function populateModeFilter(battles) {
+  var sel = document.getElementById('mode-filter');
+  if (!sel) return;
+  var current = sel.value;
+  var modes = Array.from(new Set(battles.map(function(b){ return b.type; }).filter(Boolean))).sort();
+  sel.innerHTML = '<option value="">All modes</option>' + modes.map(function(m){ return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('');
+  if (modes.includes(current)) sel.value = current;
+}
 function filterBattles() {
   var text = document.getElementById('battle-filter').value.toUpperCase();
   var result = document.getElementById('result-filter').value;
+  var mode = document.getElementById('mode-filter') ? document.getElementById('mode-filter').value : '';
   var filtered = allBattles.filter(function(b){
     var mt = !text || (b.player_name||'').toUpperCase().includes(text) || (b.player_tag||'').toUpperCase().includes(text);
     var mr = !result || b.result === result;
-    return mt && mr;
+    var mm = !mode || b.type === mode;
+    return mt && mr && mm;
   });
   renderBattles(filtered);
 }
@@ -2689,9 +2872,9 @@ function showBattleDetails(i) {
     '<div class="modal-meta">'
     + '<div class="modal-meta-item"><span>Time</span>' + esc(formatBattleTime(b.battle_time)) + '</div>'
     + '<div class="modal-meta-item"><span>Player</span>' + esc(b.player_name||b.player_tag) + '</div>'
-    + '<div class="modal-meta-item"><span>Opponent</span>' + esc(b.opp_name||b.opp_tag||'—') + '</div>'
+    + '<div class="modal-meta-item"><span>Opponent</span>' + esc(b.opponent_name||b.opponent_tag||'—') + '</div>'
     + '<div class="modal-meta-item"><span>Result</span><strong style="color:var(--' + rc + ')">' + esc((b.result||'').toUpperCase()) + '</strong></div>'
-    + '<div class="modal-meta-item"><span>Score</span>' + (b.team_crowns??'?') + ' – ' + (b.opp_crowns??'?') + '</div>'
+    + '<div class="modal-meta-item"><span>Score</span>' + (b.team_crowns??'?') + ' – ' + (b.opponent_crowns??'?') + '</div>'
     + (b.trophy_change!=null?'<div class="modal-meta-item"><span>Trophy Δ</span>' + (b.trophy_change>=0?'+':'') + esc(b.trophy_change) + '</div>':'')
     + (b.type?'<div class="modal-meta-item"><span>Mode</span>' + esc(b.type) + '</div>':'')
     + '</div>'
@@ -2705,7 +2888,7 @@ function closeModal() { document.getElementById('battle-modal').classList.remove
 var _usersData = [];  // idea #71: kept client-side so search/sort don't need a refetch
 function renderUserRows(users) {
   var tbody = document.getElementById('user-table-body');
-  if (!users.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:24px; color:var(--dim);">No matches.</td></tr>'; return; }
+  if (!users.length) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);">No matches.</td></tr>'; return; }
   tbody.innerHTML = users.map(function(u){
     var tierPicker = u.status === 'Admin'
       ? '<select class="form-select" style="font-size:11px; padding:2px 6px;" onchange="setUserTier(' + JSON.stringify(u.discord_id) + ', this.value)">'
@@ -2747,14 +2930,42 @@ function renderUserRows(users) {
       var title = remaining.length ? ('Still needs: ' + remaining.join(', ')) : 'Fully onboarded';
       onboardingCell = '<span title="' + esc(title) + '" style="cursor:help; color:' + (done===steps.length?'var(--ok)':'var(--dim)') + ';">' + done + '/' + steps.length + '</span>';
     }
+    // Actions: Edit is always available (fixes a stale/wrong cr_tag on any
+    // row, linked or not); Delete is only offered for genuinely unconnected
+    // entries (never linked a CR account -- is_linked is false) since those
+    // are unambiguously safe to remove, whereas a linked account might still
+    // be a real officer/admin identity worth keeping even if its clan rank
+    // shows "—" because the tag is stale.
+    var actionsCell = '<button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px;" onclick="editUserLink(' + JSON.stringify(u.discord_id) + ', ' + JSON.stringify(u.cr_tag) + ')">✏️ Edit</button>'
+      + (!u.is_linked ? ' <button type="button" class="btn-refresh" style="font-size:11px; padding:3px 8px; border-color:var(--err); color:var(--err);" onclick="deleteUserEntry(' + JSON.stringify(u.discord_id) + ', ' + JSON.stringify(u.discord_username) + ')">🗑️ Delete</button>' : '');
     return '<tr><td><a href="/player/' + esc(u.cr_tag) + '" style="color:var(--accent); text-decoration:none;">' + esc(u.name) + '</a></td>'
       + '<td style="white-space:nowrap;">' + discordCell + '</td>'
       + '<td>' + rolesCell + '</td>'
       + '<td>' + (u.is_linked?'✅':'❌') + '</td>'
       + '<td' + (u.role_since ? ' title="In this role since ' + esc(u.role_since) + '" style="cursor:help;"' : '') + '>' + esc(u.rank) + '</td>'
       + '<td><span style="color:' + (u.status==='Admin'?'var(--ok)':'var(--dim)') + '">' + esc(u.status) + '</span> ' + tierPicker + '</td>'
-      + '<td>' + onboardingCell + '</td></tr>';
+      + '<td>' + onboardingCell + '</td>'
+      + '<td style="white-space:nowrap;">' + actionsCell + '</td></tr>';
   }).join('');
+}
+function editUserLink(discordId, currentTag) {
+  var newTag = prompt('Enter the Clash Royale tag to link this account to (without #), or clear the box to unlink:', currentTag || '');
+  if (newTag === null) return; // cancelled
+  fetch('/admin/api/users/edit', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ discord_id: discordId, cr_tag: newTag.trim() }),
+  }).then(function(r){ return r.json().then(function(d){ if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status)); }); })
+    .then(function(){ toast('User link updated.', 'ok'); loadUsers(); })
+    .catch(function(e){ toast('Failed to update link: ' + e.message, 'err'); });
+}
+function deleteUserEntry(discordId, label) {
+  if (!confirm('Delete the user entry for "' + label + '" (' + discordId + ')? This removes their site-access record entirely (not their Clash Royale profile).')) return;
+  fetch('/admin/api/users/delete', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ discord_id: discordId }),
+  }).then(function(r){ return r.json().then(function(d){ if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status)); }); })
+    .then(function(){ toast('User entry deleted.', 'ok'); loadUsers(); })
+    .catch(function(e){ toast('Failed to delete: ' + e.message, 'err'); });
 }
 function setUserTier(discordId, tier) {
   fetch('/admin/api/users/tier', {
@@ -2778,7 +2989,7 @@ function filterUsers() {
 }
 async function loadUsers() {
   var tbody = document.getElementById('user-table-body');
-  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--dim);"><span class="spin">↻</span> Loading...</td></tr>';
   try {
     var res = await fetch('/admin/api/users');
     _usersData = await res.json();
@@ -3119,6 +3330,8 @@ async function saveBotSettings() {
     changelog_channel_id: document.getElementById('set-changelog-channel').value.trim(),
     announcements_channel_id: document.getElementById('set-announcements-channel').value.trim(),
     leadership_channel_id: document.getElementById('set-leadership-channel').value.trim(),
+    channel_fallback_enabled: document.getElementById('set-channel-fallback').checked,
+    backup_channel_id: document.getElementById('set-backup-channel').value.trim(),
     quiet_hours_start: document.getElementById('set-quiet-start').value === '' ? null : parseInt(document.getElementById('set-quiet-start').value, 10),
     quiet_hours_end:   document.getElementById('set-quiet-end').value === '' ? null : parseInt(document.getElementById('set-quiet-end').value, 10),
     family_page_enabled: document.getElementById('set-family-enabled').checked,
@@ -3438,6 +3651,14 @@ document.addEventListener('DOMContentLoaded', function(){
       var r = document.getElementById('global-search-results'); if (r) r.style.display = 'none';
     }
   });
+  // Diagnostics used to only populate once you clicked into its tab, so a
+  // dead Discord bot or a slow query backlog could go unnoticed for a while.
+  // Load it up front alongside the rest of the landing data.
+  loadDiagnostics();
+  loadSecretRotation();
+  loadConfigBackups();
+  loadDbBackups();
+  loadApiKeys();
 });
 
 async function deployTemplate() {
@@ -3572,6 +3793,8 @@ function lineDiff(a, b) {
 var _rosterData = [];   // raw enriched member list from /admin/api/roster
 var _openDrawer = null; // tag of currently open drawer
 
+var _warDayBreakdown = { member_days: {}, current_period_index: null };
+
 async function loadRoster() {
   document.getElementById('roster-list').innerHTML =
     '<div style="color:var(--dim);font-family:var(--font-mono);font-size:12px;padding:20px 0;"><span class="spin">↻</span> Loading clan roster…</div>';
@@ -3584,6 +3807,13 @@ async function loadRoster() {
     document.getElementById('roster-last-refresh').textContent =
       'Last refresh: ' + new Date().toLocaleTimeString();
     populateClanDatalists();
+
+    // Per-day war progress (task #168) — best-effort, non-fatal if it fails.
+    try {
+      var dbRes = await fetch('/admin/api/war/day-breakdown');
+      var dbData = await dbRes.json();
+      if (!dbData.error) _warDayBreakdown = dbData;
+    } catch (e) { /* day-pips just won't render this refresh */ }
 
     // Show slacker banner if anyone has 0 decks used in current war
     var slackers = _rosterData.filter(function(m){ return m.decksUsedToday === 0 && m.in_war; });
@@ -3682,7 +3912,8 @@ function filterRoster() {
     if (sortBy === 'name')      return (a.name || '').localeCompare(b.name || '');
     if (sortBy === 'donations') return (b.donations || 0) - (a.donations || 0);
     if (sortBy === 'strikes')   return (b.strikes || 0) - (a.strikes || 0);
-    return (b.trophies || 0) - (a.trophies || 0); // default: trophies
+    if (sortBy === 'trophies')  return (b.trophies || 0) - (a.trophies || 0);
+    return (b.fame || 0) - (a.fame || 0); // default: current war fame
   });
 
   renderRoster(list);
@@ -3755,22 +3986,42 @@ function renderRoster(members) {
     var trophyWarnBadge = belowStreak >= 3
       ? '<span style="color:var(--err); font-size:11px; font-family:var(--font-mono);" title="Below the ' + esc((m.min_trophies_threshold || 0).toLocaleString()) + ' trophy minimum for ' + belowStreak + ' day(s) straight.">⬇️ ' + belowStreak + 'd LOW</span>'
       : '';
+    // Zero war fame while actively in the race is the clearest single sign
+    // of a slacking member — highlight the name itself, not just a stat cell.
+    var zeroFame = m.in_war && !(m.fame > 0);
+    var nameStyle = zeroFame ? 'color:var(--err);' : '';
+
+    // Per-day war progress pips — one per completed/current period this race,
+    // built from /admin/api/war/day-breakdown's member_days (reconstructed
+    // from the CR API's periodLogs, no extra historical storage needed).
+    var dayFames = (_warDayBreakdown.member_days || {})[cleanTag.toUpperCase()] || [];
+    var dayPips = dayFames.length
+      ? '<div class="war-day-pips" title="War fame earned each day this race">' + dayFames.map(function(f, i) {
+          var cls = f > 0 ? 'pip-ok' : 'pip-zero';
+          return '<span class="war-day-pip ' + cls + '" title="Day ' + (i + 1) + ': ' + f + ' fame">' + (i + 1) + '</span>';
+        }).join('') + '</div>'
+      : '';
 
     return '<div class="roster-card ' + strikeClass + '" id="card-' + cleanTag + '">'
       + '<div class="roster-row" onclick="toggleDrawer(' + attrJson(cleanTag) + ')">'
       + '<input type="checkbox" class="roster-bulk-check" data-tag="' + esc(tag) + '" onclick="event.stopPropagation(); updateBulkBar();" style="margin-right:8px;">'
       + '<div class="roster-name">'
-      + '<a href="/player/' + esc(cleanTag) + '" onclick="event.stopPropagation()">'
+      + '<a href="/player/' + esc(cleanTag) + '" onclick="event.stopPropagation()" style="' + nameStyle + '">'
       + esc(m.name || 'Unknown') + '</a>'
       + (adminBadge ? ' ' + adminBadge : '') + (trialBadge ? ' ' + trialBadge : '') + (trophyWarnBadge ? ' ' + trophyWarnBadge : '')
       + '<div style="font-size:11px; color:var(--dim); font-family:var(--font-mono); margin-top:2px;">' + esc(tag) + '</div>'
+      + (dayPips || '')
       + '</div>'
       + '<span class="roster-role ' + esc(roleClass) + '">' + esc(roleLabel) + '</span>'
+      + '<div class="roster-stat' + (zeroFame ? ' warn' : '') + '" title="Fame earned in the current River Race so far."><span>🔥</span><strong style="' + (zeroFame ? 'color:var(--err)' : '') + '">' + esc(m.in_war ? (m.fame || 0) : '—') + '</strong></div>'
       + '<div class="roster-stat"><span>🏆</span><strong>' + esc(m.trophies || 0) + '</strong></div>'
       + '<div class="roster-stat' + (deckWarn ? ' warn' : '') + '" title="Out of 4 max per war day; resets when the war day rolls over."><span>⚔️</span><strong>' + esc(m.decksUsedToday !== undefined ? m.decksUsedToday + '/4' : '—') + '</strong></div>'
       + '<div class="roster-stat"><span>🎁</span><strong>' + esc(m.donations || 0) + '</strong></div>'
       + '<div class="roster-stat" title="Formal marks for rule violations (e.g. missed war days) — enough of these trip the clan\'s auto-strike threshold in Settings."><span>⚡</span><strong style="' + (strikes > 0 ? 'color:var(--err)' : '') + '">' + strikes + '</strong></div>'
       + '<div class="roster-linked">' + linkedBadge + '</div>'
+      + (deckWarn && m.discord_id
+          ? '<button class="drawer-btn drawer-btn-dm" style="padding:4px 10px; font-size:11px;" onclick="event.stopPropagation(); sendWarningDM(' + attrJson(m.tag) + ', this)" title="Quick war-nudge DM without opening this member\'s drawer">✉️ Nudge</button>'
+          : '')
       + '<button class="roster-expand-btn" id="expand-btn-' + cleanTag + '" onclick="event.stopPropagation(); toggleDrawer(' + attrJson(cleanTag) + ')">▾ Actions</button>'
       + '</div>'
       + '<div class="player-drawer" id="drawer-' + cleanTag + '">'
