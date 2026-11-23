@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Graveyard Squad — Welcome &amp; Live Data Portal</title>
-  <meta name="description" content="Graveyard Squad (#9LVY89UP) Clash Royale Clan — Join our Discord and open the live stats, war history, and roster portal.">
+  <title>Graveyard Squad — Welcome &amp; Discord Check-In</title>
+  <meta name="description" content="Graveyard Squad (#9LVY89UP) Clash Royale Clan — Pick your in-game name, sign in with Discord, and open the live data portal.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -18,6 +18,7 @@
       --gy-border: #1e2530;
       --gy-accent: #00e5ff;
       --gy-ok: #00e096;
+      --gy-err: #ff3d71;
       --gy-discord: #5865f2;
       --gy-discord-hover: #6c77f7;
       --gy-text: #c5c6c7;
@@ -29,7 +30,6 @@
       --space-3: 12px;
       --space-4: 16px;
       --space-5: 24px;
-      --space-6: 32px;
       accent-color: var(--gy-accent);
     }
 
@@ -42,7 +42,7 @@
       min-height: 100svh;
       background:
         radial-gradient(circle at 20% 0%, rgba(0, 229, 255, 0.08), transparent 45%),
-        radial-gradient(circle at 85% 100%, rgba(88, 101, 242, 0.10), transparent 45%),
+        radial-gradient(circle at 85% 100%, rgba(88, 101, 242, 0.12), transparent 45%),
         var(--gy-bg);
       color: var(--gy-text);
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -88,7 +88,7 @@
 
     .hero p {
       margin: 0;
-      max-width: 52ch;
+      max-width: 54ch;
       color: var(--gy-text);
       font-size: 15px;
     }
@@ -184,6 +184,90 @@
       box-shadow: 0 0 8px var(--gy-ok);
     }
 
+    .checkin-form {
+      display: grid;
+      gap: var(--space-4);
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--gy-accent);
+    }
+
+    .field select {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 9px;
+      border: 1px solid var(--gy-border);
+      background: var(--gy-surface);
+      color: var(--gy-text-bright);
+      font-size: 15px;
+      font-family: inherit;
+      transition: border-color 140ms ease;
+    }
+
+    .field select:focus-visible {
+      outline: 2px solid var(--gy-accent);
+      outline-offset: 2px;
+      border-color: var(--gy-accent);
+    }
+
+    .error-msg {
+      display: none;
+      color: var(--gy-err);
+      font-size: 13px;
+    }
+
+    :is(:user-invalid, .user-invalid-fallback) {
+      border-color: var(--gy-err);
+    }
+
+    :is(:user-invalid, .user-invalid-fallback) + .error-msg {
+      display: block;
+    }
+
+    select:user-valid {
+      border-color: rgba(0, 224, 150, 0.55);
+    }
+
+    .actions-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-3);
+    }
+
+    .discord-join-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-2);
+      padding-top: var(--space-3);
+      border-top: 1px solid var(--gy-border);
+      font-size: 14px;
+      color: var(--gy-dim);
+    }
+
+    .discord-join-row a {
+      color: var(--gy-accent);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      text-decoration: none;
+    }
+
+    .discord-join-row a:hover {
+      text-decoration: underline;
+    }
+
     .server-meta {
       margin: 0;
       display: grid;
@@ -240,7 +324,7 @@
       align-items: center;
       justify-content: center;
       gap: 8px;
-      padding: 10px 18px;
+      padding: 11px 18px;
       border-radius: 8px;
       font-family: var(--font-ui);
       font-size: 16px;
@@ -249,21 +333,13 @@
       text-transform: uppercase;
       text-decoration: none;
       border: 1px solid transparent;
+      cursor: pointer;
       transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
     }
 
     .btn:focus-visible {
       outline: 2px solid var(--gy-accent);
       outline-offset: 2px;
-    }
-
-    .btn-primary {
-      background: var(--gy-accent);
-      color: #071318;
-    }
-
-    .btn-primary:hover {
-      background: #4df0ff;
     }
 
     .btn-discord {
@@ -280,7 +356,7 @@
       border-color: var(--gy-border);
       color: var(--gy-text);
       font-size: 14px;
-      padding: 7px 12px;
+      padding: 8px 13px;
     }
 
     .btn-ghost:hover {
@@ -300,6 +376,18 @@
       font-size: 12px;
       color: var(--gy-dim);
     }
+
+    .visually-hidden:where(:not(:focus-within, :active)) {
+      position: absolute !important;
+      clip-path: inset(50%) !important;
+      overflow: hidden !important;
+      width: 1px !important;
+      height: 1px !important;
+      margin: -1px !important;
+      padding: 0 !important;
+      border: 0 !important;
+      white-space: nowrap !important;
+    }
   </style>
 </head>
 <body>
@@ -307,17 +395,48 @@
     <header class="hero">
       <span class="clan-tag">CLAN #9LVY89UP</span>
       <h1>Graveyard Squad</h1>
-      <p>Clash Royale clan hub, live war tracking, player snapshots, and community Discord.</p>
+      <p>Select your in-game name to sign in with Discord and jump straight to your profile, or continue as a guest.</p>
     </header>
 
-    <section class="cards" aria-label="Graveyard Squad destinations">
+    <section class="cards" aria-label="Graveyard Squad check-in and server portal">
+      <article class="card">
+        <header>
+          <h2>Member Check-In &amp; Discord Login</h2>
+          <span class="clan-tag">DISCORD OAUTH</span>
+        </header>
+
+        <form id="checkin-form" class="checkin-form" novalidate>
+          <div class="field">
+            <label for="roster-select">Who are you in Graveyard Squad?</label>
+            <select id="roster-select" name="member" required aria-invalid="false" data-error="roster-error">
+              <option value="" disabled selected>Choose your in-game name or Guest…</option>
+              <option value="GUEST">Guest / Visitor (Browse All Clan Data)</option>
+              <optgroup id="clan-members-group" label="Loading clan roster…"></optgroup>
+            </select>
+            <div id="roster-error" class="error-msg">
+              Please pick your in-game name or choose Guest / Visitor.
+            </div>
+          </div>
+
+          <div class="actions-row">
+            <button id="discord-login-btn" type="submit" class="btn btn-discord">Sign in with Discord</button>
+            <a id="direct-browse-link" class="btn btn-ghost" href="{{DATA_SITE_URL}}/">Continue as Guest →</a>
+          </div>
+        </form>
+
+        <div class="discord-join-row">
+          <span>Not in the Discord server yet?</span>
+          <a href="{{DISCORD_INVITE_URL}}" rel="noopener noreferrer" target="_blank">Join Graveyard Squad Discord →</a>
+        </div>
+      </article>
+
       <article class="card">
         <header>
           <h2><a class="card-link" href="{{DATA_SITE_URL}}/">Live Data &amp; Roster Server</a></h2>
           <span class="status-pill"><span class="status-dot" aria-hidden="true"></span>Oracle Cloud · Online</span>
         </header>
 
-        <p>Explore the full Graveyard Squad dashboard — live clan roster, River Race war history, alumni archive, player stat snapshots, and clan forum.</p>
+        <p>Full Graveyard Squad stats portal — live clan roster, River Race war history, alumni archive, player snapshots, and clan forum.</p>
 
         <dl class="server-meta">
           <div>
@@ -329,8 +448,8 @@
             <dd>OCI + MongoDB Atlas</dd>
           </div>
           <div>
-            <dt>Snapshots</dt>
-            <dd>Roster · War · History</dd>
+            <dt>Roster</dt>
+            <dd id="roster-count-meta">Live Snapshots</dd>
           </div>
         </dl>
 
@@ -343,24 +462,97 @@
           <span class="cta-hint" aria-hidden="true">Open Data Portal →</span>
         </footer>
       </article>
-
-      <article class="card">
-        <header>
-          <h2>Join Our Discord</h2>
-          <span class="clan-tag">COMMUNITY</span>
-        </header>
-
-        <p>Coordinate River Race battles, trade decks, link your Clash Royale tag, and hang out with the squad.</p>
-
-        <footer>
-          <a class="btn btn-discord" href="{{DISCORD_INVITE_URL}}" rel="noopener noreferrer" target="_blank">Join Graveyard Squad Discord</a>
-        </footer>
-      </article>
     </section>
 
     <footer class="page-foot">
-      gys.fl350r.com · Static gateway to {{DATA_SITE_HOST}}
+      gys.fl350r.com · Gateway to {{DATA_SITE_HOST}}
     </footer>
   </main>
+
+  <script>
+    (() => {
+      const DATA_SITE = "{{DATA_SITE_URL}}";
+      const form = document.getElementById("checkin-form");
+      const select = document.getElementById("roster-select");
+      const group = document.getElementById("clan-members-group");
+      const loginBtn = document.getElementById("discord-login-btn");
+      const browseLink = document.getElementById("direct-browse-link");
+      const rosterCountMeta = document.getElementById("roster-count-meta");
+
+      const linkError = (el, shown) => {
+        const errorId = el.dataset.error;
+        if (!errorId) return;
+        const ids = (el.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== errorId);
+        if (shown) ids.push(errorId);
+        if (ids.length) el.setAttribute("aria-describedby", ids.join(" "));
+        else el.removeAttribute("aria-describedby");
+      };
+
+      const syncValidation = (forceInvalid = false) => {
+        const invalid = forceInvalid ? !select.validity.valid : select.matches(":user-invalid");
+        select.classList.toggle("user-invalid-fallback", invalid);
+        select.setAttribute("aria-invalid", invalid ? "true" : "false");
+        linkError(select, invalid);
+        return !invalid;
+      };
+
+      const updateDestinations = () => {
+        const val = select.value;
+        if (!val || val === "GUEST") {
+          loginBtn.textContent = "Sign in with Discord";
+          browseLink.textContent = "Continue as Guest →";
+          browseLink.href = `${DATA_SITE}/`;
+          return;
+        }
+        const selectedOption = select.options[select.selectedIndex];
+        const playerName = selectedOption?.dataset.name || "Member";
+        loginBtn.textContent = `Sign in with Discord as ${playerName}`;
+        browseLink.textContent = `View ${playerName}'s Profile →`;
+        browseLink.href = `${DATA_SITE}/player/${encodeURIComponent(val)}`;
+      };
+
+      select.addEventListener("change", () => {
+        syncValidation(false);
+        updateDestinations();
+      });
+
+      select.addEventListener("blur", () => syncValidation(false));
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!syncValidation(true)) {
+          select.focus();
+          return;
+        }
+        const val = select.value;
+        const nextPath = val && val !== "GUEST" ? `/player/${encodeURIComponent(val)}` : "/";
+        window.location.href = `${DATA_SITE}/login?next=${encodeURIComponent(nextPath)}`;
+      });
+
+      fetch("/api/members")
+        .then((res) => (res.ok ? res.json() : []))
+        .then((members) => {
+          if (!Array.isArray(members) || members.length === 0) {
+            group.label = "Clan Roster (Unavailable — choose Guest)";
+            return;
+          }
+          group.label = `Graveyard Squad Roster (${members.length})`;
+          rosterCountMeta.textContent = `${members.length} Active Members`;
+          const frag = document.createDocumentFragment();
+          for (const m of members) {
+            if (!m || !m.tag || !m.name) continue;
+            const opt = document.createElement("option");
+            opt.value = m.tag;
+            opt.dataset.name = m.name;
+            opt.textContent = `${m.name} (#${m.tag})`;
+            frag.appendChild(opt);
+          }
+          group.appendChild(frag);
+        })
+        .catch(() => {
+          group.label = "Clan Roster (Unavailable — choose Guest)";
+        });
+    })();
+  </script>
 </body>
 </html>
