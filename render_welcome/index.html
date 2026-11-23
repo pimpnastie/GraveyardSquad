@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Graveyard Squad — Welcome &amp; Discord Check-In</title>
-  <meta name="description" content="Graveyard Squad (#9LVY89UP) Clash Royale Clan — Pick your in-game name, sign in with Discord, and open the live data portal.">
+  <meta name="description" content="Graveyard Squad (#9LVY89UP) Clash Royale Clan — Join our Discord server, pick your in-game name, and open the live data portal.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -21,6 +21,8 @@
       --gy-err: #ff3d71;
       --gy-discord: #5865f2;
       --gy-discord-hover: #6c77f7;
+      --gy-discord-green: #248046;
+      --gy-discord-green-hover: #1a6334;
       --gy-text: #c5c6c7;
       --gy-dim: #888;
       --gy-text-bright: #f0f0f0;
@@ -184,6 +186,89 @@
       box-shadow: 0 0 8px var(--gy-ok);
     }
 
+    /* Authentic Discord Server Invite Card */
+    .discord-server-card {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      background: var(--gy-surface);
+      border: 1px solid rgba(88, 101, 242, 0.35);
+      border-radius: 12px;
+      padding: var(--space-4);
+    }
+
+    .discord-server-info {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      min-width: 0;
+    }
+
+    .discord-server-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      object-fit: cover;
+      background: rgba(88, 101, 242, 0.18);
+      border: 1px solid var(--gy-border);
+      flex-shrink: 0;
+    }
+
+    .discord-server-text {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .discord-server-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--gy-dim);
+    }
+
+    .discord-server-name {
+      font-family: var(--font-ui);
+      font-size: 1.3rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--gy-text-bright);
+      line-height: 1.15;
+    }
+
+    .discord-server-counts {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--gy-text);
+    }
+
+    .count-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .dot-online,
+    .dot-members {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .dot-online {
+      background: #23a55a;
+    }
+
+    .dot-members {
+      background: #80848e;
+    }
+
     .checkin-form {
       display: grid;
       gap: var(--space-4);
@@ -243,29 +328,6 @@
       flex-wrap: wrap;
       align-items: center;
       gap: var(--space-3);
-    }
-
-    .discord-join-row {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--space-2);
-      padding-top: var(--space-3);
-      border-top: 1px solid var(--gy-border);
-      font-size: 14px;
-      color: var(--gy-dim);
-    }
-
-    .discord-join-row a {
-      color: var(--gy-accent);
-      font-family: var(--font-mono);
-      font-size: 13px;
-      text-decoration: none;
-    }
-
-    .discord-join-row a:hover {
-      text-decoration: underline;
     }
 
     .server-meta {
@@ -351,6 +413,17 @@
       background: var(--gy-discord-hover);
     }
 
+    .btn-join {
+      background: var(--gy-discord-green);
+      color: #f8f9ff;
+      padding: 9px 16px;
+      font-size: 15px;
+    }
+
+    .btn-join:hover {
+      background: var(--gy-discord-green-hover);
+    }
+
     .btn-ghost {
       background: var(--gy-surface);
       border-color: var(--gy-border);
@@ -376,18 +449,6 @@
       font-size: 12px;
       color: var(--gy-dim);
     }
-
-    .visually-hidden:where(:not(:focus-within, :active)) {
-      position: absolute !important;
-      clip-path: inset(50%) !important;
-      overflow: hidden !important;
-      width: 1px !important;
-      height: 1px !important;
-      margin: -1px !important;
-      padding: 0 !important;
-      border: 0 !important;
-      white-space: nowrap !important;
-    }
   </style>
 </head>
 <body>
@@ -395,15 +456,30 @@
     <header class="hero">
       <span class="clan-tag">CLAN #9LVY89UP</span>
       <h1>Graveyard Squad</h1>
-      <p>Pick your in-game name to join our Discord server and sign in in one step — or continue as a guest.</p>
+      <p>Join our Discord server, pick your in-game name to sign in with Discord, or browse the clan data portal as a guest.</p>
     </header>
 
-    <section class="cards" aria-label="Graveyard Squad check-in and server portal">
+    <section class="cards" aria-label="Graveyard Squad Discord check-in and data portal">
       <article class="card">
         <header>
-          <h2>Join Discord &amp; Sign In</h2>
-          <span class="clan-tag">ONE-STEP OAUTH</span>
+          <h2>Discord Server &amp; Member Login</h2>
+          <span class="clan-tag">CLAN HUB</span>
         </header>
+
+        <div class="discord-server-card">
+          <div class="discord-server-info">
+            <img id="discord-icon" class="discord-server-icon" src="" alt="" hidden>
+            <div class="discord-server-text">
+              <span class="discord-server-eyebrow">Official Discord Server</span>
+              <span id="discord-name" class="discord-server-name">Graveyard Squad - CR</span>
+              <div class="discord-server-counts">
+                <span class="count-item"><span class="dot-online" aria-hidden="true"></span><span id="discord-online">Online now</span></span>
+                <span class="count-item"><span class="dot-members" aria-hidden="true"></span><span id="discord-members">Clan Community</span></span>
+              </div>
+            </div>
+          </div>
+          <a id="discord-join-btn" class="btn btn-join" href="{{DISCORD_INVITE_URL}}" rel="noopener noreferrer" target="_blank">Join Server</a>
+        </div>
 
         <form id="checkin-form" class="checkin-form" novalidate>
           <div class="field">
@@ -419,7 +495,7 @@
           </div>
 
           <div class="actions-row">
-            <button id="discord-login-btn" type="submit" class="btn btn-discord">Join Discord &amp; Sign In</button>
+            <button id="discord-login-btn" type="submit" class="btn btn-discord">Sign in with Discord</button>
             <a id="direct-browse-link" class="btn btn-ghost" href="{{DATA_SITE_URL}}/">Continue as Guest →</a>
           </div>
         </form>
@@ -460,7 +536,7 @@
     </section>
 
     <footer class="page-foot">
-      gys.fl350r.com · Gateway to {{DATA_SITE_HOST}} · <a href="{{DISCORD_INVITE_URL}}" rel="noopener noreferrer" target="_blank" style="color: var(--gy-dim);">Direct Discord Invite</a>
+      gys.fl350r.com · Gateway to {{DATA_SITE_HOST}}
     </footer>
   </main>
 
@@ -473,6 +549,11 @@
       const loginBtn = document.getElementById("discord-login-btn");
       const browseLink = document.getElementById("direct-browse-link");
       const rosterCountMeta = document.getElementById("roster-count-meta");
+      const discordIcon = document.getElementById("discord-icon");
+      const discordName = document.getElementById("discord-name");
+      const discordOnline = document.getElementById("discord-online");
+      const discordMembers = document.getElementById("discord-members");
+      const discordJoinBtn = document.getElementById("discord-join-btn");
 
       const linkError = (el, shown) => {
         const errorId = el.dataset.error;
@@ -494,14 +575,14 @@
       const updateDestinations = () => {
         const val = select.value;
         if (!val || val === "GUEST") {
-          loginBtn.textContent = "Join Discord & Sign In";
+          loginBtn.textContent = "Sign in with Discord";
           browseLink.textContent = "Continue as Guest →";
           browseLink.href = `${DATA_SITE}/`;
           return;
         }
         const selectedOption = select.options[select.selectedIndex];
         const playerName = selectedOption?.dataset.name || "Member";
-        loginBtn.textContent = `Join Discord & Sign In as ${playerName}`;
+        loginBtn.textContent = `Sign in with Discord as ${playerName}`;
         browseLink.textContent = `View ${playerName}'s Profile →`;
         browseLink.href = `${DATA_SITE}/player/${encodeURIComponent(val)}`;
       };
@@ -520,12 +601,24 @@
           return;
         }
         const val = select.value;
-        const selectedOption = select.options[select.selectedIndex];
-        const playerName = selectedOption?.dataset.name || "";
         const nextPath = val && val !== "GUEST" ? `/player/${encodeURIComponent(val)}` : "/";
-        const nickParam = val && val !== "GUEST" && playerName ? `&nick=${encodeURIComponent(playerName)}` : "";
-        window.location.href = `${DATA_SITE}/login?next=${encodeURIComponent(nextPath)}${nickParam}`;
+        window.location.href = `${DATA_SITE}/login?next=${encodeURIComponent(nextPath)}`;
       });
+
+      fetch("/api/discord-invite")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((info) => {
+          if (!info) return;
+          if (info.name) discordName.textContent = info.name;
+          if (info.icon_url) {
+            discordIcon.src = info.icon_url;
+            discordIcon.hidden = false;
+          }
+          if (typeof info.online === "number") discordOnline.textContent = `${info.online} Online`;
+          if (typeof info.members === "number") discordMembers.textContent = `${info.members} Members`;
+          if (info.invite_url) discordJoinBtn.href = info.invite_url;
+        })
+        .catch(() => {});
 
       fetch("/api/members")
         .then((res) => (res.ok ? res.json() : []))

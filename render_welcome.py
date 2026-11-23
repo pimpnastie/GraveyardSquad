@@ -1,4 +1,4 @@
-"""Ultra-lightweight static welcome + Discord OAuth check-in gateway for Render.
+"""Ultra-lightweight static welcome + Discord server card + OAuth gateway for Render.
 
 Uses only Python's standard library (~12 MB RAM, zero external packages, zero
 database or Discord bot connections) so Render free-tier resources are never
@@ -28,14 +28,27 @@ HTML_BYTES = (
     .encode("utf-8")
 )
 
-_roster_lock = threading.Lock()
+_cache_lock = threading.Lock()
 _roster_cache = {"ts": 0.0, "payload": b"[]"}
+_invite_cache = {
+    "ts": 0.0,
+    "payload": json.dumps(
+        {
+            "name": "Graveyard Squad - CR",
+            "icon_url": "",
+            "online": None,
+            "members": None,
+            "invite_url": DISCORD_INVITE_URL,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8"),
+}
 
 
 def get_roster_bytes() -> bytes:
     """Fetch and cache the lightweight {tag, name} roster from the Oracle data host."""
     now = time.monotonic()
-    with _roster_lock:
+    with _cache_lock:
         if _roster_cache["ts"] and (now - _roster_cache["ts"]) < ROSTER_TTL_SECONDS:
             return _roster_cache["payload"]
 
@@ -57,15 +70,56 @@ def get_roster_bytes() -> bytes:
                 key=lambda item: item["name"].casefold(),
             )
             payload = json.dumps(cleaned, separators=(",", ":")).encode("utf-8")
-            with _roster_lock:
+            with _cache_lock:
                 _roster_cache["ts"] = now
                 _roster_cache["payload"] = payload
             return payload
     except Exception:
         pass
 
-    with _roster_lock:
+    with _cache_lock:
         return _roster_cache["payload"]
+
+
+def get_discord_invite_bytes() -> bytes:
+    """Fetch and cache public Discord server invite card metadata (name, icon, counts)."""
+    now = time.monotonic()
+    with _cache_lock:
+        if _invite_cache["ts"] and (now - _invite_cache["ts"]) < ROSTER_TTL_SECONDS:
+            return _invite_cache["payload"]
+
+    code = urlparse(DISCORD_INVITE_URL).path.strip("/").split("/")[-1]
+    if code:
+        try:
+            req = urllib.request.Request(
+                f"https://discord.com/api/v10/invites/{code}?with_counts=true",
+                headers={"User-Agent": "GraveyardWelcomeGateway/1.0", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            guild = data.get("guild") or {}
+            gid = guild.get("id", "")
+            icon = guild.get("icon", "")
+            icon_url = f"https://cdn.discordapp.com/icons/{gid}/{icon}.webp?size=128" if gid and icon else ""
+            payload = json.dumps(
+                {
+                    "name": guild.get("name") or "Graveyard Squad - CR",
+                    "icon_url": icon_url,
+                    "online": data.get("approximate_presence_count"),
+                    "members": data.get("approximate_member_count"),
+                    "invite_url": DISCORD_INVITE_URL,
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            with _cache_lock:
+                _invite_cache["ts"] = now
+                _invite_cache["payload"] = payload
+            return payload
+        except Exception:
+            pass
+
+    with _cache_lock:
+        return _invite_cache["payload"]
 
 
 class WelcomeHandler(BaseHTTPRequestHandler):
@@ -89,6 +143,17 @@ class WelcomeHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/members":
             body = get_roster_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", f"public, max-age={ROSTER_TTL_SECONDS}")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if send_body:
+                self.wfile.write(body)
+            return
+
+        if parsed.path == "/api/discord-invite":
+            body = get_discord_invite_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", f"public, max-age={ROSTER_TTL_SECONDS}")
