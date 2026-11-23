@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Graveyard Squad — Welcome &amp; Live Data Portal</title>
+  <meta name="description" content="Graveyard Squad (#9LVY89UP) Clash Royale Clan — Join our Discord and open the live stats, war history, and roster portal.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --gy-bg: #0b0c10;
+      --gy-surface: #111418;
+      --gy-panel: #111820;
+      --gy-border: #1e2530;
+      --gy-accent: #00e5ff;
+      --gy-ok: #00e096;
+      --gy-discord: #5865f2;
+      --gy-discord-hover: #6c77f7;
+      --gy-text: #c5c6c7;
+      --gy-dim: #888;
+      --gy-text-bright: #f0f0f0;
+      --font-ui: "Barlow Condensed", system-ui, -apple-system, sans-serif;
+      --font-mono: "Share Tech Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      accent-color: var(--gy-accent);
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100svh;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(0, 229, 255, 0.08), transparent 45%),
+        radial-gradient(circle at 85% 100%, rgba(88, 101, 242, 0.10), transparent 45%),
+        var(--gy-bg);
+      color: var(--gy-text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.5;
+      display: grid;
+      place-items: center;
+      padding: var(--space-5) var(--space-4);
+    }
+
+    main {
+      width: min(100%, 760px);
+      display: grid;
+      gap: var(--space-5);
+    }
+
+    .hero {
+      text-align: center;
+      display: grid;
+      gap: var(--space-2);
+      justify-items: center;
+    }
+
+    .clan-tag {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      color: var(--gy-accent);
+      background: rgba(0, 229, 255, 0.08);
+      border: 1px solid rgba(0, 229, 255, 0.25);
+      border-radius: 999px;
+      padding: 4px 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-family: var(--font-ui);
+      font-size: clamp(2.25rem, 6vw, 3.25rem);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--gy-text-bright);
+      line-height: 1.05;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 52ch;
+      color: var(--gy-text);
+      font-size: 15px;
+    }
+
+    .cards {
+      display: grid;
+      gap: var(--space-4);
+    }
+
+    .card {
+      container-type: inline-size;
+      background: var(--gy-panel);
+      border: 1px solid var(--gy-border);
+      border-radius: 14px;
+      padding: var(--space-5);
+      display: grid;
+      gap: var(--space-4);
+      transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+    }
+
+    .card:has(a.card-link) {
+      position: relative;
+    }
+
+    .card a.card-link {
+      color: var(--gy-text-bright);
+      text-decoration: none;
+    }
+
+    .card a.card-link::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+    }
+
+    .card a.card-link:focus-visible {
+      outline: none;
+    }
+
+    .card:has(a.card-link:focus-visible) {
+      outline: 2px solid var(--gy-accent);
+      outline-offset: 3px;
+      border-color: var(--gy-accent);
+    }
+
+    .card:has(a.card-link:hover) {
+      border-color: rgba(0, 229, 255, 0.55);
+      transform: translateY(-2px);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+    }
+
+    .card:has(a.card-link) a:not(.card-link),
+    .card:has(a.card-link) button {
+      position: relative;
+      z-index: 1;
+    }
+
+    .card > header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-2);
+    }
+
+    .card h2 {
+      margin: 0;
+      font-family: var(--font-ui);
+      font-size: 1.6rem;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--gy-text-bright);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--gy-ok);
+      background: rgba(0, 224, 150, 0.10);
+      border: 1px solid rgba(0, 224, 150, 0.30);
+      border-radius: 999px;
+      padding: 3px 10px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--gy-ok);
+      box-shadow: 0 0 8px var(--gy-ok);
+    }
+
+    .server-meta {
+      margin: 0;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: var(--space-3);
+      background: var(--gy-surface);
+      border: 1px solid var(--gy-border);
+      border-radius: 10px;
+      padding: var(--space-3) var(--space-4);
+    }
+
+    @container (min-width: 460px) {
+      .server-meta {
+        grid-template-columns: repeat(3, 1fr);
+      }
+    }
+
+    .server-meta div {
+      display: grid;
+      gap: 2px;
+    }
+
+    .server-meta dt {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--gy-dim);
+    }
+
+    .server-meta dd {
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--gy-text-bright);
+      overflow-wrap: anywhere;
+    }
+
+    .card > footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+    }
+
+    .quick-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-family: var(--font-ui);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      text-decoration: none;
+      border: 1px solid transparent;
+      transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+    }
+
+    .btn:focus-visible {
+      outline: 2px solid var(--gy-accent);
+      outline-offset: 2px;
+    }
+
+    .btn-primary {
+      background: var(--gy-accent);
+      color: #071318;
+    }
+
+    .btn-primary:hover {
+      background: #4df0ff;
+    }
+
+    .btn-discord {
+      background: var(--gy-discord);
+      color: #f8f9ff;
+    }
+
+    .btn-discord:hover {
+      background: var(--gy-discord-hover);
+    }
+
+    .btn-ghost {
+      background: var(--gy-surface);
+      border-color: var(--gy-border);
+      color: var(--gy-text);
+      font-size: 14px;
+      padding: 7px 12px;
+    }
+
+    .btn-ghost:hover {
+      border-color: var(--gy-accent);
+      color: var(--gy-text-bright);
+    }
+
+    .cta-hint {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--gy-accent);
+    }
+
+    .page-foot {
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--gy-dim);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <span class="clan-tag">CLAN #9LVY89UP</span>
+      <h1>Graveyard Squad</h1>
+      <p>Clash Royale clan hub, live war tracking, player snapshots, and community Discord.</p>
+    </header>
+
+    <section class="cards" aria-label="Graveyard Squad destinations">
+      <article class="card">
+        <header>
+          <h2><a class="card-link" href="{{DATA_SITE_URL}}/">Live Data &amp; Roster Server</a></h2>
+          <span class="status-pill"><span class="status-dot" aria-hidden="true"></span>Oracle Cloud · Online</span>
+        </header>
+
+        <p>Explore the full Graveyard Squad dashboard — live clan roster, River Race war history, alumni archive, player stat snapshots, and clan forum.</p>
+
+        <dl class="server-meta">
+          <div>
+            <dt>Host</dt>
+            <dd>{{DATA_SITE_HOST}}</dd>
+          </div>
+          <div>
+            <dt>Backbone</dt>
+            <dd>OCI + MongoDB Atlas</dd>
+          </div>
+          <div>
+            <dt>Snapshots</dt>
+            <dd>Roster · War · History</dd>
+          </div>
+        </dl>
+
+        <footer>
+          <div class="quick-links">
+            <a class="btn btn-ghost" href="{{DATA_SITE_URL}}/clan-history">Clan History</a>
+            <a class="btn btn-ghost" href="{{DATA_SITE_URL}}/alumni">Alumni</a>
+            <a class="btn btn-ghost" href="{{DATA_SITE_URL}}/forum/">Forum</a>
+          </div>
+          <span class="cta-hint" aria-hidden="true">Open Data Portal →</span>
+        </footer>
+      </article>
+
+      <article class="card">
+        <header>
+          <h2>Join Our Discord</h2>
+          <span class="clan-tag">COMMUNITY</span>
+        </header>
+
+        <p>Coordinate River Race battles, trade decks, link your Clash Royale tag, and hang out with the squad.</p>
+
+        <footer>
+          <a class="btn btn-discord" href="{{DISCORD_INVITE_URL}}" rel="noopener noreferrer" target="_blank">Join Graveyard Squad Discord</a>
+        </footer>
+      </article>
+    </section>
+
+    <footer class="page-foot">
+      gys.fl350r.com · Static gateway to {{DATA_SITE_HOST}}
+    </footer>
+  </main>
+</body>
+</html>
