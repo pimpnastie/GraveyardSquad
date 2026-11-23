@@ -395,14 +395,14 @@
     <header class="hero">
       <span class="clan-tag">CLAN #9LVY89UP</span>
       <h1>Graveyard Squad</h1>
-      <p>Select your in-game name to sign in with Discord and jump straight to your profile, or continue as a guest.</p>
+      <p>Pick your in-game name to join our Discord server and sign in in one step — or continue as a guest.</p>
     </header>
 
     <section class="cards" aria-label="Graveyard Squad check-in and server portal">
       <article class="card">
         <header>
-          <h2>Member Check-In &amp; Discord Login</h2>
-          <span class="clan-tag">DISCORD OAUTH</span>
+          <h2>Join Discord &amp; Sign In</h2>
+          <span class="clan-tag">ONE-STEP OAUTH</span>
         </header>
 
         <form id="checkin-form" class="checkin-form" novalidate>
@@ -419,15 +419,10 @@
           </div>
 
           <div class="actions-row">
-            <button id="discord-login-btn" type="submit" class="btn btn-discord">Sign in with Discord</button>
+            <button id="discord-login-btn" type="submit" class="btn btn-discord">Join Discord &amp; Sign In</button>
             <a id="direct-browse-link" class="btn btn-ghost" href="{{DATA_SITE_URL}}/">Continue as Guest →</a>
           </div>
         </form>
-
-        <div class="discord-join-row">
-          <span>Not in the Discord server yet?</span>
-          <a href="{{DISCORD_INVITE_URL}}" rel="noopener noreferrer" target="_blank">Join Graveyard Squad Discord →</a>
-        </div>
       </article>
 
       <article class="card">
@@ -465,7 +460,7 @@
     </section>
 
     <footer class="page-foot">
-      gys.fl350r.com · Gateway to {{DATA_SITE_HOST}}
+      gys.fl350r.com · Gateway to {{DATA_SITE_HOST}} · <a href="{{DISCORD_INVITE_URL}}" rel="noopener noreferrer" target="_blank" style="color: var(--gy-dim);">Direct Discord Invite</a>
     </footer>
   </main>
 
@@ -499,14 +494,14 @@
       const updateDestinations = () => {
         const val = select.value;
         if (!val || val === "GUEST") {
-          loginBtn.textContent = "Sign in with Discord";
+          loginBtn.textContent = "Join Discord & Sign In";
           browseLink.textContent = "Continue as Guest →";
           browseLink.href = `${DATA_SITE}/`;
           return;
         }
         const selectedOption = select.options[select.selectedIndex];
         const playerName = selectedOption?.dataset.name || "Member";
-        loginBtn.textContent = `Sign in with Discord as ${playerName}`;
+        loginBtn.textContent = `Join Discord & Sign In as ${playerName}`;
         browseLink.textContent = `View ${playerName}'s Profile →`;
         browseLink.href = `${DATA_SITE}/player/${encodeURIComponent(val)}`;
       };
@@ -525,8 +520,11 @@
           return;
         }
         const val = select.value;
+        const selectedOption = select.options[select.selectedIndex];
+        const playerName = selectedOption?.dataset.name || "";
         const nextPath = val && val !== "GUEST" ? `/player/${encodeURIComponent(val)}` : "/";
-        window.location.href = `${DATA_SITE}/login?next=${encodeURIComponent(nextPath)}`;
+        const nickParam = val && val !== "GUEST" && playerName ? `&nick=${encodeURIComponent(playerName)}` : "";
+        window.location.href = `${DATA_SITE}/login?next=${encodeURIComponent(nextPath)}${nickParam}`;
       });
 
       fetch("/api/members")
