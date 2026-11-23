@@ -587,8 +587,31 @@
         browseLink.href = `${DATA_SITE}/player/${encodeURIComponent(val)}`;
       };
 
+      const STORAGE_KEY = "gys_selected_member";
+
+      const saveSelection = () => {
+        try {
+          if (select.value) {
+            localStorage.setItem(STORAGE_KEY, select.value);
+          }
+        } catch (_) {}
+      };
+
+      const restoreSelection = () => {
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (!saved) return;
+          const match = [...select.options].some((o) => o.value === saved);
+          if (match) {
+            select.value = saved;
+            updateDestinations();
+          }
+        } catch (_) {}
+      };
+
       select.addEventListener("change", () => {
         syncValidation(false);
+        saveSelection();
         updateDestinations();
       });
 
@@ -600,9 +623,12 @@
           select.focus();
           return;
         }
+        saveSelection();
         const val = select.value;
-        const nextPath = val && val !== "GUEST" ? `/player/${encodeURIComponent(val)}` : "/";
-        window.location.href = `${DATA_SITE}/login?next=${encodeURIComponent(nextPath)}`;
+        const isMember = Boolean(val && val !== "GUEST");
+        const nextPath = isMember ? `/player/${encodeURIComponent(val)}` : "/";
+        const linkParam = isMember ? `&link_tag=${encodeURIComponent(val)}` : "";
+        window.location.href = `${DATA_SITE}/login?next=${encodeURIComponent(nextPath)}${linkParam}`;
       });
 
       fetch("/api/discord-invite")
@@ -639,9 +665,11 @@
             frag.appendChild(opt);
           }
           group.appendChild(frag);
+          restoreSelection();
         })
         .catch(() => {
           group.label = "Clan Roster (Unavailable — choose Guest)";
+          restoreSelection();
         });
     })();
   </script>
